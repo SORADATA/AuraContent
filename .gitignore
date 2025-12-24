@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+venv/
+
+# Environment variables (Critical for security)
+.env
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Build outputs
+/dist
+/build
+/video-gen
+/assets/audio_clips
+/assets/final
+/assets/temp
+/assets/video_clips
+/modules/__pycache__
+*.log
