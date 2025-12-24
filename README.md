@@ -37,8 +37,8 @@ Before you run this, you need a few things installed:
 1.  **Clone the repo** (or download the files):
 
     ```bash
-    git clone [https://github.com/yourusername/shorts-automator.git](https://github.com/yourusername/shorts-automator.git)
-    cd shorts-automator
+    git clone [https://github.com/SaarD00/Automated-YT-Shorts-AI]
+    cd Automated-YT-Shorts-AI
     ```
 
 2.  **Install Python dependencies:**
