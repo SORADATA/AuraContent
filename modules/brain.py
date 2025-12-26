@@ -4,7 +4,7 @@ from google import genai
 from dotenv import load_dotenv
 
 # Load API Key
-client = genai.Client(api_key="AIzaSyBo9DkGB8kwfFRwa0-7T-6F82A5LnOTqyc")
+client = genai.Client(api_key="api-key")
 
 class ContentBrain:
     def get_trending_topic(self):

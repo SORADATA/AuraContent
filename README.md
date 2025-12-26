@@ -1,9 +1,3 @@
-Here is a comprehensive `README.md` file for your project. It covers everything from installation to the complex logic we built (Dual-Visuals, Avatar Injection, etc.).
-
-You can create a file named `README.md` in your root folder and paste this directly.
-
----
-
 # 🎬 AutoShorts AI: The Automated Faceless Video Generator
 
 **AutoShorts AI** is a fully automated Python pipeline that creates viral-style "Faceless" YouTube Shorts and TikToks from a single topic. It handles the entire production chain: researching, scriptwriting, voiceover generation, stock footage sourcing, and advanced video editing with transitions and avatar injection.
