@@ -4,7 +4,7 @@ import edge_tts
 from mutagen.mp3 import MP3
 
 class AudioEngine:
-    def __init__(self, voice="en-US-ChristopherNeural"):
+    def __init__(self, voice="en-US-AvaNeural"):
         self.voice = voice
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)

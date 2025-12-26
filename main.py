@@ -71,22 +71,12 @@ async def main():
 
     # 3. ASSETS: Get Stock Video
     asset_manager = AssetManager()
-    assets_map = asset_manager.get_stock_for_script(script)
+    assets_map = asset_manager.get_videos(script)
 
     # 4. COMPOSER: Merge Video + Audio
     composer = Composer()
-    final_scene_paths = []
 
-    for scene in script:
-        scene_id = scene['id']
-        stock_path = assets_map.get(scene_id)
-        
-        if stock_path:
-            scene_video = composer.process_scene(scene, stock_path)
-            if scene_video:
-                final_scene_paths.append(scene_video)
-        else:
-            print(f"⚠️ Skipping Scene {scene_id} (No Video Found)")
+    final_scene_paths = composer.render_all_scenes(script, assets_map)
 
     # 5. STITCH WITH TRANSITIONS
     if final_scene_paths:
