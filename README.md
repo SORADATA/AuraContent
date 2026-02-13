@@ -1,5 +1,8 @@
 # 🎬 AutoShorts AI: The Automated Faceless Video Generator
 
+![Views](https://komarev.com/ghpvc/?username=SaarD00-AI-Youtube-Shorts-Generator&style=for-the-badge&color=blue)
+
+
 **AutoShorts AI** is a fully automated Python pipeline that creates viral-style "Faceless" YouTube Shorts and TikToks from a single topic. It handles the entire production chain: researching, scriptwriting, voiceover generation, stock footage sourcing, and advanced video editing with transitions and avatar injection.
 
 ---
