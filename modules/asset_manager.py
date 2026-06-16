@@ -1,11 +1,14 @@
 import os
 import requests
 import random
+from dotenv import load_dotenv
 
 class AssetManager:
     def __init__(self):
-        # Your original API Key
-        self.api_key = "hZBjjYowDAauyvn9rioK5qYMHFdCq11rKnmWo4OQlXhZspsVuo2DkpCP"
+        load_dotenv()
+        self.api_key = os.getenv("PEXELS_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("PEXELS_API_KEY is not set. Create a .env file or set the environment variable before running.")
         self.base_url = "https://api.pexels.com/videos/search"
         self.headers = {
             "Authorization": self.api_key
