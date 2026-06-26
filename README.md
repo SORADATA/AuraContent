@@ -3,14 +3,14 @@
 ![Views](https://komarev.com/ghpvc/?username=SaarD00-AI-Youtube-Shorts-Generator&style=for-the-badge&color=blue)
 
 
-**AutoShorts AI** is a fully automated Python pipeline that creates viral-style "Faceless" YouTube Shorts and TikToks from a single topic. It handles the entire production chain: researching, scriptwriting, voiceover generation, stock footage sourcing, and advanced video editing with transitions and avatar injection.
+**AutoShorts AI** is a Python pipeline that creates viral-style "Faceless" YouTube Shorts and TikToks from a topic. It handles the production chain: AI topic/script generation, voiceover generation, stock footage sourcing, and FFmpeg editing with transitions and avatar injection.
 
 ---
 
 ## ✨ Key Features
 
 - **🧠 Intelligent Scriptwriting:** Uses **Google Gemini 2.0 Flash** to write engaging, "Edutainment" style scripts (Vox/Kurzgesagt style) with strict storytelling structures (Hook → Context → Mechanism → Twist).
-- **🗣️ Human-Like Voiceovers:** Integrated with **Suno Bark** (via Google Colab/Ngrok) for high-quality, expressive AI narration. Includes "Influencer Mode" for dynamic intonation.
+- **🗣️ Voiceovers:** Generates narration with `edge-tts`.
 - **🎞️ Dual-Visual System:** Automatically searches and downloads **two distinct stock videos** per scene from **Pexels**, creating a dynamic "A/B Split" visual style to maximize viewer retention.
 - **✂️ Advanced FFmpeg Editing:**
 - **Smart Trimming:** Syncs video perfectly to audio duration.
@@ -38,12 +38,11 @@ Automated-YT-Shorts-AI/
 │
 ├── modules/                 # Core Logic Modules
 │   ├── brain.py             # AI Scriptwriter (Gemini)
-│   ├── audio.py             # Voice Generator (Bark Client)
+│   ├── audio.py             # Voice generator (edge-tts)
 │   ├── asset_manager.py     # Pexels Downloader (Dual-Visual logic)
 │   └── composer.py          # FFmpeg Video Editor (Stitching & Transitions)
 │
 ├── main.py                  # Entry point (Orchestrator)
-├── test_audio.py            # Diagnostic tool for Bark connection
 └── requirements.txt         # Python dependencies
 
 ```
@@ -62,7 +61,7 @@ Automated-YT-Shorts-AI/
 
 - **Google Gemini API Key** (Free tier available).
 - **Pexels API Key** (Free).
-- **Ngrok Auth Token** (If running Bark on Colab).
+- No Ngrok token is required for the default voiceover path. The current pipeline uses `edge-tts`.
 
 ---
 
@@ -83,49 +82,35 @@ pip install -r requirements.txt
 
 ```
 
-_(If `requirements.txt` is missing, install manually: `pip install google-generativeai requests ffmpeg-python mutagen colorama`)_
-
 ### 3. Environment Setup
 
 Create the required folders and add your avatar:
 
 1. Create folder: `assets/avatar`
-2. Place your avatar video inside and name it: `Professional_Girl_Animation_Video_Generation.mp4`
+2. Place your avatar video inside and name it: `avatars.mp4`
 
 ### 4. Configure API Keys
 
-You can set them in your environment variables or hardcode them (temporarily) in the modules:
+Copy `.env.example` to `.env` and fill in your key:
 
-- `modules/brain.py` → `genai.configure(api_key="YOUR_GEMINI_KEY")`
-- `modules/asset_manager.py` → `self.api_key = "YOUR_PEXELS_KEY"`
-- `modules/audio.py` → Update `raw_url` with your active Ngrok/Colab link.
+```bash
+cp .env.example .env
+```
+
+Required:
+
+- `GEMINI_API_KEY` for script generation
+- `PEXELS_API_KEY` for stock video search/download
+
+Optional:
+
+- `GEMINI_MODEL` to override the default `gemini-2.0-flash` model
 
 ---
 
 ## 🎮 How to Run
 
-### Step 1: Start the Audio Server (Bark)
-
-Since Bark requires a GPU, we run it on Google Colab.
-
-1. Open the **Colab Notebook** provided for this project.
-2. Paste your Ngrok Token.
-3. Run the cell.
-4. Copy the `https://xxxx.ngrok-free.app` URL.
-5. Paste this URL into `modules/audio.py` inside the `AudioEngine` class.
-
-### Step 2: Test Connection (Optional)
-
-Run the test script to ensure your local machine can talk to the Cloud GPU.
-
-```bash
-python test_audio.py
-
-```
-
-_If you see `✅ SUCCESS`, you are ready._
-
-### Step 3: Generate Video
+### Generate Video
 
 Run the main script:
 
@@ -150,8 +135,8 @@ python main.py
 ### `audio.py` (The Voice)
 
 - **Input:** Text script.
-- **Logic:** Sends text to the Colab server. Includes a "Confidence" setting (`text_temp=0.7`) to make the voice sound like an influencer.
-- **Post-Processing:** Uses FFmpeg to trim silence and boost volume (2x).
+- **Logic:** Generates MP3 voice clips with `edge-tts`.
+- **Post-Processing:** Reads durations with `mutagen` so scenes can be synced to audio length.
 
 ### `asset_manager.py` (The Librarian)
 
@@ -177,11 +162,11 @@ python main.py
 
 **Q: "Avatar file missing" error.**
 
-- **Fix:** Altough not needed, Ensure your folder structure is exactly `assets/avatar/avatar.mp4`.
+- **Fix:** Ensure your folder structure is exactly `assets/avatar/avatars.mp4`.
 
 **Q: The audio is silent or fails.**
 
-- **Fix:** Your Ngrok tunnel likely expired. Restart the Colab cell and update the URL in `audio.py`.
+- **Fix:** Check your internet connection and that `edge-tts` is installed from `requirements.txt`.
 
 **Q: FFmpeg error "Exec format error" or "not found".**
 

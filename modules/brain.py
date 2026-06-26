@@ -3,8 +3,13 @@ import json
 from google import genai
 from dotenv import load_dotenv
 
-# Load API Key
-client = genai.Client(api_key="api-key")
+load_dotenv()
+
+def _get_client():
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set. Create a .env file or set the environment variable before running.")
+    return genai.Client(api_key=api_key)
 
 class ContentBrain:
     def get_trending_topic(self):
@@ -13,7 +18,8 @@ class ContentBrain:
         For now, we ask Gemini to pick a viral niche topic.
         """
         prompts = "Give me 1 specific, viral, and engaging topic for a Short Documentary. It should be a 'Engaging Did you know' fact or a 'Fun/intriguing Engaging News'. return ONLY the topic name."
-        response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompts)
+        client = _get_client()
+        response = client.models.generate_content(model=os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'), contents=prompts)
         topic = response.text.strip()
         print(f"🎯 Selected Topic: {topic}")
         return topic
@@ -99,7 +105,8 @@ class ContentBrain:
     # """
     
 
-        response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
+        client = _get_client()
+        response = client.models.generate_content(model=os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'), contents=prompt)
         
         # Clean the response to ensure it's valid JSON (sometimes AI adds markdown)
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
