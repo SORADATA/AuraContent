@@ -49,9 +49,15 @@ async def main():
     print("🚀 STARTING AUTOMATION...")
     
     # 1. BRAIN: Get Script
+    # 1. BRAIN: Get Script
     brain = ContentBrain()
     try:
-        topic = brain.get_trending_topic()
+        # Récupère le sujet depuis l'environnement GitHub, ou demande-le en input sinon
+        topic = os.getenv("TOPIC")
+        if not topic:
+            topic = input("Entrez le sujet de la vidéo : ")
+        
+        print(f"🎯 Sujet sélectionné : {topic}")
         script = brain.generate_script(topic)
     except Exception as e:
         print(f"❌ Brain Error: {e}")
