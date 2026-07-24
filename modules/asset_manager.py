@@ -46,10 +46,10 @@ class AssetManager:
         """
         Remplace les vidéos de Pexels par des images fixes générées par IA 
         (deux images par scène : visual_1 et visual_2) au format vertical 9:16.
-        Retourne une LISTE indexée pour correspondre au compositeur.
+        Retourne un DICTIONNAIRE indexé par scene_id pour correspondre au compositeur.
         """
         print("🤖 Génération des visuels par IA (Style 3D / Tendance TikTok)...")
-        assets_list = []
+        assets_map = {}
 
         for scene in script_data:
             scene_id = scene.get('id')
@@ -77,18 +77,18 @@ class AssetManager:
                 path_b = path_a
                 print(f"    ⚠️ Scène {scene_id} Image B manquante. Utilisation de l'image A.")
 
-            # 5. Enregistrement dans la liste des assets
+            # 5. Enregistrement dans le dictionnaire des assets par scene_id
             if os.path.exists(path_a) and os.path.exists(path_b):
-                assets_list.append({
+                assets_map[scene_id] = {
                     "a": path_a,
                     "b": path_b
-                })
+                }
                 print(f"    ✅ Scène {scene_id} prête (Visuels A + B générés par IA).")
             else:
                 print(f"    ❌ Échec de génération pour la scène {scene_id}.")
-                assets_list.append(None)
+                assets_map[scene_id] = None
 
-        return assets_list
+        return assets_map
 
 # --- TESTING ---
 if __name__ == "__main__":
