@@ -10,13 +10,13 @@ class ContentBrain:
         print("🔍 Recherche d'un sujet tendance...")
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
-            api_key=os.getenv("CROQ_API_KEY")
+            api_key=os.getenv("GROQ_API_KEY")
         )
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a viral content strategist. Return ONLY a single, engaging, and fascinating short documentary topic (e.g. 'Le saviez-vous' or mystery style). Give just the title in French, nothing else."},
-                {"role": "user", "content": "Give me a viral topic for a YouTube Short."}
+                {"role": "system", "content": "You are a viral content strategist for short-form videos. Return ONLY a single, engaging, and fascinating short documentary topic in French. Give just the title in French, nothing else."},
+                {"role": "user", "content": "Donne-moi un sujet viral pour une vidéo TikTok et YouTube Short en français."}
             ]
         )
         topic = response.choices[0].message.content.strip().replace('"', '')
@@ -24,30 +24,33 @@ class ContentBrain:
         return topic
 
     def generate_script(self, topic):
-        print(f"📝 Writing script with Groq (Llama 3 - Open Source) for: {topic}...")
+        print(f"📝 Writing multi-platform short script in French with Groq for: {topic}...")
         
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=os.getenv("GROQ_API_KEY")
         )
         
-        # On demande un objet JSON avec une clé "scenes" pour respecter le format de Groq
         prompt = f"""
-    You are the lead scriptwriter for a high-retention "Edutainment" YouTube Shorts channel.
+    You are the lead scriptwriter for a high-retention short-form video channel (TikTok, Instagram Reels, YouTube Shorts).
     Topic: {topic}
+
+    ### IMPORTANT RULES:
+    - **Language:** The voiceover "text" MUST be entirely in **French**.
+    - **Visuals:** The "visual_1" and "visual_2" search terms MUST remain in **English** (for Pexels search compatibility).
 
     ### GOAL:
     Create a script where every sentence has a "Visual Switch". 
-    To keep retention high, we need TWO different stock videos for every single scene.
+    To keep retention high on TikTok and Shorts, we need TWO different stock videos for every single scene.
 
     ### OUTPUT FORMAT (Strict JSON Object with a "scenes" array):
     {{
         "scenes": [
             {{
                 "id": 1,
-                "text": "Au cœur des sables d'Égypte, les pyramides cachent des secrets.",
-                "visual_1": "egyptian pyramids aerial drone",
-                "visual_2": "desert sand wind cinematic",
+                "text": "Texte de la voix off en français ici...",
+                "visual_1": "english search keywords for pexels",
+                "visual_2": "english search keywords for pexels",
                 "mood": "intriguing" 
             }}
         ]
@@ -57,7 +60,7 @@ class ContentBrain:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON object containing a 'scenes' array."},
+                {"role": "system", "content": "You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array. The text must be strictly in French."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"}
@@ -66,7 +69,6 @@ class ContentBrain:
         content = response.choices[0].message.content
         data = json.loads(content)
         
-        # Extrait la liste des scènes de l'objet JSON retourné
         return data.get("scenes", data) if isinstance(data, dict) else data
 
 if __name__ == "__main__":
