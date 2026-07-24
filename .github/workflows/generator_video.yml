@@ -32,6 +32,7 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         TOPIC: ${{ github.event.inputs.topic }}
+        GEMINI_MODEL: "gemini-1.5-flash"
       run: python main.py 
 
     - name: 💾 Sauvegarder la vidéo finale
