@@ -1,6 +1,5 @@
 import os
 import json
-from google import genai
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -11,7 +10,13 @@ class ContentBrain:
         return "Le mystère des pyramides d'Égypte"
 
     def generate_script(self, topic):
-        print(f"📝 Writing script for: {topic}...")
+        print(f"📝 Writing script with Groq (Llama 3 - Open Source) for: {topic}...")
+        
+        # Groq est 100% gratuit et utilise une API compatible OpenAI
+        client = OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=os.getenv("GROQ_API_KEY")
+        )
         
         prompt = f"""
     You are the lead scriptwriter for a high-retention "Edutainment" YouTube Shorts channel.
@@ -21,12 +26,7 @@ class ContentBrain:
     Create a script where every sentence has a "Visual Switch". 
     To keep retention high, we need TWO different stock videos for every single scene.
 
-    ### 1. SCRIPT REQUIREMENTS (The Voiceover):
-    - **Perspective:** Strictly **3rd Person** ("Scientists found...", "The ocean hides...").
-    - **Tone:** Engaging, fast-paced, logical. No fluff.
-    - **Structure:** 4 Scenes total.
-
-    ### OUTPUT FORMAT (Strict JSON):
+    ### OUTPUT FORMAT (Strict JSON Array):
     [
         {{
             "id": 1,
@@ -38,44 +38,23 @@ class ContentBrain:
     ]
     """
 
-        # --- TENTATIVE 1 : Essayer Gemini ---
-        try:
-            print("🔄 Tentative avec l'API Gemini...")
-            api_key = os.getenv("GEMINI_API_KEY")
-            if api_key:
-                client = genai.Client(api_key=api_key)
-                response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-                clean_text = response.text.replace('```json', '').replace('```', '').strip()
-                return json.loads(clean_text)
-        except Exception as e:
-            print(f"⚠️ Échec Gemini (Quota ou Erreur) : {e}")
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", # Modèle open source ultra performant et gratuit sur Groq
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        return data.get("scenes", data) if isinstance(data, dict) else data
 
-        # --- TENTATIVE 2 : Repli sur OpenAI (GPT-4o-mini) si Gemini échoue ---
-        try:
-            print("🔄 Bascule automatique sur l'API OpenAI (GPT-4o-mini)...")
-            openai_key = os.getenv("OPENAI_API_KEY")
-            if openai_key:
-                client = OpenAI(api_key=openai_key)
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "Return ONLY a valid JSON array matching the requested structure."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                content = response.choices[0].message.content.replace('```json', '').replace('```', '').strip()
-                return json.loads(content)
-        except Exception as e:
-            print(f"⚠️ Échec OpenAI : {e}")
-
-        # --- SECOURS ULTIME : Données statiques si tout le reste plante ---
-        print("🚨 Toutes les IA ont échoué. Utilisation du script de secours par défaut.")
-        return [
-            {
-                "id": 1,
-                "text": "Au cœur des sables d'Égypte, les pyramides cachent encore des secrets millénaires.",
-                "visual_1": "egyptian pyramids aerial drone",
-                "visual_2": "desert sand wind cinematic",
-                "mood": "intriguing"
-            }
-        ]
+if __name__ == "__main__":
+    brain = ContentBrain()
+    topic = brain.get_trending_topic()
+    script = brain.generate_script(topic)
+    with open("script.json", "w") as f:
+        json.dump(script, f, indent=4)
+        print("✅ Script saved to script.json")
