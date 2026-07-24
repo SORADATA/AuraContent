@@ -44,18 +44,24 @@ Topic: {topic}
 - The voiceover "text" MUST be entirely in French.
 - "visual_1" and "visual_2" search/prompt terms MUST remain in English.
 
+### SCENE COUNT:
+- Generate exactly 10 to 12 scenes, to support a total video length of roughly 45 to 60 seconds.
+
 ### MANDATORY NARRATIVE STRUCTURE (respect this order strictly):
 1. Scene 1 (HOOK, id=1): A shocking claim, a precise number, or a question that creates an information gap.
    FORBIDDEN openers: "Aujourd'hui on va parler de", "Savais-tu que", "Bienvenue".
-   Must set up a promise that gets resolved later. Max 8 words.
+   Must set up a promise that gets resolved later. Keep it punchy, max 10 words.
 2. Scene 2 (TENSION): Why this matters, raise stakes or curiosity.
-3. Scenes 3 to (N-2) (VALUE): One surprising fact or mechanism per scene.
+3. Scenes 3 to (N-2) (VALUE): One surprising fact or mechanism per scene, with enough
+   context to feel complete, not just a fragment.
 4. Last two scenes (TWIST + CTA): A reversal or payoff, then a direct call to action
    (e.g. "Abonne-toi pour la suite" / a question inviting comments). The CTA must be
    its own final scene.
 
 ### PACING RULE:
-- Each scene "text" must be between 6 and 14 words MAXIMUM. Short punchy sentences only.
+- Each scene "text" must be a complete, natural French sentence between 12 and 22 words.
+- Avoid short choppy fragments. Each scene should give the narrator enough to say for
+  a comfortable 4 to 7 second voiceover at a normal speaking pace.
 
 ### OUTPUT FORMAT (Strict JSON Object with a "scenes" array):
 {{
@@ -77,7 +83,7 @@ Valid "role" values: "hook", "tension", "value", "twist", "cta".
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array. The text must be strictly in French. Respect the pacing rule (6-14 words per scene) and the narrative structure strictly."},
+                {"role": "system", "content": "You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array. The text must be strictly in French. Respect the scene count (10-12) and the pacing rule (12-22 words per scene, complete sentences) strictly."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"}

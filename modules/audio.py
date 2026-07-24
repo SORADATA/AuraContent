@@ -3,68 +3,46 @@ import asyncio
 import edge_tts
 from mutagen.mp3 import MP3
 
+
 class AudioEngine:
-    def __init__(self, voice="en-US-AvaNeural"):
-        self.voice = voice
-        self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
-        os.makedirs(self.output_dir, exist_ok=True)
+    def __init__(self):
+        self.audio_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
+        os.makedirs(self.audio_dir, exist_ok=True)
+        # Voix française forcée — NE PAS laisser en anglais
+        self.voice = "fr-FR-VivienneMultilingualNeural"
+        # Alternatives si celle-ci échoue : "fr-FR-HenriNeural" ou "fr-FR-DeniseNeural"
+        # Ralentit le débit pour une diction plus posée (ajuste entre -10% et -20%)
+        self.rate = "-15%"
 
-    async def generate_audio(self, text, output_filename, retries=3):
-        """
-        Generates MP3 with retry logic to handle connection drops.
-        """
-        output_path = os.path.join(self.output_dir, output_filename)
-        
-        for attempt in range(retries):
-            try:
-                # Rate +10% for engagement
-                communicate = edge_tts.Communicate(text, self.voice, rate="+10%")
-                await communicate.save(output_path)
-                return output_path
-            
-            except Exception as e:
-                print(f"      ⚠️ Audio Error (Attempt {attempt+1}/{retries}): {e}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(2) # Wait 2 seconds before retrying
-                else:
-                    print("      ❌ Failed to generate audio after max retries.")
-                    raise e # Re-raise error if all retries fail
+    async def generate_audio(self, text, output_path):
+        communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
+        await communicate.save(output_path)
 
-    def get_audio_duration(self, file_path):
+    def get_duration(self, filepath):
         try:
-            audio = MP3(file_path)
+            audio = MP3(filepath)
             return audio.info.length
         except Exception as e:
-            print(f"❌ Error reading audio length: {e}")
-            return 0.0
+            print(f"    Erreur durée audio: {e}")
+            return 5.0
 
     async def process_script(self, script_data):
-        print(f"🎙️ Starting Audio Generation for {len(script_data)} scenes...")
-        
         for scene in script_data:
-            scene_id = scene['id']
-            text = scene['text']
-            filename = f"voice_{scene_id}.mp3"
-            
-            try:
-                # Generate Audio
-                file_path = await self.generate_audio(text, filename)
-                
-                # Get Duration
-                duration = self.get_audio_duration(file_path)
-                
-                # Update Scene Data
-                scene['audio_path'] = file_path
-                scene['duration'] = duration
-                
-                print(f"   ✅ Scene {scene_id}: {duration:.2f}s generated.")
-                
-                # CRITICAL: Sleep for 1 second to be polite to the API
-                # This prevents the "Connection Timeout" error
-                await asyncio.sleep(1) 
-                
-            except Exception as e:
-                print(f"   ❌ Skipping Scene {scene_id} due to audio error.")
-                continue
-            
+            scene_id = scene["id"]
+            text = scene["text"]
+            output_path = os.path.join(self.audio_dir, f"scene_{scene_id}.mp3")
+
+            print(f"Voix off scène {scene_id} en français ({self.voice}, rate={self.rate})...")
+            await self.generate_audio(text, output_path)
+
+            scene["audio_path"] = output_path
+            duration = self.get_duration(output_path)
+
+            # Sécurité : impose une durée minimale pour éviter les scènes flash
+            if duration < 3.5:
+                print(f"    Scène {scene_id} trop courte ({duration:.1f}s), durée forcée à 3.5s")
+                duration = 3.5
+
+            scene["duration"] = duration
+
         return script_data
