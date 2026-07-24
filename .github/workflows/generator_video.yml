@@ -31,8 +31,8 @@ jobs:
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-      # On simule l'entrée au clavier du sujet avec la commande "echo"
-      run: echo "${{ github.event.inputs.topic }}" | python main.py 
+        TOPIC: ${{ github.event.inputs.topic }}
+      run: python main.py 
 
     - name: 💾 Sauvegarder la vidéo finale
       uses: actions/upload-artifact@v4
