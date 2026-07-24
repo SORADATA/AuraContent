@@ -35,7 +35,7 @@ jobs:
       run: echo "${{ github.event.inputs.topic }}" | python main.py 
 
     - name: 💾 Sauvegarder la vidéo finale
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Video-TikTok-Prete
-        path: assets/final/
+        path: assets/final/final_short.mp4
