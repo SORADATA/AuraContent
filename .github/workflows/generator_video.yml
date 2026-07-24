@@ -14,13 +14,13 @@ jobs:
 
     steps:
     - name: 📥 Cloner le dépôt
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: ⚙️ Installer FFmpeg (Moteur vidéo)
       run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
     - name: 🐍 Configurer Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
@@ -32,7 +32,6 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         TOPIC: ${{ github.event.inputs.topic }}
-        GEMINI_MODEL: "gemini-1.5-flash"
       run: python main.py 
 
     - name: 💾 Sauvegarder la vidéo finale
