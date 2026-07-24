@@ -1,32 +1,22 @@
 import os
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 class AIImageGenerator:
     def __init__(self):
-        # Récupère ta clé Hugging Face (à ajouter dans tes secrets GitHub : HF_TOKEN)
-        self.api_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
-        # Modèle rapide et de haute qualité pour du rendu 3D/stylisé moderne
-        # self.api_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-        self.api_url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
-        
-        self.headers = {"Authorization": f"Bearer {self.api_token}"} if self.api_token else {}
+        print("🎨 Utilisation du générateur d'images Pollinations.ai (Sans token requis)")
 
     def generate_image(self, prompt_text, output_path):
-        print(f"🎨 Génération d'une image par IA pour : {prompt_text}")
+        print(f"🎨 Génération d'une image pour : {prompt_text}")
         
-        # On enrichit le prompt pour forcer un style visuel ultra moderne / 3D / TikTok
-        enhanced_prompt = f"{prompt_text}, 3D Pixar style, vibrant colors, highly detailed, trending on artstation, cinematic lighting, vertical 9:16 aspect ratio"
+        # On enrichit le prompt pour le style 3D / TikTok
+        enhanced_prompt = f"{prompt_text}, 3D Pixar style, vibrant colors, highly detailed, cinematic lighting, vertical 9:16 aspect ratio"
         
-        payload = {
-            "inputs": enhanced_prompt,
-            "options": {"wait_for_model": True}
-        }
+        # URL de l'API gratuite Pollinations (encodage propre du texte)
+        encoded_prompt = requests.utils.quote(enhanced_prompt)
+        api_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&nologo=true"
         
         try:
-            response = requests.post(self.api_url, headers=self.headers, json=payload)
+            response = requests.get(api_url, timeout=60)
             
             if response.status_code == 200:
                 with open(output_path, "wb") as f:
@@ -34,7 +24,7 @@ class AIImageGenerator:
                 print(f"    ✅ Image IA sauvegardée : {output_path}")
                 return True
             else:
-                print(f"    ❌ Erreur API Hugging Face ({response.status_code}): {response.text}")
+                print(f"    ❌ Erreur API Pollinations ({response.status_code})")
                 return False
         except Exception as e:
             print(f"    ❌ Erreur de génération d'image : {e}")
