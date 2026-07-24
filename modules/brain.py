@@ -15,8 +15,8 @@ class ContentBrain:
     def get_trending_topic(self):
         prompts = "Give me 1 specific, viral, and engaging topic for a Short Documentary. It should be a 'Engaging Did you know' fact or a 'Fun/intriguing Engaging News'. return ONLY the topic name."
         client = _get_client()
-        # Modèle forcé en 1.5-flash
-        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompts)
+        # Ajout du préfixe models/ requis par la librairie
+        response = client.models.generate_content(model='models/gemini-1.5-flash', contents=prompts)
         topic = response.text.strip()
         print(f"🎯 Selected Topic: {topic}")
         return topic
@@ -63,8 +63,8 @@ class ContentBrain:
     """
 
         client = _get_client()
-        # 🔥 MODIFICATION ICI : On force gemini-1.5-flash pour éviter le blocage de quota du 2.0
-        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        # Ajout du préfixe models/ ici aussi
+        response = client.models.generate_content(model='models/gemini-1.5-flash', contents=prompt)
         
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         
