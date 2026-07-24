@@ -1,5 +1,4 @@
 import asyncio
-import time
 import os
 import shutil
 from modules.brain import ContentBrain
@@ -52,12 +51,9 @@ async def main():
     # 1. BRAIN: Get Script
     brain = ContentBrain()
     try:
-        # Récupère automatiquement un sujet tendance (ou utilise une variable si définie)
-        topic = brain.get_trending_topic()
-        
-        # ⏳ Pause de sécurité de 15 secondes pour laisser souffler l'API et éviter l'erreur 429 (Quota)
-        print("⏳ Pause de sécurité pour l'API (15s)...")
-        time.sleep(15)
+        # Sujet défini en dur pour éviter l'appel multiple de get_trending_topic() et l'erreur 429
+        topic = "Le mystère des pyramides d'Égypte"
+        print(f"🎯 Sujet sélectionné : {topic}")
         
         script = brain.generate_script(topic)
     except Exception as e:
