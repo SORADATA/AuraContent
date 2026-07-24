@@ -2,11 +2,6 @@ name: Générateur de Vidéos IA
 
 on:
   workflow_dispatch:
-    inputs:
-      topic:
-        description: 'Sujet de la vidéo'
-        required: true
-        default: 'Le mystère des pyramides'
 
 jobs:
   build-and-generate:
@@ -32,7 +27,6 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GROQ_API_KEY: ${{ secrets.CROQ_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        TOPIC: ${{ github.event.inputs.topic }}
       run: python main.py 
 
     - name: 💾 Sauvegarder la vidéo finale
