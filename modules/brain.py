@@ -7,7 +7,21 @@ load_dotenv()
 
 class ContentBrain:
     def get_trending_topic(self):
-        return "Le mystère des pyramides d'Égypte"
+        print("🔍 Recherche d'un sujet tendance...")
+        client = OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=os.getenv("CROQ_API_KEY")
+        )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a viral content strategist. Return ONLY a single, engaging, and fascinating short documentary topic (e.g. 'Le saviez-vous' or mystery style). Give just the title in French, nothing else."},
+                {"role": "user", "content": "Give me a viral topic for a YouTube Short."}
+            ]
+        )
+        topic = response.choices[0].message.content.strip().replace('"', '')
+        print(f"🎯 Sujet sélectionné : {topic}")
+        return topic
 
     def generate_script(self, topic):
         print(f"📝 Writing script with Groq (Llama 3 - Open Source) for: {topic}...")
