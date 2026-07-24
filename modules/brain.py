@@ -8,9 +8,11 @@ load_dotenv()
 class ContentBrain:
     def get_trending_topic(self):
         print("🔍 Recherche d'un nouveau sujet tendance...")
+        groq_key = os.getenv("CROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+        
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
-            api_key=os.getenv("CROQ_API_KEY")
+            api_key=groq_key
         )
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -18,7 +20,7 @@ class ContentBrain:
                 {"role": "system", "content": "Tu es un stratège de contenu viral. Choisis un sujet totalement différent de l'Égypte ou des pyramides (oriente-toi vers l'espace, les profondeurs de l'océan, une invention insolite, un mystère de la psychologie humaine ou une légende urbaine moderne). Réponds UNIQUEMENT avec le titre du sujet en français, sans guillemets, sans introduction."},
                 {"role": "user", "content": "Donne un sujet court, percutant et inattendu pour TikTok."}
             ],
-            temperature=1.2  # 🚀 Température poussée pour garantir un nouveau sujet à chaque fois
+            temperature=1.2
         )
         topic = response.choices[0].message.content.strip().replace('"', '')
         print(f"🎯 Sujet sélectionné : {topic}")
@@ -27,9 +29,11 @@ class ContentBrain:
     def generate_script(self, topic):
         print(f"📝 Writing multi-platform short script in French with Groq for: {topic}...")
         
+        groq_key = os.getenv("CROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+        
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
-            api_key=os.getenv("CROQ_API_KEY")
+            api_key=groq_key
         )
         
         prompt = f"""
