@@ -13,7 +13,6 @@ def clean_cache():
     """
     print("🧹 Cleaning up temporary files...")
     
-    # 1. Define the specific target folders
     folders_to_clean = [
         os.path.join(os.getcwd(), "assets", "audio_clips"),
         os.path.join(os.getcwd(), "assets", "video_clips"),
@@ -21,25 +20,22 @@ def clean_cache():
     ]
 
     for folder in folders_to_clean:
-        # SAFETY CHECK 1: Ensure folder actually exists
         if not os.path.exists(folder):
             continue
             
-        # SAFETY CHECK 2: Double check we are inside our project "assets" folder
         if "assets" not in folder:
             print(f"    🚨 SECURITY ALERT: Skipping {folder} because it looks unsafe!")
             continue
 
-        # Loop through files inside the folder
         for filename in os.listdir(folder):
             file_path = os.path.join(folder, filename)
             
             try:
                 if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path) # Delete the file
-                    print(f"       Deleted: {filename}")
+                    os.unlink(file_path)
+                    print(f"        Deleted: {filename}")
                 elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path) # Delete subfolders if any
+                    shutil.rmtree(file_path)
             except Exception as e:
                 print(f"    ❌ Failed to delete {file_path}. Reason: {e}")
     
@@ -48,11 +44,11 @@ def clean_cache():
 async def main():
     print("🚀 STARTING AUTOMATION...")
     
-    # 1. BRAIN: Get Script
+    # 1. BRAIN: Get Script & Dynamic Topic
     brain = ContentBrain()
     try:
-        # Sujet défini en dur pour éviter l'appel multiple de get_trending_topic() et l'erreur 429
-        topic = "Le mystère des pyramides d'Égypte"
+        # 🚀 CORRECTION : On appelle la fonction pour générer un sujet aléatoire et en français
+        topic = brain.get_trending_topic()
         print(f"🎯 Sujet sélectionné : {topic}")
         
         script = brain.generate_script(topic)
