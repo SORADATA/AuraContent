@@ -13,21 +13,15 @@ def _get_client():
 
 class ContentBrain:
     def get_trending_topic(self):
-        """
-        In a full build, this would scrape Google Trends or Twitter.
-        For now, we ask Gemini to pick a viral niche topic.
-        """
         prompts = "Give me 1 specific, viral, and engaging topic for a Short Documentary. It should be a 'Engaging Did you know' fact or a 'Fun/intriguing Engaging News'. return ONLY the topic name."
         client = _get_client()
-        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        # Modèle forcé en 1.5-flash
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompts)
         topic = response.text.strip()
         print(f"🎯 Selected Topic: {topic}")
         return topic
 
     def generate_script(self, topic):
-        """
-        Generates a structured JSON script with visual cues.
-        """
         print(f"📝 Writing script for: {topic}...")
         prompt = f"""
     You are the lead scriptwriter for a high-retention "Edutainment" YouTube Shorts channel.
@@ -67,48 +61,11 @@ class ContentBrain:
         }}
     ]
     """
-    #     prompt = f"""
-    # You are a master visual storyteller creating a viral YouTube Short.
-    # Topic: {topic}
-    
-    # ### CRITICAL REQUIREMENTS:
-    # 1. **Perspective:** Strictly **3rd Person** (e.g., "Scientists discovered..." or "The world changed..."). No "I" or "You".
-    # 2. **Tone:** Cinematic, high-stakes, and slightly exaggerated.
-    #    - Use **Power Words**: Instead of "big," use "colossal." Instead of "scary," use "terrifying."
-    #    - The vibe should be "Mystery Documentary" (like Vox or National Geographic but faster).
-    # 3. **Length:** Exactly **8 to 9 scenes**. Total read time 40-50 seconds.
-    # 4. **Visual Strategy:** Keywords must be optimized for Pexels Stock Footage.
-    #    - Use simple, broad nouns: "storm clouds", "ancient ruins", "laboratory microscope".
-    #    - Avoid complex actions or specific people.
-    
-    # ### STRUCTURE GUIDE:
-    # - **Scene 1 (The Hook):** A mind-blowing statement or paradox. Grab attention immediately.
-    # - **Scene 2-3 (The Mystery):** Establish why this is strange, dangerous, or important.
-    # - **Scene 4-7 (The Climax):** The "Wait, what?" moment. The biggest twist or fact.
-    # - **Scene 8-9 (The Mic Drop):** A final haunting thought or powerful conclusion.
-    
-    # ### OUTPUT FORMAT (Strict JSON):
-    # [
-    #     {{
-    #         "id": 1,
-    #         "text": "Deep beneath the Antarctic ice, something IMPOSSIBLE has just been detected.",
-    #         "keywords": "glacier aerial drone cinematic",
-    #         "mood": "ominous" 
-    #     }},
-    #     {{
-    #         "id": 2,
-    #         "text": "For centuries, maps showed this area as empty... they were wrong.",
-    #         "keywords": "old map ancient paper table",
-    #         "mood": "mystery"
-    #     }}
-    # ]
-    # """
-    
 
         client = _get_client()
-        response = client.models.generate_content(model=os.getenv('GEMINI_MODEL', 'gemini-2.0-flash'), contents=prompt)
+        # 🔥 MODIFICATION ICI : On force gemini-1.5-flash pour éviter le blocage de quota du 2.0
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         
-        # Clean the response to ensure it's valid JSON (sometimes AI adds markdown)
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         
         try:
@@ -119,13 +76,11 @@ class ContentBrain:
             print(clean_text)
             return None
         
-# --- TESTING THE MODULE ---
 if __name__ == "__main__":
     brain = ContentBrain()
     topic = brain.get_trending_topic()
     script = brain.generate_script(topic)
     
-    # Save to file to verify
     with open("script.json", "w") as f:
         json.dump(script, f, indent=4)
         print("✅ Script saved to script.json")
