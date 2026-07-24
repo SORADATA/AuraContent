@@ -9,7 +9,8 @@ class AIImageGenerator:
         # Récupère ta clé Hugging Face (à ajouter dans tes secrets GitHub : HF_TOKEN)
         self.api_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")
         # Modèle rapide et de haute qualité pour du rendu 3D/stylisé moderne
-        self.api_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+        # self.api_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+        self.api_url = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
         
         self.headers = {"Authorization": f"Bearer {self.api_token}"} if self.api_token else {}
 
