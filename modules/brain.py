@@ -17,8 +17,8 @@ class ContentBrain:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Tu es un stratège de contenu viral. Choisis un sujet totalement différent de l'Égypte ou des pyramides (oriente-toi vers l'espace, les profondeurs de l'océan, une invention insolite, un mystère de la psychologie humaine ou une légende urbaine moderne). Réponds UNIQUEMENT avec le titre du sujet en français, sans guillemets, sans introduction."},
-                {"role": "user", "content": "Donne un sujet court, percutant et inattendu pour TikTok."}
+                {"role": "system", "content": "Tu es un stratège de contenu viral. Trouve de toi-même un sujet de mini-documentaire court, captivant et inattendu. INTERDICTION STRICTE de choisir l'Égypte, les pharaons ou les pyramides. Réponds UNIQUEMENT avec le titre du sujet en français, sans guillemets, sans introduction."},
+                {"role": "user", "content": "Donne un sujet viral totalement inédit et surprenant pour TikTok en français."}
             ],
             temperature=1.2
         )
