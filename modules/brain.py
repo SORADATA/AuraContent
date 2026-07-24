@@ -7,7 +7,7 @@ load_dotenv()
 
 class ContentBrain:
     def get_trending_topic(self):
-        print("🔍 Recherche d'un sujet tendance...")
+        print("🔍 Recherche d'un nouveau sujet tendance...")
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=os.getenv("GROQ_API_KEY")
@@ -15,9 +15,10 @@ class ContentBrain:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a viral content strategist for short-form videos. Return ONLY a single, engaging, and fascinating short documentary topic in French. Give just the title in French, nothing else."},
-                {"role": "user", "content": "Donne-moi un sujet viral pour une vidéo TikTok et YouTube Short en français."}
-            ]
+                {"role": "system", "content": "Tu es un stratège de contenu viral. Tu dois générer un sujet de mini-documentaire court, fascinant et totalement en FRANÇAIS. Réponds UNIQUEMENT avec le titre du sujet en français, sans guillemets, sans introduction, rien d'autre en anglais. Interdit de choisir l'Égypte ou les pyramides."},
+                {"role": "user", "content": "Donne-moi un sujet viral totalement inédit pour une vidéo TikTok en français."}
+            ],
+            temperature=0.9
         )
         topic = response.choices[0].message.content.strip().replace('"', '')
         print(f"🎯 Sujet sélectionné : {topic}")
