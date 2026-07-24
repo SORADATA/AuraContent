@@ -6,85 +6,81 @@ class Composer:
     def __init__(self):
         self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
         self.final_dir = os.path.join(os.getcwd(), "assets", "final")
-        self.avatar_path = os.path.join(os.getcwd(), "assets", "avatar", "avatars.mp4")
-        
+        self.music_dir = os.path.join(os.getcwd(), "assets", "music")
+
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.final_dir, exist_ok=True)
-        self.transitions = ['fade', 'diagbr', 'diagtl']
+        os.makedirs(self.music_dir, exist_ok=True)
+
+        self.transitions = ["fade", "diagbr", "diagtl"]
+        self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
 
     def get_duration(self, filepath):
         try:
             probe = ffmpeg.probe(filepath)
-            return float(probe['format']['duration'])
-        except:
+            return float(probe["format"]["duration"])
+        except Exception:
             return 0.0
 
-    def process_scene(self, scene, image_pair, is_avatar=False):
-        scene_id = scene['id']
-        audio_path = scene['audio_path']
-        total_duration = scene['duration']
+    def process_scene(self, scene, image_pair):
+        scene_id = scene["id"]
+        audio_path = scene["audio_path"]
+        total_duration = scene["duration"]
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
         try:
             input_audio = ffmpeg.input(audio_path)
 
-            if is_avatar:
-                # --- AVATAR MODE ---
-                print(f"    ⚙️ Processing Scene {scene_id}: 🤖 Avatar Mode (Cropped)")
-                video_stream = (
-                    ffmpeg.input(self.avatar_path, stream_loop=-1)
-                    .trim(duration=total_duration + 0.5)
-                    .setpts('PTS-STARTPTS')
-                    .filter('crop', 'iw', 'ih-150', 0, 0)
-                    .filter('scale', 1080, 1920, force_original_aspect_ratio='increase')
-                    .filter('crop', 1080, 1920)
-                    .filter('fps', fps=30, round='up')
-                )
+            print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
+
+            if isinstance(image_pair, dict):
+                path_a = image_pair.get("a")
+                path_b = image_pair.get("b", path_a)
+            elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
+                path_a, path_b = image_pair[0], image_pair[1]
             else:
-                # --- AI IMAGE + ZOOMPAN DYNAMIC MODE (50/50 Split) ---
-                print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
-                
-                # Sécurité pour récupérer proprement les chemins d'accès a et b
-                if isinstance(image_pair, dict):
-                    path_a = image_pair.get("a")
-                    path_b = image_pair.get("b", path_a)
-                elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
-                    path_a, path_b = image_pair[0], image_pair[1]
-                else:
-                    path_a = path_b = str(image_pair)
-                
-                duration_a = total_duration / 2
-                duration_b = (total_duration / 2) + 0.5
-                
-                frames_a = int(duration_a * 30)
-                frames_b = int(duration_b * 30)
+                path_a = path_b = str(image_pair)
 
-                stream_a = (
-                    ffmpeg.input(path_a, loop=1, t=duration_a)
-                    .filter('scale', 2000, -1)
-                    .filter('zoompan', z="min(zoom+0.0015,1.3)", d=frames_a, s="1080x1920", fps=30)
-                    .setpts('PTS-STARTPTS')
+            duration_a = total_duration / 2
+            duration_b = (total_duration / 2) + 0.5
+
+            frames_a = int(duration_a * 30)
+            frames_b = int(duration_b * 30)
+
+            stream_a = (
+                ffmpeg.input(path_a, loop=1, t=duration_a)
+                .filter("scale", 2000, -1)
+                .filter("zoompan", z="min(zoom+0.0015,1.3)", d=frames_a, s="1080x1920", fps=30)
+                .setpts("PTS-STARTPTS")
+            )
+
+            stream_b = (
+                ffmpeg.input(path_b, loop=1, t=duration_b)
+                .filter("scale", 2000, -1)
+                .filter("zoompan", z="if(eq(on,1),1.2,max(zoom-0.0015,1.0))", d=frames_b, s="1080x1920", fps=30)
+                .setpts("PTS-STARTPTS")
+            )
+
+            video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+
+            srt_path = scene.get("srt_path")
+            if srt_path and os.path.exists(srt_path):
+                video_stream = video_stream.filter(
+                    "subtitles",
+                    filename=srt_path,
+                    force_style="FontName=Arial Black,FontSize=16,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=120"
                 )
-
-                stream_b = (
-                    ffmpeg.input(path_b, loop=1, t=duration_b)
-                    .filter('scale', 2000, -1)
-                    .filter('zoompan', z="if(eq(on,1),1.2,max(zoom-0.0015,1.0))", d=frames_b, s="1080x1920", fps=30)
-                    .setpts('PTS-STARTPTS')
-                )
-
-                video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
 
             runner = ffmpeg.output(
-                video_stream, 
-                input_audio, 
-                output_path, 
-                vcodec='libx264', 
-                acodec='aac', 
-                pix_fmt='yuv420p',
+                video_stream,
+                input_audio,
+                output_path,
+                vcodec="libx264",
+                acodec="aac",
+                pix_fmt="yuv420p",
                 shortest=None
             )
-            
+
             runner.run(overwrite_output=True, quiet=True)
             return output_path
 
@@ -94,40 +90,29 @@ class Composer:
 
     def render_all_scenes(self, script_data, video_pairs):
         rendered_paths = []
-        avatar_indices = []
-        
-        if len(script_data) >= 4 and os.path.exists(self.avatar_path):
-            valid_range = list(range(1, len(script_data) - 1))
-            count_to_pick = 2 if len(valid_range) >= 2 else 1
-            avatar_indices = random.sample(valid_range, count_to_pick)
-            avatar_indices.sort()
-            human_readable_indices = [i + 1 for i in avatar_indices]
-            print(f"🎲 Avatar set for Scenes: {human_readable_indices}")
 
         for i, scene in enumerate(script_data):
             current_pair = video_pairs[i]
-            is_avatar = False
+            if current_pair is None:
+                continue
 
-            if i in avatar_indices:
-                is_avatar = True
-            elif current_pair is None:
-                continue 
-
-            output_path = self.process_scene(scene, current_pair, is_avatar)
+            output_path = self.process_scene(scene, current_pair)
             if output_path:
                 rendered_paths.append(output_path)
-        
+
         return rendered_paths
 
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
         print("🎬 Stitching final video...")
+        stitched_path = os.path.join(self.temp_dir, "stitched_no_music.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
-        
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except:
-                print("⚠️ Warning: Could not delete old file.")
+
+        for p in (stitched_path, output_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    print(f"⚠️ Warning: Could not delete old file {p}.")
 
         if not video_paths:
             return None
@@ -135,52 +120,83 @@ class Composer:
         input1 = ffmpeg.input(video_paths[0])
         v_stream = input1.video
         a_stream = input1.audio
-        
+
         current_dur = self.get_duration(video_paths[0])
 
         for i in range(1, len(video_paths)):
             next_clip = ffmpeg.input(video_paths[i])
             next_dur = self.get_duration(video_paths[i])
-            
+
             trans_dur = 0.5
             offset = current_dur - trans_dur
-            
+
             effect = random.choice(self.transitions)
             print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
 
             v_stream = ffmpeg.filter(
-                [v_stream, next_clip.video], 
-                'xfade', 
-                transition=effect, 
-                duration=trans_dur, 
+                [v_stream, next_clip.video],
+                "xfade",
+                transition=effect,
+                duration=trans_dur,
                 offset=offset
             )
-            
+
             a_stream = ffmpeg.filter(
-                [a_stream, next_clip.audio], 
-                'acrossfade', 
+                [a_stream, next_clip.audio],
+                "acrossfade",
                 d=trans_dur
             )
-            
+
             current_dur = (current_dur + next_dur) - trans_dur
 
         try:
             runner = ffmpeg.output(
-                v_stream, 
-                a_stream, 
-                output_path, 
-                vcodec='libx264', 
-                acodec='aac', 
-                pix_fmt='yuv420p', 
-                movflags='faststart',
-                preset='medium' 
+                v_stream,
+                a_stream,
+                stitched_path,
+                vcodec="libx264",
+                acodec="aac",
+                pix_fmt="yuv420p",
+                movflags="faststart",
+                preset="medium"
             )
-            
             runner.run(overwrite_output=True, quiet=False)
-            print(f"✅ FINAL VIDEO SAVED: {output_path}")
-            return output_path
-
         except ffmpeg.Error as e:
-            error_log = e.stderr.decode('utf8') if e.stderr else str(e)
+            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
             print(f"❌ Stitching Error: {error_log}")
             return None
+
+        if os.path.exists(self.bg_music_path):
+            print("🎵 Mixing background music...")
+            try:
+                voice = ffmpeg.input(stitched_path)
+                music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
+
+                music_audio = music.audio.filter("volume", 0.08)
+                mixed_audio = ffmpeg.filter(
+                    [voice.audio, music_audio], "amix", duration="first", dropout_transition=2
+                )
+
+                final_runner = ffmpeg.output(
+                    voice.video,
+                    mixed_audio,
+                    output_path,
+                    vcodec="libx264",
+                    acodec="aac",
+                    pix_fmt="yuv420p",
+                    movflags="faststart",
+                    preset="medium"
+                )
+                final_runner.run(overwrite_output=True, quiet=False)
+                print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
+                return output_path
+            except ffmpeg.Error as e:
+                error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+                print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
+                os.replace(stitched_path, output_path)
+                return output_path
+        else:
+            print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export sans musique.")
+            os.replace(stitched_path, output_path)
+            print(f"✅ FINAL VIDEO SAVED: {output_path}")
+            return output_path

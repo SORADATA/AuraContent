@@ -1,105 +1,38 @@
 import os
-import time
-import requests
-
-class AIImageGenerator:
-    def __init__(self):
-        print("🎨 Utilisation du générateur d'images Pollinations.ai (Sans token requis)")
-
-    def generate_image(self, prompt_text, output_path):
-        print(f"🎨 Génération d'une image pour : {prompt_text}")
-        
-        # On enrichit le prompt pour le style 3D / TikTok
-        enhanced_prompt = f"{prompt_text}, 3D Pixar style, vibrant colors, highly detailed, cinematic lighting, vertical 9:16 aspect ratio"
-        
-        # URL de l'API gratuite Pollinations
-        encoded_prompt = requests.utils.quote(enhanced_prompt)
-        api_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&nologo=true"
-        
-        try:
-            # Petite pause pour éviter de saturer la file d'attente de l'API
-            time.sleep(3)
-            
-            response = requests.get(api_url, timeout=60)
-            
-            if response.status_code == 200:
-                with open(output_path, "wb") as f:
-                    f.write(response.content)
-                print(f"    ✅ Image IA sauvegardée : {output_path}")
-                return True
-            else:
-                print(f"    ❌ Erreur API Pollinations ({response.status_code})")
-                return False
-        except Exception as e:
-            print(f"    ❌ Erreur de génération d'image : {e}")
-            return False
+from modules.ai_image import AIImageGenerator
 
 class AssetManager:
     def __init__(self):
-        self.image_gen = AIImageGenerator()
-        
-        # Répertoire de stockage temporaire pour les images générées
-        self.assets_dir = os.path.join(os.getcwd(), "assets", "temp")
-        os.makedirs(self.assets_dir, exist_ok=True)
+        self.image_dir = os.path.join(os.getcwd(), "assets", "video_clips")
+        os.makedirs(self.image_dir, exist_ok=True)
+        self.generator = AIImageGenerator()
 
     def get_videos(self, script_data):
         """
-        Génère les visuels par IA et retourne une LISTE ordonnée indexée à partir de 0 
-        pour correspondre parfaitement à la boucle de rendering de composer.py.
+        Genere 2 images IA (a/b) par scene, avec retry en cas d'echec.
+        Retourne une liste de dicts {"a": path, "b": path} alignee avec script_data.
         """
-        print("🤖 Génération des visuels par IA (Style 3D / Tendance TikTok)...")
-        assets_list = []
-
+        pairs = []
         for scene in script_data:
-            scene_id = scene.get('id')
-            
-            # 1. Récupération des prompts textuels en anglais
-            query_a = scene.get('visual_1', scene.get('keywords', 'cinematic abstract background'))
-            query_b = scene.get('visual_2', query_a) # Utilise visual_1 si visual_2 est absent
+            scene_id = scene["id"]
+            path_a = os.path.join(self.image_dir, f"scene_{scene_id}_a.png")
+            path_b = os.path.join(self.image_dir, f"scene_{scene_id}_b.png")
 
-            path_a = os.path.join(self.assets_dir, f"scene_{scene_id}_a.jpg")
-            path_b = os.path.join(self.assets_dir, f"scene_{scene_id}_b.jpg")
+            print(f"🎨 Scene {scene_id} — generation des visuels IA...")
 
-            print(f"\n--- Scène {scene_id} ---")
-            
-            # 2. Génération de l'image A par IA
-            success_a = self.image_gen.generate_image(query_a, path_a)
-            
-            # 3. Génération de l'image B par IA (pour le switch visuel)
-            success_b = self.image_gen.generate_image(query_b, path_b)
+            ok_a = self.generator.generate_image(scene["visual_1"], path_a)
+            ok_b = self.generator.generate_image(scene["visual_2"], path_b)
 
-            # 4. Logique de secours (Self-Healing) si une image échoue
-            if not success_a and success_b:
-                path_a = path_b
-                print(f"    ⚠️ Scène {scene_id} Image A manquante. Utilisation de l'image B.")
-            if not success_b and success_a:
-                path_b = path_a
-                print(f"    ⚠️ Scène {scene_id} Image B manquante. Utilisation de l'image A.")
-
-            # 5. Enregistrement dans une LISTE (pour que video_pairs[i] fonctionne avec 0, 1, 2...)
-            if os.path.exists(path_a) and os.path.exists(path_b):
-                assets_list.append({
-                    "a": path_a,
-                    "b": path_b
-                })
-                print(f"    ✅ Scène {scene_id} prête (Visuels A + B générés par IA).")
+            if ok_a and ok_b:
+                pairs.append({"a": path_a, "b": path_b})
+            elif ok_a:
+                print(f"    ⚠️ Scene {scene_id}: visual_2 a echoue, reutilisation de visual_1")
+                pairs.append({"a": path_a, "b": path_a})
+            elif ok_b:
+                print(f"    ⚠️ Scene {scene_id}: visual_1 a echoue, reutilisation de visual_2")
+                pairs.append({"a": path_b, "b": path_b})
             else:
-                print(f"    ❌ Échec de génération pour la scène {scene_id}.")
-                assets_list.append(None)
+                print(f"    ❌ Scene {scene_id}: aucune image generee, scene ignoree")
+                pairs.append(None)
 
-        return assets_list
-
-# --- TESTING ---
-if __name__ == "__main__":
-    manager = AssetManager()
-    
-    test_script = [
-        {
-            "id": 1, 
-            "visual_1": "cute cartoon lion in a magical forest, 3d pixar style", 
-            "visual_2": "little baby looking at a white fluffy cat, cute animation"
-        }
-    ]
-    
-    results = manager.get_videos(test_script)
-    print("🎨 Assets IA Générés:", results)
+        return pairs
