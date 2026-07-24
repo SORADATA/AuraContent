@@ -20,11 +20,6 @@ class Composer:
             return 0.0
 
     def process_scene(self, scene, image_pair, is_avatar=False):
-        """
-        Combine l'Audio avec les Visuels IA (images fixes transformées en vidéos dynamiques via zoom).
-        - Si Avatar : Utilise la vidéo de l'avatar avec recadrage.
-        - Si Mode IA : Partage la durée 50/50 entre Image A et Image B avec un effet de zoom fluide.
-        """
         scene_id = scene['id']
         audio_path = scene['audio_path']
         total_duration = scene['duration']
@@ -37,7 +32,7 @@ class Composer:
                 # --- AVATAR MODE ---
                 print(f"    ⚙️ Processing Scene {scene_id}: 🤖 Avatar Mode (Cropped)")
                 video_stream = (
-                    ffmpeg.input(image_pair[0], stream_loop=-1)
+                    ffmpeg.input(self.avatar_path, stream_loop=-1)
                     .trim(duration=total_duration + 0.5)
                     .setpts('PTS-STARTPTS')
                     .filter('crop', 'iw', 'ih-150', 0, 0)
@@ -48,16 +43,22 @@ class Composer:
             else:
                 # --- AI IMAGE + ZOOMPAN DYNAMIC MODE (50/50 Split) ---
                 print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
-                path_a, path_b = image_pair
+                
+                # Sécurité pour récupérer proprement les chemins d'accès a et b
+                if isinstance(image_pair, dict):
+                    path_a = image_pair.get("a")
+                    path_b = image_pair.get("b", path_a)
+                elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
+                    path_a, path_b = image_pair[0], image_pair[1]
+                else:
+                    path_a = path_b = str(image_pair)
                 
                 duration_a = total_duration / 2
                 duration_b = (total_duration / 2) + 0.5
                 
-                # Calcul du nombre de frames nécessaires pour chaque image (30 fps)
                 frames_a = int(duration_a * 30)
                 frames_b = int(duration_b * 30)
 
-                # Image A avec effet de zoom avant progressif
                 stream_a = (
                     ffmpeg.input(path_a, loop=1, t=duration_a)
                     .filter('scale', 2000, -1)
@@ -65,7 +66,6 @@ class Composer:
                     .setpts('PTS-STARTPTS')
                 )
 
-                # Image B avec effet de zoom ou de panoramique légèrement différent
                 stream_b = (
                     ffmpeg.input(path_b, loop=1, t=duration_b)
                     .filter('scale', 2000, -1)
@@ -75,7 +75,6 @@ class Composer:
 
                 video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
 
-            # Combine Video + Audio
             runner = ffmpeg.output(
                 video_stream, 
                 input_audio, 
@@ -110,7 +109,6 @@ class Composer:
             is_avatar = False
 
             if i in avatar_indices:
-                current_pair = (self.avatar_path, None)
                 is_avatar = True
             elif current_pair is None:
                 continue 
