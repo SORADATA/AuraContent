@@ -1,10 +1,12 @@
 import asyncio
+import time
+import os
+import shutil
 from modules.brain import ContentBrain
 from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
 from modules.composer import Composer
-import os
-import shutil
+
 def clean_cache():
     """
     Safely deletes temporary files.
@@ -25,9 +27,8 @@ def clean_cache():
             continue
             
         # SAFETY CHECK 2: Double check we are inside our project "assets" folder
-        # This prevents the script from ever touching C:\ or System32
         if "assets" not in folder:
-            print(f"   🚨 SECURITY ALERT: Skipping {folder} because it looks unsafe!")
+            print(f"    🚨 SECURITY ALERT: Skipping {folder} because it looks unsafe!")
             continue
 
         # Loop through files inside the folder
@@ -37,11 +38,11 @@ def clean_cache():
             try:
                 if os.path.isfile(file_path) or os.path.islink(file_path):
                     os.unlink(file_path) # Delete the file
-                    print(f"      Deleted: {filename}") # Print so you can see it working
+                    print(f"       Deleted: {filename}")
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path) # Delete subfolders if any
             except Exception as e:
-                print(f"   ❌ Failed to delete {file_path}. Reason: {e}")
+                print(f"    ❌ Failed to delete {file_path}. Reason: {e}")
     
     print("✨ Workspace clean!")
 
@@ -49,15 +50,15 @@ async def main():
     print("🚀 STARTING AUTOMATION...")
     
     # 1. BRAIN: Get Script
-    # 1. BRAIN: Get Script
     brain = ContentBrain()
     try:
-        # Récupère le sujet depuis l'environnement GitHub, ou demande-le en input sinon
-        topic = os.getenv("TOPIC")
-        if not topic:
-            topic = input("Entrez le sujet de la vidéo : ")
+        # Récupère automatiquement un sujet tendance (ou utilise une variable si définie)
+        topic = brain.get_trending_topic()
         
-        print(f"🎯 Sujet sélectionné : {topic}")
+        # ⏳ Pause de sécurité de 15 secondes pour laisser souffler l'API et éviter l'erreur 429 (Quota)
+        print("⏳ Pause de sécurité pour l'API (15s)...")
+        time.sleep(15)
+        
         script = brain.generate_script(topic)
     except Exception as e:
         print(f"❌ Brain Error: {e}")
@@ -86,7 +87,6 @@ async def main():
 
     # 5. STITCH WITH TRANSITIONS
     if final_scene_paths:
-        # CHANGED: Now using the transition function instead of simple concat
         composer.concatenate_with_transitions(final_scene_paths)
         clean_cache()
     else:
