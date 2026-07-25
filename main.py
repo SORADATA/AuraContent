@@ -90,14 +90,32 @@ def generate_word_by_word_srt(text, duration, output_path):
     return output_path
 
 
+def estimate_scene_count(duration_target):
+    return max(6, min(14, round(duration_target / 5)))
+
+
 async def main():
     print("🚀 STARTING AUTOMATION...")
 
+    topic_input = os.getenv("VIDEO_TOPIC", "").strip()
+    duration_target = int(os.getenv("VIDEO_DURATION", "45"))
+    refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
+
     brain = ContentBrain()
     try:
-        topic = brain.get_trending_topic()
-        print(f"🎯 Sujet selectionne : {topic}")
-        script = brain.generate_script(topic)
+        if topic_input:
+            topic = topic_input
+            print(f"🎯 Sujet fourni manuellement : {topic}")
+            if refine_angle:
+                topic = brain.refine_topic_angle(topic)
+                print(f"🔧 Angle affine : {topic}")
+        else:
+            topic = brain.get_trending_topic()
+            print(f"🎯 Sujet selectionne automatiquement : {topic}")
+
+        scene_count = estimate_scene_count(duration_target)
+        print(f"📝 Duree cible: {duration_target}s -> {scene_count} scenes")
+        script = brain.generate_script_with_target(topic, scene_count)
     except Exception as e:
         print(f"❌ Brain Error: {e}")
         return
