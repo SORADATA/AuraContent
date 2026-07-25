@@ -1,10 +1,37 @@
 import asyncio
 import os
 import shutil
+from datetime import datetime
+from huggingface_hub import HfApi
 from modules.brain import ContentBrain
 from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
 from modules.composer import Composer
+
+
+def upload_to_huggingface(video_path, topic):
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token or not video_path or not os.path.exists(video_path):
+        print("⚠️ Upload HF ignoré (token manquant ou fichier introuvable)")
+        return
+
+    api = HfApi(token=hf_token)
+    repo_id = "soradata/AIShortvideos"
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    safe_topic = "".join(c if c.isalnum() else "_" for c in topic)[:50]
+    remote_filename = f"videos/{timestamp}_{safe_topic}.mp4"
+
+    try:
+        api.upload_file(
+            path_or_fileobj=video_path,
+            path_in_repo=remote_filename,
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+        print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
+    except Exception as e:
+        print(f"❌ Echec upload Hugging Face : {e}")
 
 
 def clean_cache():
@@ -101,7 +128,13 @@ async def main():
     final_scene_paths = composer.render_all_scenes(script, assets_map)
 
     if final_scene_paths:
-        composer.concatenate_with_transitions(final_scene_paths)
+        final_path = composer.concatenate_with_transitions(final_scene_paths)
+
+        if final_path:
+            upload_to_huggingface(final_path, topic)
+        else:
+            print("❌ L'assemblage final a echoue, upload annule.")
+
         clean_cache()
     else:
         print("❌ Failed to generate any scenes.")
