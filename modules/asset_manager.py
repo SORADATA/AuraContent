@@ -1,6 +1,9 @@
 import os
 from modules.ai_image import AIImageGenerator
 
+FALLBACK_IMAGE = os.path.join(os.getcwd(), "assets", "fallback.png")
+
+
 class AssetManager:
     def __init__(self):
         self.image_dir = os.path.join(os.getcwd(), "assets", "video_clips")
@@ -10,6 +13,8 @@ class AssetManager:
     def get_videos(self, script_data):
         """
         Genere 2 images IA (a/b) par scene, avec retry en cas d'echec.
+        Si les deux tentatives echouent, utilise une image de secours locale
+        pour eviter qu'une scene entiere soit ignoree.
         Retourne une liste de dicts {"a": path, "b": path} alignee avec script_data.
         """
         pairs = []
@@ -32,7 +37,11 @@ class AssetManager:
                 print(f"    ⚠️ Scene {scene_id}: visual_1 a echoue, reutilisation de visual_2")
                 pairs.append({"a": path_b, "b": path_b})
             else:
-                print(f"    ❌ Scene {scene_id}: aucune image generee, scene ignoree")
-                pairs.append(None)
+                print(f"    ⚠️ Scene {scene_id}: aucune image generee, utilisation du fallback")
+                if os.path.exists(FALLBACK_IMAGE):
+                    pairs.append({"a": FALLBACK_IMAGE, "b": FALLBACK_IMAGE})
+                else:
+                    print(f"    ❌ Scene {scene_id}: fallback introuvable, scene ignoree")
+                    pairs.append(None)
 
         return pairs
