@@ -7,6 +7,14 @@ from modules.audio import AudioEngine
 from modules.composer import Composer
 
 
+# --- Injection des secrets Streamlit dans les variables d'environnement ---
+# Permet a os.getenv("GROQ_API_KEY") etc. de fonctionner sans rien changer
+# dans les autres modules (brain.py, audio.py, asset_manager.py...).
+for key in ["GROQ_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"]:
+    if key in st.secrets:
+        os.environ[key] = st.secrets[key]
+
+
 def estimate_scene_count(duration_target):
     return max(6, min(14, round(duration_target / 5)))
 
