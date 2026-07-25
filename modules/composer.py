@@ -102,69 +102,78 @@ class Composer:
 
         return rendered_paths
 
+    def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=0.5):
+        dur_a = self.get_duration(clip_a)
+        offset = max(dur_a - trans_dur, 0)
+        effect = random.choice(self.transitions)
+
+        input_a = ffmpeg.input(clip_a)
+        input_b = ffmpeg.input(clip_b)
+
+        v_stream = ffmpeg.filter(
+            [input_a.video, input_b.video],
+            "xfade",
+            transition=effect,
+            duration=trans_dur,
+            offset=offset
+        )
+        a_stream = ffmpeg.filter(
+            [input_a.audio, input_b.audio],
+            "acrossfade",
+            d=trans_dur
+        )
+
+        runner = ffmpeg.output(
+            v_stream,
+            a_stream,
+            output_path,
+            vcodec="libx264",
+            acodec="aac",
+            pix_fmt="yuv420p",
+            crf=18,
+            preset="medium"
+        )
+        runner.run(overwrite_output=True, quiet=True)
+        return effect, offset
+
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
-        print("🎬 Stitching final video...")
-        stitched_path = os.path.join(self.temp_dir, "stitched_no_music.mp4")
+        print("🎬 Stitching final video (cascade mode)...")
         output_path = os.path.join(self.final_dir, output_filename)
 
-        for p in (stitched_path, output_path):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    print(f"⚠️ Warning: Could not delete old file {p}.")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                print(f"⚠️ Warning: Could not delete old file {output_path}.")
 
         if not video_paths:
             return None
 
-        input1 = ffmpeg.input(video_paths[0])
-        v_stream = input1.video
-        a_stream = input1.audio
+        if len(video_paths) == 1:
+            stitched_path = video_paths[0]
+        else:
+            courant = video_paths[0]
+            for i in range(1, len(video_paths)):
+                suivant = video_paths[i]
+                merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
 
-        current_dur = self.get_duration(video_paths[0])
+                try:
+                    effect, offset = self._merge_two_clips(courant, suivant, merge_output)
+                    print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
+                except ffmpeg.Error as e:
+                    error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+                    print(f"❌ Stitching Error at step {i}: {error_log}")
+                    return None
 
-        for i in range(1, len(video_paths)):
-            next_clip = ffmpeg.input(video_paths[i])
-            next_dur = self.get_duration(video_paths[i])
+                if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
+                    try:
+                        os.remove(courant)
+                    except Exception:
+                        pass
 
-            trans_dur = 0.5
-            offset = current_dur - trans_dur
+                courant = merge_output
 
-            effect = random.choice(self.transitions)
-            print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
-
-            v_stream = ffmpeg.filter(
-                [v_stream, next_clip.video],
-                "xfade",
-                transition=effect,
-                duration=trans_dur,
-                offset=offset
-            )
-
-            a_stream = ffmpeg.filter(
-                [a_stream, next_clip.audio],
-                "acrossfade",
-                d=trans_dur
-            )
-
-            current_dur = (current_dur + next_dur) - trans_dur
-
-        try:
-            runner = ffmpeg.output(
-                v_stream,
-                a_stream,
-                stitched_path,
-                vcodec="libx264",
-                acodec="aac",
-                pix_fmt="yuv420p",
-                movflags="faststart",
-                preset="medium"
-            )
-            runner.run(overwrite_output=True, quiet=False)
-        except ffmpeg.Error as e:
-            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-            print(f"❌ Stitching Error: {error_log}")
-            return None
+            stitched_path = courant
 
         if os.path.exists(self.bg_music_path):
             print("🎵 Mixing background music...")
@@ -189,14 +198,19 @@ class Composer:
                 )
                 final_runner.run(overwrite_output=True, quiet=False)
                 print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
-                return output_path
             except ffmpeg.Error as e:
                 error_log = e.stderr.decode("utf8") if e.stderr else str(e)
                 print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
                 os.replace(stitched_path, output_path)
-                return output_path
         else:
             print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export sans musique.")
             os.replace(stitched_path, output_path)
             print(f"✅ FINAL VIDEO SAVED: {output_path}")
-            return output_path
+
+        if stitched_path != output_path and os.path.exists(stitched_path):
+            try:
+                os.remove(stitched_path)
+            except Exception:
+                pass
+
+        return output_path
