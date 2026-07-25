@@ -5,4 +5,4 @@ requests>=2.31.0
 ffmpeg-python>=0.2.0
 mutagen>=1.47.0
 openai>=1.0.0
-gradio>=5.0.0
+streamlit>=1.38.0
