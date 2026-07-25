@@ -5,36 +5,100 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GEMINI_MODEL = "gemini-2.5-flash"
+
+
 class ContentBrain:
+    def _build_client(self, provider):
+        if provider == "groq":
+            groq_key = os.getenv("GROQ_API_KEY")
+            if not groq_key:
+                return None
+            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+
+        if provider == "gemini":
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_key:
+                return None
+            return OpenAI(
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                api_key=gemini_key
+            )
+
+        return None
+
+    def _model_for(self, provider):
+        return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
+
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
+        """
+        Essaie Groq en premier. Si la cle est absente ou que l'appel echoue
+        (quota, erreur reseau, timeout...), bascule automatiquement sur Gemini.
+        """
+        last_error = None
+
+        for provider in ("groq", "gemini"):
+            client = self._build_client(provider)
+            if client is None:
+                print(f"⚠️  Cle API absente pour {provider}, on passe au suivant...")
+                continue
+
+            try:
+                kwargs = {
+                    "model": self._model_for(provider),
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+
+                response = client.chat.completions.create(**kwargs)
+                print(f"✅ Reponse obtenue via {provider}")
+                return response.choices[0].message.content
+
+            except Exception as e:
+                print(f"❌ Echec avec {provider}: {e}")
+                last_error = e
+                continue
+
+        raise RuntimeError(f"Aucun provider disponible (Groq et Gemini ont echoue). Derniere erreur: {last_error}")
+
     def get_trending_topic(self):
         print("🔍 Recherche d'un nouveau sujet tendance...")
-        groq_key = os.getenv("CROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 
-        client = OpenAI(
-            base_url="https://api.groq.com/openai/v1",
-            api_key=groq_key
-        )
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Tu es un strategiste de contenu viral. Trouve de toi-meme un sujet de mini-documentaire court, captivant et inattendu. INTERDICTION STRICTE de choisir l'Egypte, les pharaons ou les pyramides. Reponds UNIQUEMENT avec le titre du sujet en francais, sans guillemets, sans introduction."},
-                {"role": "user", "content": "Donne un sujet viral totalement inedit et surprenant pour TikTok en francais."}
-            ],
-            temperature=1.2
-        )
-        topic = response.choices[0].message.content.strip().replace('"', '')
+        messages = [
+            {"role": "system", "content": "Tu es un strategiste de contenu viral. Trouve de toi-meme un sujet de mini-documentaire court, captivant et inattendu. Reponds UNIQUEMENT avec le titre du sujet en francais, sans guillemets, sans introduction."},
+            {"role": "user", "content": "Donne un sujet viral totalement inedit et surprenant pour TikTok en francais."}
+        ]
+
+        content = self._call_with_fallback(messages, temperature=1.2)
+        topic = content.strip().replace('"', "")
         print(f"🎯 Sujet selectionne : {topic}")
         return topic
 
+    def refine_topic_angle(self, raw_topic):
+        """
+        Prend un sujet brut/trend TikTok saisi par l'utilisateur et le reformule
+        en un angle accrocheur pour un script viral, sans changer le sujet de fond.
+        """
+        print(f"🔧 Reformulation de l'angle pour: {raw_topic}...")
+
+        messages = [
+            {"role": "system", "content": "Tu es un strategiste de contenu viral. Reformule le sujet donne par l'utilisateur en un titre accrocheur et precis pour une video courte, en francais. Garde le sujet de fond identique, ne change pas le theme. Reponds UNIQUEMENT avec le titre reformule, sans guillemets, sans explication."},
+            {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"}
+        ]
+
+        content = self._call_with_fallback(messages, temperature=0.8)
+        refined = content.strip().replace('"', "")
+        print(f"    ✅ Angle affine : {refined}")
+        return refined
+
     def generate_script(self, topic):
-        print(f"📝 Writing multi-platform short script in French with Groq for: {topic}...")
+        return self.generate_script_with_target(topic, scene_count=11)
 
-        groq_key = os.getenv("CROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-
-        client = OpenAI(
-            base_url="https://api.groq.com/openai/v1",
-            api_key=groq_key
-        )
+    def generate_script_with_target(self, topic, scene_count=11):
+        print(f"📝 Ecriture du script en francais pour: {topic} ({scene_count} scenes)...")
 
         prompt = f"""
 You are the lead scriptwriter for a high-retention faceless short-form video channel (TikTok, Reels, Shorts).
@@ -45,7 +109,7 @@ Topic: {topic}
 - "visual_1" and "visual_2" search/prompt terms MUST remain in English.
 
 ### SCENE COUNT:
-- Generate exactly 10 to 12 scenes, to support a total video length of roughly 45 to 60 seconds.
+- Generate exactly {scene_count} scenes.
 
 ### MANDATORY NARRATIVE STRUCTURE (respect this order strictly):
 1. Scene 1 (HOOK, id=1): A shocking claim, a precise number, or a question that creates an information gap.
@@ -80,19 +144,15 @@ Topic: {topic}
 Valid "role" values: "hook", "tension", "value", "twist", "cta".
 """
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array. The text must be strictly in French. Respect the scene count (10-12) and the pacing rule (12-22 words per scene, complete sentences) strictly."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
+        messages = [
+            {"role": "system", "content": f"You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array with exactly {scene_count} scenes. The text must be strictly in French. Respect the pacing rule (12-22 words per scene, complete sentences) strictly."},
+            {"role": "user", "content": prompt}
+        ]
 
-        content = response.choices[0].message.content
+        content = self._call_with_fallback(messages, temperature=1.0, json_mode=True)
         data = json.loads(content)
-
-        return data.get("scenes", data) if isinstance(data, dict) else data
+        scenes = data.get("scenes", data) if isinstance(data, dict) else data
+        return scenes
 
 
 if __name__ == "__main__":
