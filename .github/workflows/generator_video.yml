@@ -2,6 +2,22 @@ name: Générateur de Vidéos IA
 
 on:
   workflow_dispatch:
+    inputs:
+      topic:
+        description: "Sujet de la video (laisser vide pour choix automatique par l'IA)"
+        required: false
+        default: ""
+      duration:
+        description: "Duree souhaitee en secondes (20 a 90)"
+        required: false
+        default: "45"
+      refine_angle:
+        description: "Laisser l'IA reformuler l'angle du sujet"
+        required: false
+        default: "true"
+  schedule:
+    - cron: "0 6 * * *"
+    - cron: "0 18 * * *"
 
 jobs:
   build-and-generate:
@@ -27,10 +43,13 @@ jobs:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      run: python main.py 
+        VIDEO_TOPIC: ${{ github.event.inputs.topic }}
+        VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
+        REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
+      run: python main.py
 
     - name: 💾 Sauvegarder la vidéo finale
       uses: actions/upload-artifact@v4
       with:
-        name: Video-TikTok-Prete
+        name: Video-TikTok-Prete-${{ github.run_id }}
         path: assets/final/final_short.mp4
