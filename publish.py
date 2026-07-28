@@ -9,8 +9,10 @@ def get_latest_video_url():
     """
     api_url = API_URL
     response = requests.get(api_url)
-    if response.status_code != 200:
-        raise Exception(f"Do not read folder on HF : {response.status_code}")
+    if response.status_code in [200, 201]:
+        print("✅ Succès ! La vidéo a été publiée sur le compte TikTok @minute_mystereko.")
+    else:
+        raise Exception(f"❌ Errors during publishing {response.status_code} : {response.text}")
     files = response.json()
     # Filter to take only .mp4 file
     videos = [f['path'] for f in files if f['path'].endswith('.mp4')]
