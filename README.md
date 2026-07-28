@@ -1,179 +1,122 @@
-# 🎬 AutoShorts AI: The Automated Faceless Video Generator
+# 🎬 AutoShorts AI — Générateur & Publisher Automatisé de Vidéos "Faceless"
 
 ![Views](https://komarev.com/ghpvc/?username=SaarD00-AI-Youtube-Shorts-Generator&style=for-the-badge&color=blue)
 
+**AutoShorts AI** est un pipeline Python entièrement automatisé qui génère des vidéos "faceless" façon YouTube Shorts / TikTok à partir d'un simple sujet, et **les publie automatiquement sur TikTok**.
 
-**AutoShorts AI** is a Python pipeline that creates viral-style "Faceless" YouTube Shorts and TikToks from a topic. It handles the production chain: AI topic/script generation, voiceover generation, stock footage sourcing, and FFmpeg editing with transitions and avatar injection.
-
----
-
-## ✨ Key Features
-
-- **🧠 Intelligent Scriptwriting:** Uses **Google Gemini 2.0 Flash** to write engaging, "Edutainment" style scripts (Vox/Kurzgesagt style) with strict storytelling structures (Hook → Context → Mechanism → Twist).
-- **🗣️ Voiceovers:** Generates narration with `edge-tts`.
-- **🎞️ Dual-Visual System:** Automatically searches and downloads **two distinct stock videos** per scene from **Pexels**, creating a dynamic "A/B Split" visual style to maximize viewer retention.
-- **✂️ Advanced FFmpeg Editing:**
-- **Smart Trimming:** Syncs video perfectly to audio duration.
-- **A/B Splitting:** Cuts every scene in half, switching visuals mid-sentence.
-- **Pro Transitions:** Randomly applies `xfade` (fade, slide, wipes) between scenes.
-- **Silence Removal:** Automatically trims dead air from AI voice generation.
-
-- **🤖 Random Avatar Injection:** Automatically inserts a custom "Avatar/Mascot" video into a random middle scene to build channel brand identity.
-- **🪟 Windows Ready:** Includes specific FFmpeg flags (`yuv420p`, `faststart`) to prevent corruption errors (`0x80004005`) on Windows Media Player.
+Le tout tourne dans le cloud via **GitHub Actions** : génération du sujet/script par IA, voix off, sourcing de vidéos stock, montage FFmpeg, stockage cloud via Hugging Face, et publication automatique via API.
 
 ---
 
-## 📂 Project Structure
+## ✨ Fonctionnalités clés
+
+| Fonctionnalité | Description |
+|---|---|
+| ☁️ **100% automatisé cloud** | Exécutions planifiées via **GitHub Actions**. Aucun serveur ni PC local requis. |
+| 📱 **Publication auto sur TikTok** | Récupère la dernière vidéo générée et la publie via l'**API Zernio** (mentions IA + anti-doublons). |
+| 🤗 **Stockage cloud** | Utilise les datasets **Hugging Face** comme base de données vidéo. |
+| 🧠 **Scriptwriting intelligent** | **Google Gemini / Groq** rédige des scripts "edutainment" structurés (Hook → Contexte → Mécanisme → Twist). |
+| 🗣️ **Voix off** | Narration générée via `edge-tts`. |
+| 🎞️ **Système Dual-Visual** | Télécharge **deux vidéos stock distinctes** par scène depuis **Pexels** pour un effet "split A/B". |
+| ✂️ **Montage FFmpeg avancé** | Trim intelligent, split A/B, transitions pro (`xfade`) aléatoires. |
+| 🤖 **Avatar aléatoire** | Insère automatiquement une vidéo "mascotte" dans une scène du milieu pour l'identité de marque. |
+
+---
+
+## 📂 Structure du projet
 
 ```text
 Automated-YT-Shorts-AI/
 │
-├── assets/                  # Stores all media files
-│   ├── audio_clips/         # Generated voiceovers (.wav)
-│   ├── video_clips/         # Downloaded stock footage (.mp4)
-│   ├── temp/                # Intermediate processing files
-│   ├── final/               # 🏆 The Final Output Video lives here
-│   └── avatar/              # ⚠️ PUT YOUR AVATAR VIDEO HERE
-│       └── Professional_Girl_Animation_Video_Generation.mp4
+├── .github/workflows/           # ☁️ Règles d'automatisation cloud
+│   ├── generator_video.yml      # Génération à 06h00 et 18h00 UTC
+│   └── tiktok_bot.yml           # Publication TikTok à 12h00 et 19h00 UTC
 │
-├── modules/                 # Core Logic Modules
-│   ├── brain.py             # AI Scriptwriter (Gemini)
-│   ├── audio.py             # Voice generator (edge-tts)
-│   ├── asset_manager.py     # Pexels Downloader (Dual-Visual logic)
-│   └── composer.py          # FFmpeg Video Editor (Stitching & Transitions)
+├── assets/                      # Fichiers médias locaux
+│   ├── temp/                    # Fichiers intermédiaires
+│   ├── final/                   # 🏆 Vidéo finale
+│   └── avatar/                  # ⚠️ Placer votre vidéo avatar ici (avatars.mp4)
 │
-├── main.py                  # Entry point (Orchestrator)
-└── requirements.txt         # Python dependencies
-
+├── modules/                     # Logique principale
+│   ├── brain.py                 # Scriptwriter IA
+│   ├── audio.py                 # Générateur de voix (edge-tts)
+│   ├── asset_manager.py         # Téléchargeur Pexels (logique Dual-Visual)
+│   └── composer.py              # Monteur vidéo FFmpeg (montage & transitions)
+│
+├── main.py                      # Moteur principal de génération vidéo
+├── publish.py                   # Bot de publication TikTok (API Zernio + Hugging Face)
+├── constants.py                 # Variables globales & URLs
+└── requirements.txt             # Dépendances Python
 ```
 
 ---
 
-## 🛠️ Prerequisites
+## 🛠️ Prérequis & clés API
 
-1. **Python 3.10+** installed.
-2. **FFmpeg** installed and added to your system PATH.
+Pour faire tourner ce pipeline dans le cloud, il vous faut des comptes et clés API pour :
 
-- _Windows:_ `winget install ffmpeg` (or download from [ffmpeg.org](https://ffmpeg.org/download.html)).
-- _Verify:_ Type `ffmpeg -version` in your terminal.
+- **Google Gemini API Key** (ou **Groq API Key**) — génération de scripts
+- **Pexels API Key** (gratuite) — recherche/téléchargement de vidéos stock
+- **Hugging Face Token** (`HF_TOKEN`) — upload/lecture des vidéos
+- **Zernio API Key** + **TikTok Account ID** — bot de publication
 
-3. **API Keys:**
-
-- **Google Gemini API Key** (Free tier available).
-- **Pexels API Key** (Free).
-- No Ngrok token is required for the default voiceover path. The current pipeline uses `edge-tts`.
+*(Optionnel pour du dev local)* : Python 3.10+ et FFmpeg installés sur votre machine.
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation & automatisation cloud (GitHub Actions)
 
-### 1. Clone the Repository
+Oubliez l'exécution locale, voici comment configurer le pipeline 100% automatisé :
 
-```bash
-git clone https://github.com/yourusername/AutoShorts-AI.git
-cd AutoShorts-AI
+### 1. Fork ou clone du dépôt
+Poussez ce code vers votre propre dépôt GitHub privé.
 
-```
+### 2. Configuration des secrets GitHub
+Rendez-vous dans **Settings > Secrets and variables > Actions** de votre dépôt, puis ajoutez les secrets suivants :
 
-### 2. Install Dependencies
+- `GEMINI_API_KEY`
+- `GROQ_API_KEY` *(si utilisé)*
+- `PEXELS_API_KEY`
+- `HF_TOKEN`
+- `ZERNIO_API_KEY`
+- `TIKTOK_ACCOUNT_ID`
 
-```bash
-pip install -r requirements.txt
+### 3. Ajout de votre avatar
+Uploadez votre fichier `avatars.mp4` dans le dossier `assets/avatar/` et poussez-le sur votre dépôt.
 
-```
+### 4. Lancement des workflows
+Dans l'onglet **Actions** de votre dépôt GitHub :
 
-### 3. Environment Setup
+- Cliquez sur **Générateur de Vidéos IA** → **Run workflow** pour générer une vidéo manuellement.
+- Cliquez sur **Bot Auto-Publication TikTok** → **Run workflow** pour publier la dernière vidéo (Hugging Face → TikTok).
 
-Create the required folders and add your avatar:
-
-1. Create folder: `assets/avatar`
-2. Place your avatar video inside and name it: `avatars.mp4`
-
-### 4. Configure API Keys
-
-Copy `.env.example` to `.env` and fill in your key:
-
-```bash
-cp .env.example .env
-```
-
-Required:
-
-- `GEMINI_API_KEY` for script generation
-- `PEXELS_API_KEY` for stock video search/download
-
-Optional:
-
-- `GEMINI_MODEL` to override the default `gemini-2.0-flash` model
+> **Note :** grâce aux fichiers `.yml`, le pipeline tourne ensuite automatiquement selon le planning : génération à 6h/18h, publication à 12h/19h.
 
 ---
 
-## 🎮 How to Run
+## 🧩 Détail du nouveau module
 
-### Generate Video
+### `publish.py` (Le Publisher)
 
-Run the main script:
-
-```bash
-python main.py
-
-```
-
-1. Enter a topic (e.g., _"The Mystery of the Pyramids"_).
-2. Wait for the AI to write the script, generate audio, download stock footage, and edit the video.
-3. The final video will be saved in `assets/final/final_short.mp4`.
+- **Entrée :** se connecte à l'API Hugging Face pour trouver le dernier `.mp4` généré aujourd'hui.
+- **Logique :** extrait un titre propre du nom de fichier pour créer une légende engageante avec hashtags. Se protège du double-post via une logique horaire.
+- **Sortie :** envoie le payload à l'API Zernio, déclenchant l'upload direct sur TikTok avec la mention IA activée (`video_made_with_ai: True`).
 
 ---
 
-## 🧩 Module Breakdown
+## ⚠️ Dépannage
 
-### `brain.py` ( The Writer)
+**Q : Le workflow GitHub Actions échoue sur `publish.py` avec une erreur 409.**
+**R :** C'est normal ! Zernio renvoie une erreur `409 Conflict` si la même vidéo a déjà été publiée dans les dernières 24h. Le script intercepte cette erreur pour éviter le spam sur votre compte.
 
-- **Input:** Topic string.
-- **Logic:** Prompts Gemini to create an 8-9 scene JSON script. It asks for **two** visual keywords per scene (`visual_1`, `visual_2`) to enable the A/B split effect.
+**Q : Erreur "Avatar file missing".**
+**R :** Vérifiez que la structure de dossier est exactement `assets/avatar/avatars.mp4` dans votre dépôt GitHub.
 
-### `audio.py` (The Voice)
-
-- **Input:** Text script.
-- **Logic:** Generates MP3 voice clips with `edge-tts`.
-- **Post-Processing:** Reads durations with `mutagen` so scenes can be synced to audio length.
-
-### `asset_manager.py` (The Librarian)
-
-- **Input:** Visual keywords.
-- **Logic:** Searches Pexels for **Portrait (9:16)** videos. Downloads pairs of videos for every scene. Handles fallbacks (if Video B is missing, reuse Video A).
-
-### `composer.py` (The Editor)
-
-- **Input:** Audio files + Video files.
-- **Logic:**
-- **Scene Processing:** Cuts the scene duration in half. Plays Video A for the first half, Video B for the second half.
-- **Avatar Injection:** Identifies a random "middle" scene (not hook/outro) and replaces the stock footage with your Avatar loop.
-- **Stitching:** Merges all scenes using `xfade` transitions (wipes, slides).
-- **Rendering:** Exports as `yuv420p` H.264 MP4 with `faststart` flags for maximum compatibility.
+**Q : La vidéo est noire ou corrompue (erreur `0x80004005` sur Windows).**
+**R :** Généralement un problème de codec Windows. Le `composer.py` mis à jour force `pix_fmt='yuv420p'`. Essayez d'ouvrir le fichier avec VLC Media Player, ou laissez TikTok le traiter nativement.
 
 ---
 
-## ⚠️ Troubleshooting
+## 📜 Licence
 
-**Q: The video is black or corrupt (0x80004005 error).**
-
-- **Fix:** This is usually a Windows codec issue. The updated `composer.py` forces `pix_fmt='yuv420p'`. Try opening the file with VLC Media Player.
-
-**Q: "Avatar file missing" error.**
-
-- **Fix:** Ensure your folder structure is exactly `assets/avatar/avatars.mp4`.
-
-**Q: The audio is silent or fails.**
-
-- **Fix:** Check your internet connection and that `edge-tts` is installed from `requirements.txt`.
-
-**Q: FFmpeg error "Exec format error" or "not found".**
-
-- **Fix:** Ensure FFmpeg is installed and accessible from your command line.
-
----
-
-## 📜 License
-
-This project is open-source. Feel free to modify and build your own automation empire!
+Projet open-source. Libre à vous de le modifier et de construire votre propre empire d'automatisation !
