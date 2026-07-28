@@ -16,8 +16,8 @@ on:
         required: false
         default: "true"
   schedule:
-    - cron: "0 6 * * *"
-    - cron: "0 18 * * *"
+    - cron: "0 4 * * *"
+    - cron: "0 12 * * *"
 
 jobs:
   build-and-generate:
