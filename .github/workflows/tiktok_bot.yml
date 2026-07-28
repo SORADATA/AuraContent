@@ -1,4 +1,4 @@
-name: Bot Auto-Publication TikTok
+name: TikTok Publisher [Bot]
 
 on:
   schedule:
