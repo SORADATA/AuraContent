@@ -18,7 +18,6 @@ def upload_to_huggingface(video_path, topic):
         return
 
     api = HfApi(token=hf_token)
-    # Tu peux changer le repo_id si tu crées "MimoluneVideos", ou garder "AIShortvideos"
     repo_id = "soradata/MimoluneVideos"
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -60,7 +59,6 @@ async def main():
     topic = os.getenv("VIDEO_TOPIC", "Les couleurs magiques")
 
     # 1. Écriture du scénario de comptine
-    #writer = KidsScriptwriter(config={})
     writer = KidsScriptwriter()
     data = writer.generate_comptine(topic, scene_count=8)
     if not data:
@@ -96,8 +94,11 @@ async def main():
         os.makedirs(final_dir, exist_ok=True)
         final_dest = os.path.join(final_dir, "final_short.mp4")
         
-        if os.path.exists(final_path) and final_path != final_dest:
+        # Vérification propre pour éviter l'erreur de copie sur soi-même
+        if os.path.abspath(final_path) != os.path.abspath(final_dest):
             shutil.copy(final_path, final_dest)
+        else:
+            print("✅ Le fichier final est déjà au bon emplacement.")
         
         print(f"🎉 PIPELINE TERMINÉ AVEC SUCCÈS ! Vidéo sauvée : {final_dest}")
         
