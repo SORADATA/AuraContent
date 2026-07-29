@@ -60,7 +60,8 @@ async def main():
     topic = os.getenv("VIDEO_TOPIC", "Les couleurs magiques")
 
     # 1. Écriture du scénario de comptine
-    writer = KidsScriptwriter(config={})
+    #writer = KidsScriptwriter(config={})
+    writer = KidsScriptwriter()
     data = writer.generate_comptine(topic, scene_count=8)
     if not data:
         print("❌ Échec de la génération du script.")
