@@ -3,7 +3,7 @@ name: TikTok Publisher [Bot]
 on:
   schedule:
     # Se lance tous les jours à 09h00 et 18h00 UTC 
-    - cron: '0 7,14 * * *'
+    - cron: '0 7,14 * * *' # 09H & 16H Paris
   workflow_dispatch: 
     # Permet de lancer le script manuellement depuis l'interface GitHub
 
