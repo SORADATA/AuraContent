@@ -1,4 +1,4 @@
-name: TikTok Publisher [Bot]
+name: Publisher [Bot]
 
 on:
   schedule:
