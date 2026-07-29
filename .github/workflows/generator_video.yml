@@ -16,8 +16,8 @@ on:
         required: false
         default: "true"
   schedule:
-    - cron: "0 4 * * *"
-    - cron: "0 11 * * *"
+    - cron: "0 4 * * *" # 06H Paris
+    - cron: "0 11 * * *" # 13h Paris
 
 jobs:
   build-and-generate:
