@@ -1,6 +1,6 @@
 import os
 import subprocess
-from constants_mimolune import POSES, MOUTHS
+from constants_mimolune import POSES
 from modules.kids_tts import KidsAudioEngine
 
 
@@ -34,7 +34,8 @@ class SceneAnimator:
             if envelope:
                 last_shape = KidsAudioEngine.mouth_shape_for_value(envelope[-1])
                 last_path = os.path.join(self.char_dir, speaker, f"mouth_{last_shape}.png")
-                f.write(f"file '{os.path.abspath(last_path)}'\n")
+                if os.path.exists(last_path):
+                    f.write(f"file '{os.path.abspath(last_path)}'\n")
 
         return sequence_path
 
@@ -42,6 +43,11 @@ class SceneAnimator:
         scene_id = scene["id"]
         speaker = scene.get("speaker", "mimolune")
         action = scene.get("action", "repos")
+        
+        # Sécurité : si l'action demandée n'est pas dans les constantes, on prend "repos" par défaut
+        if action not in POSES:
+            action = "repos"
+
         audio_path = scene.get("audio_path")
         envelope = scene.get("mouth_envelope", [])
         chunk_ms = scene.get("mouth_chunk_ms", 120)
@@ -50,6 +56,11 @@ class SceneAnimator:
 
         bg_path = scene.get("background_image") 
         body_path = os.path.join(self.char_dir, speaker, f"pose_{action}.png")
+        
+        # Fallback si la pose spécifique n'existe pas
+        if not os.path.exists(body_path):
+            body_path = os.path.join(self.char_dir, speaker, "pose_repos.png")
+
         mouth_seq = self._create_mouth_sequence(scene_id, speaker, envelope, chunk_ms)
         output_path = os.path.join(self.temp_dir, f"animated_{scene_id}.mp4")
 
@@ -71,11 +82,13 @@ class SceneAnimator:
         ]
 
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            # On retire DEVNULL pour voir l'erreur exacte si FFmpeg échoue à nouveau
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
             scene["video_path"] = output_path
             return scene
-        except Exception as e:
-            print(f"❌ Erreur FFmpeg lors de l'animation de la scène {scene_id} : {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Erreur FFmpeg (Code {e.returncode}) sur la scène {scene_id} :")
+            print(e.stderr[-500:])  # Affiche les 500 derniers caractères de l'erreur FFmpeg
             return scene
 
     def animate_all_scenes(self, scenes):
