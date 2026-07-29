@@ -41,9 +41,8 @@ def publish_to_tiktok():
     print(f"🎥 Daily video found : {video_url}")
 
     api_key = os.environ.get("ZERNIO_API_KEY")
-    youtube_account_id = os.environ.get("YOUTUBE_ACCOUNT_ID") 
+    youtube_account_id = os.environ.get("YOUTUBE_ACCOUNT_ID")
 
-    # On vérifie uniquement l'API key et l'ID YouTube pour ce test
     if not api_key or not youtube_account_id:
         raise ValueError(" Zernio or youtube api keys not found")
 
