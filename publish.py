@@ -69,12 +69,10 @@ def publish_to_tiktok():
         "Content-Type": "application/json"
     }
 
-    platforms_list = [{"platform": "tiktok", "accountId": tiktok_account_id}]
-    
-    # Ajoute YouTube s'il est configuré dans les secrets GitHub
-    if youtube_account_id:
-        platforms_list.append({"platform": "youtube", "accountId": youtube_account_id})
-
+    # Au lieu d'inclure TikTok, on ne met que YouTube pour ce test
+    platforms_list = [
+        {"platform": "youtube", "accountId": youtube_account_id}
+    ]
     payload = {
         "content": caption,
         "mediaItems": [{"type": "video", "url": video_url}],
@@ -83,15 +81,7 @@ def publish_to_tiktok():
             "title": clean_title,
             "privacy_status": "PUBLIC"
         },
-        "tiktokSettings": {
-            "privacy_level": "PUBLIC_TO_EVERYONE",
-            "allow_comment": True,
-            "allow_duet": False,
-            "allow_stitch": False,
-            "content_preview_confirmed": True,
-            "express_consent_given": True,
-            "video_made_with_ai": True
-        },
+    
         "publishNow": True
     }
 
