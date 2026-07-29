@@ -18,16 +18,22 @@ def get_latest_video_url():
 
     # Filter to take only .mp4 file
     videos = [f['path'] for f in files if f['path'].endswith('.mp4')]
+    videos.sort() # Trie par ordre alphabétique/chronologique (les plus récents à la fin)
 
-    # Curreent day format YYYYMMDD
+    if not videos:
+        raise Exception(" No video found on HF.")
+
+    # Current day format YYYYMMDD
     today_str = datetime.utcnow().strftime("%Y%m%d")
 
     # Take only videos today generated
     todays_videos = [v for v in videos if today_str in v]
-    todays_videos.sort()
 
+    # Fallback robuste : si le filtre du jour strict est vide (décalage horaire), 
+    # on prend les deux dernières vidéos globales du dépôt pour ne pas bloquer
     if not todays_videos:
-        raise Exception(" No video found on HF.")
+        print("⚠️ Aucune vidéo trouvée pour la date exacte UTC, utilisation des plus récentes du dépôt.")
+        todays_videos = videos[-2:] if len(videos) >= 2 else videos
 
     # Current hour (en UTC)
     current_hour = datetime.utcnow().hour
@@ -37,7 +43,7 @@ def get_latest_video_url():
         target_video_path = todays_videos[1]
         print("🌙 Evening Exécution  : publication of 2d  daily video.")
     else:
-        target_video_path = todays_videos[0]
+        target_video_path = todays_videos[-1] # Toujours la plus récente disponible
         print("☀️ Midle Exécution: publication of 1st daily video.")
 
     direct_url = f"{DIRECT_URL}{target_video_path}"
