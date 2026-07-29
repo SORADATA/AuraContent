@@ -3,6 +3,7 @@ import requests
 from datetime import datetime
 from constants import API_URL, DIRECT_URL
 
+
 def get_latest_video_url():
     """
     Interroge l'api hugging face pour trouver la vidéo à publier selon l'heure
@@ -49,9 +50,10 @@ def publish_to_tiktok():
     print(f"🎥 Daily video found : {video_url}")
 
     api_key = os.environ.get("ZERNIO_API_KEY")
-    account_id = os.environ.get("TIKTOK_ACCOUNT_ID") 
+    tiktok_account_id = os.environ.get("TIKTOK_ACCOUNT_ID") 
+    youtube_account_id = os.environ.get("YOUTUBE_ACCOUNT_ID") 
 
-    if not api_key or not account_id:
+    if not api_key or not tiktok_account_id:
         raise ValueError(" Zernio or tiktok api keys not found")
 
     # Cleaning filename output
@@ -60,17 +62,27 @@ def publish_to_tiktok():
     caption = f"{clean_title} 🧠✨ #IA #MinuteMystère #Decouverte"
     print(f"📝 Légende generated : {caption}")
 
-    # Sending to zernio api for publish on tiktok
+    # Sending to zernio api for publish on platforms
     url = "https://zernio.com/api/v1/posts"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
+    platforms_list = [{"platform": "tiktok", "accountId": tiktok_account_id}]
+    
+    # Ajoute YouTube s'il est configuré dans les secrets GitHub
+    if youtube_account_id:
+        platforms_list.append({"platform": "youtube", "accountId": youtube_account_id})
+
     payload = {
         "content": caption,
         "mediaItems": [{"type": "video", "url": video_url}],
-        "platforms": [{"platform": "tiktok", "accountId": account_id}],
+        "platforms": platforms_list,
+        "youtubeSettings": {
+            "title": clean_title,
+            "privacy_status": "PUBLIC"
+        },
         "tiktokSettings": {
             "privacy_level": "PUBLIC_TO_EVERYONE",
             "allow_comment": True,
@@ -87,7 +99,7 @@ def publish_to_tiktok():
     response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code in [200, 201]:
-        print("✅ Succès ! La vidéo a été publiée sur le compte TikTok @minute_mystereko.")
+        print("✅ Succès ! La vidéo a été publiée sur TikTok et YouTube.")
     elif response.status_code == 409:
         print("⚠️ Zernio a bloqué la publication : Cette vidéo a déjà été publiée récemment (Doublon).")
     else:
