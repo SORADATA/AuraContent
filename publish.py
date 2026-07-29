@@ -3,7 +3,6 @@ import requests
 from datetime import datetime
 from constants import API_URL, DIRECT_URL
 
-
 def get_latest_video_url():
     """
     Interroge l'api hugging face pour trouver la vidéo à publier selon l'heure
@@ -16,35 +15,29 @@ def get_latest_video_url():
 
     files = response.json()
 
-    # Filter to take only .mp4 file
+    # Récupère tous les fichiers .mp4 et les trie par nom (le nom commence par YYYYMMDD_HHMMSS, 
+    # donc un tri alphabétique classe parfaitement du plus ancien au plus récent)
     videos = [f['path'] for f in files if f['path'].endswith('.mp4')]
-    videos.sort() # Trie par ordre alphabétique/chronologique (les plus récents à la fin)
+    videos.sort()
 
     if not videos:
         raise Exception(" No video found on HF.")
 
-    # Current day format YYYYMMDD
-    today_str = datetime.utcnow().strftime("%Y%m%d")
+    # On prend les deux dernières vidéos les plus récentes du dépôt (ou la dernière si y en a qu'une)
+    recent_videos = videos[-2:] if len(videos) >= 2 else videos
 
-    # Take only videos today generated
-    todays_videos = [v for v in videos if today_str in v]
-
-    # Fallback robuste : si le filtre du jour strict est vide (décalage horaire), 
-    # on prend les deux dernières vidéos globales du dépôt pour ne pas bloquer
-    if not todays_videos:
-        print("⚠️ Aucune vidéo trouvée pour la date exacte UTC, utilisation des plus récentes du dépôt.")
-        todays_videos = videos[-2:] if len(videos) >= 2 else videos
-
-    # Current hour (en UTC)
+    # Current hour (en UTC) -> 7h UTC = 9h à Paris (en été)
     current_hour = datetime.utcnow().hour
 
-    # Selection video: 1ère vidéo à midi, 2ème vidéo le soir
-    if len(todays_videos) >= 2 and current_hour >= 15:
-        target_video_path = todays_videos[1]
-        print("🌙 Evening Exécution  : publication of 2d  daily video.")
+    # Selection video :
+    # Si on est le matin (avant 15h UTC / 17h Paris), on prend la plus ancienne des deux du jour (la 1ère)
+    # Si on est le soir, on prend la plus récente (la 2ème)
+    if current_hour >= 15 and len(recent_videos) >= 2:
+        target_video_path = recent_videos[1]
+        print("🌙 Soir : publication de la 2ème vidéo du jour.")
     else:
-        target_video_path = todays_videos[-1] # Toujours la plus récente disponible
-        print("☀️ Midle Exécution: publication of 1st daily video.")
+        target_video_path = recent_videos[0]
+        print("☀️ Matin : publication de la 1ère vidéo du jour.")
 
     direct_url = f"{DIRECT_URL}{target_video_path}"
     return direct_url, target_video_path
