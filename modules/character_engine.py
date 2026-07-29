@@ -1,88 +1,64 @@
-import json
-from modules.brain import ContentBrain
-from constants_mimolune import SPEAKERS
+import os
+from constants_mimolune import SPEAKERS, POSES, MOUTHS
+from modules.ai_image import AIImageGenerator
 
-class KidsScriptwriter(ContentBrain):
+class CharacterEngine:
     """
-    Reutilise le moteur Groq/Gemini de ContentBrain (voir modules/brain.py)
-    mais genere une comptine pour enfants au lieu d'un script viral.
+    Gère la bibliothèque d'images des personnages et génère les décors.
+    Pour le mode test, si une image n'existe pas, elle est générée via Pollinations.
     """
-
-    def generate_comptine(self, theme, scene_count=8):
-        print(f"🎵 Ecriture de la comptine pour : {theme} ({scene_count} scenes)...")
-
-        prompt = f"""
-Tu es parolier pour une chaine de comptines pour enfants (2 a 6 ans) sur TikTok.
-Theme de la comptine : {theme}
-Personnage principal : Mimolune, une petite lune ronde et joyeuse.
-Personnages secondaires possibles : fruit_fraise, fruit_banane.
-
-### REGLES DE CONTENU (STRICTES) :
-- Aucune violence, aucune peur, aucun element effrayant. Contenu 100% positif et bienveillant.
-- Le texte est entierement en francais, avec des rimes simples (schema AABB de preference).
-- Chaque ligne fait entre 6 et 12 mots, facile a chanter pour un enfant.
-- Mimolune parle dans au moins la moitie des scenes. Les scenes restantes sont reparties
-  entre les personnages secondaires.
-- Alterne les valeurs de "action" entre "dance" (mouvement rapide et joyeux) et "wave"
-  (mouvement doux, scene plus calme).
-
-### FORMAT DE SORTIE (JSON strict, objet avec "theme" et "scenes") :
-{{
-    "theme": "{theme}",
-    "scenes": [
-        {{
-            "id": 1,
-            "speaker": "mimolune",
-            "text": "Texte francais rime ici...",
-            "background": "english prompt for image generation, kids illustration style, vibrant pastel colors",
-            "action": "dance"
-        }}
-    ]
-}}
-
-Genere exactement {scene_count} scenes. "speaker" doit etre une valeur parmi : {SPEAKERS}.
-La derniere scene doit etre un au revoir joyeux de Mimolune invitant a revenir ("action": "wave").
-"""
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"Tu es un generateur qui repond uniquement avec un objet JSON valide "
-                    f"contenant 'theme' et 'scenes' (exactement {scene_count} scenes). "
-                    "Contenu strictement adapte aux enfants de 2 a 6 ans, en francais."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ]
-
-        content = self._call_with_fallback(messages, temperature=1.0, json_mode=True)
+    def __init__(self):
+        self.char_dir = os.path.join("assets", "mimolune", "characters")
+        self.bg_dir = os.path.join("assets", "mimolune", "backgrounds")
+        os.makedirs(self.char_dir, exist_ok=True)
+        os.makedirs(self.bg_dir, exist_ok=True)
         
-        # --- AJOUT SÉCURITÉ : Nettoyage des balises Markdown ---
-        content = content.strip()
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-        # --------------------------------------------------------
+        # On instancie ton générateur d'images IA
+        self.image_gen = AIImageGenerator()
 
-        data = json.loads(content)
+    def prepare_assets(self):
+        print("🔍 Vérification des assets visuels des personnages...")
+        
+        for speaker in SPEAKERS:
+            speaker_dir = os.path.join(self.char_dir, speaker)
+            os.makedirs(speaker_dir, exist_ok=True)
 
-        scenes = data.get("scenes", [])
-        if len(scenes) != scene_count:
-            print(f"    ⚠️ Attendu {scene_count} scenes, recu {len(scenes)} — poursuite quand meme.")
+            # 1. Vérification/Génération des poses du corps
+            for action in POSES:
+                path = os.path.join(speaker_dir, f"pose_{action}.png")
+                if not os.path.exists(path):
+                    print(f"   ⚠️ [Test] Pose manquante : {speaker} - {action}.")
+                    prompt = f"A simple cute cartoon 2D character {speaker}, doing action {action}, solid white background, minimal details"
+                    self.image_gen.generate_image(prompt, path)
 
-        return data
+            # 2. Vérification/Génération des bouches
+            for mouth in MOUTHS:
+                path = os.path.join(speaker_dir, f"mouth_{mouth}.png")
+                if not os.path.exists(path):
+                    print(f"   ⚠️ [Test] Bouche manquante : {speaker} - {mouth}.")
+                    prompt = f"A simple cartoon drawing of a mouth, {mouth}, on solid white background"
+                    self.image_gen.generate_image(prompt, path)
 
+        print("✅ Tous les assets personnages (poses et bouches) sont prêts.")
 
-if __name__ == "__main__":
-    # --- AJOUT SÉCURITÉ : Passer une config vide pour le test ---
-    writer = KidsScriptwriter(config={}) 
-    script = writer.generate_comptine("Les couleurs de l'arc-en-ciel")
-    
-    with open("comptine.json", "w", encoding="utf-8") as f:
-        json.dump(script, f, indent=4, ensure_ascii=False)
-    print("✅ Comptine sauvegardee dans comptine.json")
+    def generate_backgrounds(self, scenes):
+        """
+        Génère les images de décor pour chaque scène de la comptine.
+        """
+        print("🖼️ Vérification et génération des décors...")
+        
+        for scene in scenes:
+            scene_id = scene["id"]
+            # Récupère le prompt généré par l'IA texte, avec un fallback de sécurité
+            bg_prompt = scene.get("background", f"beautiful colorful magical landscape, kids cartoon style")
+            bg_path = os.path.join(self.bg_dir, f"bg_{scene_id}.png")
+            
+            # Ne génère que si l'image n'existe pas déjà
+            if not os.path.exists(bg_path):
+                self.image_gen.generate_image(bg_prompt, bg_path)
+            
+            # 🔴 TRÈS IMPORTANT : On enregistre le chemin du décor dans la scène 
+            # pour que le SceneAnimator (FFmpeg) puisse le trouver à l'étape suivante !
+            scene["background_image"] = bg_path
+            
+        return scenes
