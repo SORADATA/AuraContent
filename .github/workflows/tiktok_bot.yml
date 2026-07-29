@@ -28,4 +28,5 @@ jobs:
           # Connexion sécurisée avec tes secrets GitHub
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
+          YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
         run: python publish.py
