@@ -41,10 +41,11 @@ def publish_to_tiktok():
     print(f"🎥 Daily video found : {video_url}")
 
     api_key = os.environ.get("ZERNIO_API_KEY")
+    tiktok_account_id = os.environ.get("TIKTOK_ACCOUNT_ID")
     youtube_account_id = os.environ.get("YOUTUBE_ACCOUNT_ID")
 
-    if not api_key or not youtube_account_id:
-        raise ValueError(" Zernio or youtube api keys not found")
+    if not api_key or not tiktok_account_id or not youtube_account_id:
+        raise ValueError(" Zernio, TikTok or YouTube API keys/accounts not found")
 
     raw_filename = file_path.split("/")[-1]
     clean_title = raw_filename.replace(".mp4", "").replace("_", " ")[16:]
@@ -58,6 +59,7 @@ def publish_to_tiktok():
     }
 
     platforms_list = [
+        {"platform": "tiktok", "accountId": tiktok_account_id},
         {"platform": "youtube", "accountId": youtube_account_id}
     ]
     
@@ -69,6 +71,15 @@ def publish_to_tiktok():
             "title": clean_title,
             "privacy_status": "PUBLIC"
         },
+        "tiktokSettings": {
+            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "allow_comment": True,
+            "allow_duet": False,
+            "allow_stitch": False,
+            "content_preview_confirmed": True,
+            "express_consent_given": True,
+            "video_made_with_ai": True
+        },
         "publishNow": True
     }
 
@@ -76,7 +87,7 @@ def publish_to_tiktok():
     response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code in [200, 201]:
-        print("✅ Succès ! La vidéo a été publiée sur YouTube.")
+        print("✅ Succès ! La vidéo a été publiée sur TikTok et YouTube.")
     elif response.status_code == 409:
         print("⚠️ Zernio a bloqué la publication : Cette vidéo a déjà été publiée récemment (Doublon).")
     else:
