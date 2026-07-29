@@ -4,7 +4,7 @@ from constants_mimolune import POSES, MOUTHS
 from modules.kids_tts import KidsAudioEngine
 
 
-class SceneAnimation:
+class SceneAnimator:
     """
     Assemble le fond, le corps du personnage et anime la bouche
     en rythme avec l'audio en utilisant FFmpeg.
@@ -14,7 +14,6 @@ class SceneAnimation:
         self.temp_dir = os.path.join(self.base_dir, "temp")
         self.char_dir = os.path.join(self.base_dir, "characters")
         os.makedirs(self.temp_dir, exist_ok=True)
-
 
     def _create_mouth_sequence(self, scene_id, speaker, envelope, chunk_ms):
         """Crée un fichier texte concat pour FFmpeg avec les formes de bouche."""
@@ -83,4 +82,3 @@ class SceneAnimation:
         for scene in scenes:
             self.animate_scene(scene)
         return scenes
-
