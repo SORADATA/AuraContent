@@ -15,9 +15,10 @@ on:
         description: "Laisser l'IA reformuler l'angle du sujet"
         required: false
         default: "true"
+        
   schedule:
-    - cron: "0 4 * * *" # 06H Paris
-    - cron: "0 11 * * *" # 13h Paris
+    - cron: "17 4 * * *" # 06h17 heure de Paris
+    - cron: "43 10 * * *" # 12h43 heure de Paris
 
 jobs:
   build-and-generate:
