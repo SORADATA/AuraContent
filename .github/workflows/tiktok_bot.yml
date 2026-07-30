@@ -2,7 +2,7 @@ name: Publisher [Bot]
 
 on:
   workflow_dispatch:
-  schedule:   # 09H12 & 16h12 publiés sur tiktotk
+  schedule:   # 09h12 & 16h12 heure de Paris (été)
     - cron: "12 7 * * *"
     - cron: "12 14 * * *"
 
