@@ -15,7 +15,7 @@ on:
         description: "Laisser l'IA reformuler l'angle du sujet"
         required: false
         default: "true"
-        
+
   schedule:
     - cron: "17 4 * * *" # 06h17 heure de Paris
     - cron: "43 10 * * *" # 12h43 heure de Paris
@@ -36,6 +36,14 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: 🗃️ Cache des modèles Hugging Face (Kokoro TTS)
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: ${{ runner.os }}-huggingface-kokoro-v1
+        restore-keys: |
+          ${{ runner.os }}-huggingface-kokoro-
+
     - name: 📦 Installer les dépendances
       run: pip install -r requirements.txt
 
@@ -49,8 +57,19 @@ jobs:
         REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
       run: python main.py
 
+    - name: 🔊 Vérifier le niveau sonore (voix / musique)
+      run: |
+        ffmpeg -i assets/final/final_short.mp4 -af loudnorm=print_format=summary -f null - 2>&1 | tee loudness_report.txt
+
+    - name: 💾 Sauvegarder le rapport de loudness
+      uses: actions/upload-artifact@v4
+      with:
+        name: Loudness-Report-${{ github.run_id }}
+        path: loudness_report.txt
+
     - name: 💾 Sauvegarder la vidéo finale
       uses: actions/upload-artifact@v4
       with:
         name: Video-TikTok-Prete-${{ github.run_id }}
         path: assets/final/final_short.mp4
+
