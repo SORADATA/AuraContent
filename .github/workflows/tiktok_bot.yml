@@ -1,15 +1,15 @@
 name: Publisher [Bot]
 
 on:
-  schedule:
-    # Se lance tous les jours à 09H12 & 16H12 Paris (pour éviter les embouteillages des serveurs)
-    - cron: '12 7,14 * * *'
   workflow_dispatch:
-    # Permet de lancer le script manuellement depuis l'interface GitHub
+  schedule:   # 09H12 & 16h12 publiés sur tiktotk
+    - cron: "12 7 * * *"
+    - cron: "12 14 * * *"
 
 jobs:
   publier_video:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: 📥 Récupérer le code
@@ -18,27 +18,26 @@ jobs:
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
+          cache: "pip"
 
-      - name: ⚙️ Installer FFmpeg (analyse loudness)
+      - name: ⚙️ Installer FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      - name: 📦 Installer les dépendances
+      - name: 📦 Installer les dépendances minimales
         run: pip install requests
 
       - name: 🚀 Lancer le script de publication
         env:
-          # Connexion sécurisée avec tes secrets GitHub
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
         run: python publish.py
 
-      - name: 💾 Sauvegarder le rapport de loudness (si généré)
+      - name: 💾 Sauvegarder le rapport de loudness
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Loudness-Report-Publish-${{ github.run_id }}
           path: loudness_report.txt
           if-no-files-found: ignore
-
