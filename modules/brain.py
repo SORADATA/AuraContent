@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.5-flash"
 
@@ -428,12 +427,19 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             if not image_prompt:
                 raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
 
+            # Emphase : validation souple
             if emphasis:
-                words = re.findall(r"\b[\wÀ-ÿ'-]+\b", text)
-                if emphasis not in words:
-                    raise ValueError(
-                        f"Scene {scene.get('id')} : tts_emphasis_word='{emphasis}' absent du text."
+                normalized_text = text.lower()
+                normalized_emphasis = str(emphasis).strip().lower()
+
+                words = re.findall(r"[\wÀ-ÿœŒ'-]+", normalized_text)
+
+                if normalized_emphasis not in words:
+                    print(
+                        f"⚠️ Scene {scene.get('id')} : "
+                        f"tts_emphasis_word='{emphasis}' absent du text. Emphase ignoree."
                     )
+                    scene["tts_emphasis_word"] = None
 
         if "title" not in data or not str(data["title"]).strip():
             raise ValueError("Titre manquant.")
