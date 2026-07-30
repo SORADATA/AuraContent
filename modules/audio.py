@@ -46,13 +46,6 @@ class AudioEngine:
         self.edge_volume = "+0%"
         self.edge_pitch = "-3Hz"
 
-        # Kokoro utilise son propre systeme de vitesse (multiplicateur,
-        # pas un pourcentage comme Edge-TTS). 1.0 = vitesse normale du
-        # modele, qui s'est revelee trop rapide pour le ton confession/
-        # suspense recherche. 0.78 ralentit nettement sans casser la
-        # prosodie ni sonner robotique.
-        self.kokoro_speed = 0.78
-
         self.min_scene_duration = 3.5
 
         self.use_kokoro = use_kokoro and KOKORO_AVAILABLE
@@ -149,7 +142,6 @@ class AudioEngine:
         """
         Genere la voix localement avec Kokoro TTS (gratuit, illimite,
         aucune cle API, tourne sur CPU). Plus naturel qu'Edge-TTS.
-        Le parametre speed ralentit le debit natif du modele.
         """
         if not self.use_kokoro or self._kokoro_pipeline is None:
             return False
@@ -157,16 +149,12 @@ class AudioEngine:
         cleaned_text = self.add_dramatic_pauses(self.clean_text(text))
 
         try:
-            generator = self._kokoro_pipeline(
-                cleaned_text,
-                voice=self.KOKORO_FRENCH_VOICES[0],
-                speed=self.kokoro_speed,
-            )
+            generator = self._kokoro_pipeline(cleaned_text, voice=self.KOKORO_FRENCH_VOICES[0])
             for _, _, audio in generator:
                 sf.write(output_path_wav, audio, 24000)
                 break
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
-                print(f"      Voix Kokoro TTS utilisee (locale, gratuite, speed={self.kokoro_speed})")
+                print(f"      Voix Kokoro TTS utilisee (locale, gratuite)")
                 self.trim_silence(output_path_wav)
                 return True
             return False
