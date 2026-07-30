@@ -1,3 +1,4 @@
+
 import os
 import json
 from openai import OpenAI
@@ -32,18 +33,12 @@ class ContentBrain:
         return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
-        """
-        Essaie Groq en premier. Si la cle est absente ou que l'appel echoue
-        (quota, erreur reseau, timeout...), bascule automatiquement sur Gemini.
-        """
         last_error = None
-
         for provider in ("groq", "gemini"):
             client = self._build_client(provider)
             if client is None:
-                print(f"⚠️  Cle API absente pour {provider}, on passe au suivant...")
+                print(f"Cle API absente pour {provider}, on passe au suivant...")
                 continue
-
             try:
                 kwargs = {
                     "model": self._model_for(provider),
@@ -52,113 +47,241 @@ class ContentBrain:
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
-
                 response = client.chat.completions.create(**kwargs)
-                print(f"✅ Reponse obtenue via {provider}")
+                print(f"Reponse obtenue via {provider}")
                 return response.choices[0].message.content
-
             except Exception as e:
-                print(f"❌ Echec avec {provider}: {e}")
+                print(f"Echec avec {provider}: {e}")
                 last_error = e
                 continue
-
-        raise RuntimeError(f"Aucun provider disponible (Groq et Gemini ont echoue). Derniere erreur: {last_error}")
+        raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
 
     def get_trending_topic(self):
-        print("🔍 Recherche d'un nouveau sujet tendance...")
-
         messages = [
-            {"role": "system", "content": "Tu es un strategiste de contenu viral. Trouve de toi-meme un sujet de mini-documentaire court, captivant et inattendu. Reponds UNIQUEMENT avec le titre du sujet en francais, sans guillemets, sans introduction."},
+            {"role": "system", "content": "Tu es un strategiste de contenu viral. Trouve un sujet de mini-documentaire court, captivant et inattendu. Reponds UNIQUEMENT avec le titre en francais, sans guillemets."},
             {"role": "user", "content": "Donne un sujet viral totalement inedit et surprenant pour TikTok en francais."}
         ]
-
         content = self._call_with_fallback(messages, temperature=1.2)
-        topic = content.strip().replace('"', "")
-        print(f"🎯 Sujet selectionne : {topic}")
-        return topic
+        return content.strip().replace(chr(34), "")
 
     def refine_topic_angle(self, raw_topic):
-        """
-        Prend un sujet brut/trend TikTok saisi par l'utilisateur et le reformule
-        en un angle accrocheur pour un script viral, sans changer le sujet de fond.
-        """
-        print(f"🔧 Reformulation de l'angle pour: {raw_topic}...")
-
         messages = [
-            {"role": "system", "content": "Tu es un strategiste de contenu viral. Reformule le sujet donne par l'utilisateur en un titre accrocheur et precis pour une video courte, en francais. Garde le sujet de fond identique, ne change pas le theme. Reponds UNIQUEMENT avec le titre reformule, sans guillemets, sans explication."},
+            {"role": "system", "content": "Tu es un strategiste de contenu viral. Reformule le sujet en un titre accrocheur, sans changer le theme. Reponds UNIQUEMENT avec le titre reformule."},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"}
         ]
-
         content = self._call_with_fallback(messages, temperature=0.8)
-        refined = content.strip().replace('"', "")
-        print(f"    ✅ Angle affine : {refined}")
-        return refined
+        return content.strip().replace(chr(34), "")
 
-    def generate_script(self, topic):
-        return self.generate_script_with_target(topic, scene_count=11)
-
-    def generate_script_with_target(self, topic, scene_count=11):
-        print(f"📝 Ecriture du script en francais pour: {topic} ({scene_count} scenes)...")
+    def generate_hook_variants(self, topic, n=5):
+        """
+        Genere n hooks alternatifs (accroche des 3 premieres secondes) pour un meme sujet,
+        permettant un A/B test avant de committer sur un script complet.
+        Chaque hook combine un fait concret ET une ancre sensorielle/emotionnelle
+        (son, image, sensation, confession) pour maximiser l'identification immediate.
+        """
+        print(f"Generation de {n} hooks alternatifs pour: {topic}...")
 
         prompt = f"""
-You are the lead scriptwriter for a high-retention faceless short-form video channel (TikTok, Reels, Shorts).
-Topic: {topic}
+Tu es un expert en hooks viraux pour TikTok, specialise dans le mystere et l'inexplique.
 
-### LANGUAGE RULES:
-- The voiceover "text" MUST be entirely in French.
-- "visual_1" and "visual_2" search/prompt terms MUST remain in English.
+SUJET :
+{topic}
 
-### SCENE COUNT:
-- Generate exactly {scene_count} scenes.
+OBJECTIF :
+Genere {n} hooks differents pour la meme histoire. Chaque hook doit arreter le scroll
+en moins de 3 secondes et creer une promesse de resolution.
 
-### MANDATORY NARRATIVE STRUCTURE (respect this order strictly):
-1. Scene 1 (HOOK, id=1): A shocking claim, a precise number, or a question that creates an information gap.
-   FORBIDDEN openers: "Aujourd'hui on va parler de", "Savais-tu que", "Bienvenue".
-   Must set up a promise that gets resolved later. Keep it punchy, max 10 words.
-2. Scene 2 (TENSION): Why this matters, raise stakes or curiosity.
-3. Scenes 3 to (N-2) (VALUE): One surprising fact or mechanism per scene, with enough
-   context to feel complete, not just a fragment.
-4. Last two scenes (TWIST + CTA): A reversal or payoff, then a direct call to action
-   (e.g. "Abonne-toi pour la suite" / a question inviting comments). The CTA must be
-   its own final scene.
+REGLES POUR CHAQUE HOOK :
+- 12 a 18 mots, phrase complete en francais oral et naturel.
+- Combine un fait concret (chiffre, lieu, date, anomalie) AVEC une ancre sensorielle
+  ou emotionnelle (un son entendu, une image vue, une sensation, une confession
+  a la premiere personne). Exemple de logique: pas seulement "Cet immeuble est vide
+  depuis 5 ans" mais "L'immeuble en face est vide depuis 5 ans. Hier soir j'ai vu
+  une lumiere s'allumer au dernier etage."
+- Varie les patterns de viralite: question directe, statistique choc, confession
+  personnelle, contre-intuition, mise en garde.
+- N'utilise jamais "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
+- N'invente ni dates, ni chiffres, ni noms precis non verifiables.
 
-### PACING RULE:
-- Each scene "text" must be a complete, natural French sentence between 12 and 22 words.
-- Avoid short choppy fragments. Each scene should give the narrator enough to say for
-  a comfortable 4 to 7 second voiceover at a normal speaking pace.
+FORMAT DE SORTIE :
+Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
-### OUTPUT FORMAT (Strict JSON Object with a "scenes" array):
 {{
-    "scenes": [
-        {{
-            "id": 1,
-            "text": "Texte de la voix off en francais ici...",
-            "visual_1": "english search keywords for pexels",
-            "visual_2": "english search keywords for pexels",
-            "mood": "intriguing",
-            "role": "hook"
-        }}
-    ]
+  "hooks": [
+    {{
+      "text": "Phrase du hook.",
+      "pattern": "question | statistique | confession | contre-intuition | mise_en_garde",
+      "raison": "Une phrase expliquant pourquoi ce hook capte l'attention psychologiquement."
+    }}
+  ]
 }}
-
-Valid "role" values: "hook", "tension", "value", "twist", "cta".
 """
-
         messages = [
-            {"role": "system", "content": f"You are a helpful assistant that outputs only a valid JSON object containing a 'scenes' array with exactly {scene_count} scenes. The text must be strictly in French. Respect the pacing rule (12-22 words per scene, complete sentences) strictly."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks."},
+            {"role": "user", "content": prompt},
+        ]
+        content = self._call_with_fallback(messages, temperature=1.1, json_mode=True)
+        data = json.loads(content)
+        hooks = data.get("hooks")
+        if not isinstance(hooks, list) or len(hooks) != n:
+            raise ValueError(f"Nombre de hooks invalide: {len(hooks) if isinstance(hooks, list) else 0} au lieu de {n}.")
+        return hooks
+
+    def generate_script(self, topic, chosen_hook=None):
+        return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
+
+    def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None):
+        if scene_count < 6:
+            raise ValueError("scene_count doit etre superieur ou egal a 6.")
+
+        print(f"Ecriture du script en francais pour : {topic} ({scene_count} scenes)...")
+
+        hook_instruction = (
+            f'La scene 1 doit reprendre exactement ou reformuler tres legerement ce hook deja valide : "{chosen_hook}"'
+            if chosen_hook else
+            "Scene 1 - hook : une phrase de 12 a 18 mots combinant un fait concret ET une ancre "
+            "sensorielle ou emotionnelle (son, image, sensation, confession). Cree une promesse "
+            "qui sera resolue dans l'avant-derniere scene."
+        )
+
+        prompt = f"""
+Tu es scenariste en chef d'une chaine francophone de mini-documentaires
+verticaux consacree aux mysteres, decouvertes, phenomenes inexpliques,
+lieux oublies, sciences etranges et evenements historiques surprenants.
+
+SUJET :
+{topic}
+
+OBJECTIF :
+Creer une video TikTok, Reels ou Shorts captivante, credible et facile a
+illustrer. Le spectateur doit vouloir rester jusqu'a la revelation finale
+et laisser un commentaire a la fin.
+
+CONTRAINTE ABSOLUE :
+Genere exactement {scene_count} scenes.
+
+LANGUES :
+- "text" : uniquement en francais naturel et oral.
+- "stock_search" : uniquement en anglais, mots-cles concrets.
+- "image_prompt" : uniquement en anglais.
+- "mood" et "role" : uniquement parmi les valeurs autorisees.
+
+STRUCTURE NARRATIVE :
+- {hook_instruction}
+- Scene 2 - tension :
+  Explique pourquoi ce mystere est etrange, important ou difficile a expliquer.
+- Scene 3 - contexte :
+  Situe clairement l'epoque, le lieu ou les personnes concernees.
+- Scenes 4 a {scene_count - 3} - enquete :
+  Un nouvel indice, mecanisme, temoignage ou hypothese par scene. Chaque scene
+  doit ajouter une tension nouvelle, jamais une simple repetition du fait precedent.
+- Scene {scene_count - 2} - escalade :
+  Presente l'indice le plus troublant ou l'explication qui semblait evidente
+  et qui s'effondre.
+- Scene {scene_count - 1} - revelation :
+  Resous la promesse du hook avec la conclusion la plus credible. Si le sujet
+  reste debattu, distingue clairement les faits des hypotheses.
+- Scene {scene_count} - CTA polarisant :
+  Pose une question ou affirmation qui divise volontairement l'audience en deux
+  camps sur le mystere (ex: "Toi tu crois a la version officielle ou pas ?").
+  Interdiction des CTA generiques comme "Abonne-toi pour plus de videos".
+
+REGLES D'ECRITURE (RYTHME) :
+- Chaque "text" contient une phrase complete de 12 a 22 mots, une seule idee
+  principale par scene.
+- Alterne systematiquement une phrase courte percutante (moins de 14 mots) et
+  une phrase plus longue explicative, pour creer un rythme oral naturel.
+- Une fois le texte de la scene ecrit, retire mentalement tout mot ou groupe de
+  mots qui n'ajoute pas d'information ou de tension avant de le finaliser
+  (objectif : phrase la plus dense possible, sans remplissage).
+- Cree une transition logique explicite entre chaque scene (la scene N doit
+  appeler la scene N+1).
+- Ne commence jamais par : "Aujourd'hui", "Savais-tu que", "Bienvenue",
+  "Dans cette video".
+- N'invente ni dates, ni chiffres, ni citations, ni noms de chercheurs.
+- Ne presente jamais une legende ou une hypothese comme un fait etabli.
+- Pas de hashtags, d'emojis, de titres, de notes ou d'explications.
+
+REGLES VISUELLES :
+Chaque scene doit etre comprehensible a partir de son image seule.
+
+"stock_search" :
+- Entre 3 et 7 mots-cles anglais, sujet reellement trouvable dans une banque
+  de videos. Pas de termes abstraits comme "mystery", "truth" ou "secret" seuls.
+
+"image_prompt" :
+- Decrit une seule composition visuelle, pas une succession d'actions.
+- Commence par le sujet principal concret, puis action ou etat, environnement,
+  epoque si necessaire, cadrage, lumiere, ambiance et details utiles.
+- Composition verticale 9:16, sujet principal dans la zone centrale.
+- Prevoir de l'espace libre en haut et en bas pour les sous-titres.
+- Style cinematographique realiste de mini-documentaire.
+- Aucun texte, logo, filigrane, interface ou sous-titre dans l'image.
+- Evite le gore et les visages deformes.
+- Conserve la continuite des lieux, objets et personnages recurrents.
+- N'utilise pas "Pixar", "Disney" ou le nom d'un artiste.
+
+VALEURS AUTORISEES :
+- "role" : "hook", "tension", "context", "value", "escalation", "reveal", "cta"
+- "mood" : "ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"
+
+FORMAT DE SORTIE :
+Retourne uniquement un objet JSON valide, sans bloc Markdown.
+
+{{
+  "title": "Titre francais court et intrigant",
+  "visual_identity": "One concise English sentence defining recurring visual continuity",
+  "scenes": [
+    {{
+      "id": 1,
+      "text": "Phrase francaise complete de douze a vingt-deux mots.",
+      "stock_search": "concrete English stock footage keywords",
+      "image_prompt": "Detailed English visual prompt for one vertical cinematic shot",
+      "mood": "ominous",
+      "role": "hook"
+    }}
+  ]
+}}
+"""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Tu produis uniquement du JSON valide. "
+                    f"La cle scenes contient exactement {scene_count} scenes. "
+                    "Tu respectes strictement les langues, roles, longueurs, "
+                    "le rythme alterne et le CTA polarisant. Aucun texte hors du JSON."
+                ),
+            },
+            {"role": "user", "content": prompt},
         ]
 
-        content = self._call_with_fallback(messages, temperature=1.0, json_mode=True)
+        content = self._call_with_fallback(messages, temperature=0.75, json_mode=True)
         data = json.loads(content)
-        scenes = data.get("scenes", data) if isinstance(data, dict) else data
-        return scenes
+        scenes = data.get("scenes")
+
+        if not isinstance(scenes, list):
+            raise ValueError("La reponse ne contient pas de tableau scenes.")
+        if len(scenes) != scene_count:
+            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
+
+        expected_ids = list(range(1, scene_count + 1))
+        actual_ids = [scene.get("id") for scene in scenes]
+        if actual_ids != expected_ids:
+            raise ValueError(f"IDs de scenes invalides : {actual_ids}")
+
+        return data
 
 
 if __name__ == "__main__":
     brain = ContentBrain()
     topic = brain.get_trending_topic()
-    script = brain.generate_script(topic)
-    with open("script.json", "w") as f:
-        json.dump(script, f, indent=4)
-        print("✅ Script saved to script.json")
+    hooks = brain.generate_hook_variants(topic, n=5)
+    for i, h in enumerate(hooks, 1):
+        print(i, h["pattern"], h["text"])
+    best_hook = hooks[0]["text"]
+    script_data = brain.generate_script(topic, chosen_hook=best_hook)
+    with open("script.json", "w", encoding="utf-8") as f:
+        json.dump(script_data, f, indent=4, ensure_ascii=False)
+    print("Script saved to script.json")
+
