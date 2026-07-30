@@ -1,4 +1,7 @@
+
 import os
+import subprocess
+import tempfile
 import requests
 from datetime import datetime
 from constants import API_URL, DIRECT_URL
@@ -17,26 +20,20 @@ def get_latest_video_url():
 
     files = response.json()
 
-    # 1. Filtrer uniquement les fichiers MP4
     videos = [f['path'] for f in files if f['path'].endswith('.mp4')]
-    
+
     if not videos:
         raise Exception("❌ Aucune vidéo trouvée sur Hugging Face.")
 
-    # 2. Trier chronologiquement et prendre la dernière
     videos.sort()
     target_video_path = videos[-1]
     filename = target_video_path.split("/")[-1]
 
-    # --- 🛡️ NOUVELLE SÉCURITÉ : VÉRIFICATION DE LA DATE ---
-    # Extrait "YYYYMMDD" du nom du fichier (les 8 premiers caractères)
-    video_date = filename[:8] 
-    # Récupère la date du jour au même format
+    video_date = filename[:8]
     today_date = datetime.utcnow().strftime("%Y%m%d")
 
     if video_date != today_date:
         raise Exception(f"🛑 Alerte Sécurité : La dernière vidéo date du {video_date}, mais nous sommes le {today_date}. Le générateur a probablement échoué. Annulation de la publication.")
-    # ------------------------------------------------------
 
     print(f"🎯 Vidéo du jour sélectionnée : {filename}")
 
@@ -44,9 +41,46 @@ def get_latest_video_url():
     return direct_url, target_video_path
 
 
+def check_audio_loudness(video_url):
+    """
+    Télécharge temporairement la vidéo et verifie le niveau sonore
+    (voix / musique) avant publication via ffmpeg loudnorm. N'empeche
+    jamais la publication en cas d'echec, mais log un rapport lisible
+    pour reperer un probleme de mixage avant qu'il ne soit publie.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            print("🔊 Téléchargement temporaire pour analyse loudness...")
+            with requests.get(video_url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
+                    tmp_file.write(chunk)
+
+        result = subprocess.run(
+            ["ffmpeg", "-i", tmp_path, "-af", "loudnorm=print_format=summary", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60
+        )
+
+        report = result.stderr
+        with open("loudness_report.txt", "w", encoding="utf-8") as f:
+            f.write(report)
+
+        for line in report.splitlines():
+            if any(key in line for key in ["Input Integrated", "Input LRA", "Output Integrated"]):
+                print(f"   {line.strip()}")
+
+        os.remove(tmp_path)
+
+    except Exception as e:
+        print(f"⚠️ Analyse loudness impossible (non bloquant) : {e}")
+
+
 def publish_to_tiktok():
     video_url, file_path = get_latest_video_url()
     print(f"🎥 Lien direct de la vidéo : {video_url}")
+
+    check_audio_loudness(video_url)
 
     api_key = os.environ.get("ZERNIO_API_KEY")
     tiktok_account_id = os.environ.get("TIKTOK_ACCOUNT_ID")
@@ -55,10 +89,9 @@ def publish_to_tiktok():
     if not api_key or not tiktok_account_id or not youtube_account_id:
         raise ValueError("❌ Clés d'API ou IDs de compte manquants dans les variables d'environnement.")
 
-    # Extraction du titre propre à partir du nom du fichier
     raw_filename = file_path.split("/")[-1]
     clean_title = raw_filename.replace(".mp4", "").replace("_", " ")[16:]
-    
+
     caption = f"{clean_title} 🧠✨ #IA #MinuteMystère #Decouverte"
     print(f"📝 Légende générée : {caption}")
 
@@ -72,7 +105,7 @@ def publish_to_tiktok():
         {"platform": "tiktok", "accountId": tiktok_account_id},
         {"platform": "youtube", "accountId": youtube_account_id}
     ]
-    
+
     payload = {
         "content": caption,
         "mediaItems": [{"type": "video", "url": video_url}],
@@ -106,3 +139,4 @@ def publish_to_tiktok():
 
 if __name__ == "__main__":
     publish_to_tiktok()
+
