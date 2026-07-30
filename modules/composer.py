@@ -16,7 +16,12 @@ class Composer:
 
         self.transitions = ["fade", "diagbr", "diagtl"]
         self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
-        self.music_volume = 0.08
+
+        # Volume de la musique AVANT compensation de la normalisation amix.
+        # amix divise le volume total par le nombre d'entrees (ici 2), donc
+        # on booste la musique pour qu'elle reste audible malgre ce facteur.
+        self.music_volume = 0.35
+        self.voice_volume = 2.0
         self.music_fade_duration = 1.5
 
     def get_duration(self, filepath):
@@ -143,9 +148,12 @@ class Composer:
     def _mix_background_music(self, stitched_path, output_path):
         """
         Mixe la musique de fond (en boucle) avec la piste voix/video deja stitchee.
-        Applique un volume reduit et un fade-out en fin de piste pour eviter
-        une coupure brusque. Retourne True si le mix a reussi, False sinon
-        (l'appelant doit alors faire un fallback vers la version sans musique).
+
+        IMPORTANT: le filtre amix normalise automatiquement le volume total
+        en le divisant par le nombre d'entrees (ici 2), ce qui rendait la
+        musique quasi inaudible meme a volume=0.08. On desactive cette
+        normalisation avec normalize=0 et on regle manuellement le volume
+        relatif voix/musique en amont.
         """
         try:
             video_duration = self.get_duration(stitched_path)
@@ -154,6 +162,8 @@ class Composer:
             voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
 
+            voice_audio = voice.audio.filter("volume", self.voice_volume)
+
             music_audio = (
                 music.audio
                 .filter("volume", self.music_volume)
@@ -161,7 +171,12 @@ class Composer:
             )
 
             mixed_audio = ffmpeg.filter(
-                [voice.audio, music_audio], "amix", duration="first", dropout_transition=2
+                [voice_audio, music_audio],
+                "amix",
+                inputs=2,
+                duration="first",
+                dropout_transition=2,
+                normalize=0
             )
 
             final_runner = ffmpeg.output(
@@ -239,3 +254,4 @@ class Composer:
                 pass
 
         return output_path
+

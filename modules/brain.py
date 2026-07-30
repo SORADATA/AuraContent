@@ -1,13 +1,53 @@
 
 import os
+import re
 import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
+
 load_dotenv()
+
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.5-flash"
+
+ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
+
+ACCENT_INSTRUCTION = (
+    "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
+    "(é, è, ê, à, ù, ç, ô, î etc). Exemples obligatoires : 'découvert' "
+    "(jamais 'decouvert'), 'secrètes' (jamais 'secretes'), 'exploré' "
+    "(jamais 'explore'), 'phénomène' (jamais 'phenomene'), 'révélation' "
+    "(jamais 'revelation'), 'étrange' (jamais 'etrange'), 'théorie' "
+    "(jamais 'theorie'). Verifie chaque mot avant de repondre."
+)
+
+
+def _has_missing_accents(text, min_hits=3):
+    """
+    Heuristique de detection d'un texte francais qui aurait perdu ses accents
+    (bug frequent en mode JSON contraint avec certains LLM). Cherche des
+    racines de mots frequents qui devraient contenir un accent.
+    """
+    suspicious_patterns = [
+        r"\bdecouv", r"\bmyster", r"\bsecret", r"\bexplor",
+        r"\btheori", r"\bphenomen", r"\bhistoi", r"\bevenem",
+        r"\bepoque", r"\betrang", r"\brevel", r"\bdifferen",
+        r"\ba ete\b", r"\bpeut etre\b", r"\binteresse",
+    ]
+    text_lower = text.lower()
+    hits = sum(1 for p in suspicious_patterns if re.search(p, text_lower))
+    has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
+    return hits >= min_hits and not has_any_accent
+
+
+def _script_missing_accents(script_data):
+    scenes = script_data.get("scenes", [])
+    if not scenes:
+        return False
+    full_text = " ".join(s.get("text", "") for s in scenes)
+    return _has_missing_accents(full_text)
 
 
 class ContentBrain:
@@ -32,9 +72,12 @@ class ContentBrain:
     def _model_for(self, provider):
         return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
 
-    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
+        skip_providers = skip_providers or set()
         last_error = None
         for provider in ("groq", "gemini"):
+            if provider in skip_providers:
+                continue
             client = self._build_client(provider)
             if client is None:
                 print(f"Cle API absente pour {provider}, on passe au suivant...")
@@ -49,7 +92,7 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                return response.choices[0].message.content
+                return response.choices[0].message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
                 last_error = e
@@ -58,18 +101,18 @@ class ContentBrain:
 
     def get_trending_topic(self):
         messages = [
-            {"role": "system", "content": "Tu es un strategiste de contenu viral. Trouve un sujet de mini-documentaire court, captivant et inattendu. Reponds UNIQUEMENT avec le titre en francais, sans guillemets."},
+            {"role": "system", "content": f"Tu es un strategiste de contenu viral. Trouve un sujet de mini-documentaire court, captivant et inattendu. Reponds UNIQUEMENT avec le titre en francais, sans guillemets. {ACCENT_INSTRUCTION}"},
             {"role": "user", "content": "Donne un sujet viral totalement inedit et surprenant pour TikTok en francais."}
         ]
-        content = self._call_with_fallback(messages, temperature=1.2)
+        content, _ = self._call_with_fallback(messages, temperature=1.2)
         return content.strip().replace(chr(34), "")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
-            {"role": "system", "content": "Tu es un strategiste de contenu viral. Reformule le sujet en un titre accrocheur, sans changer le theme. Reponds UNIQUEMENT avec le titre reformule."},
+            {"role": "system", "content": f"Tu es un strategiste de contenu viral. Reformule le sujet en un titre accrocheur, sans changer le theme. Reponds UNIQUEMENT avec le titre reformule. {ACCENT_INSTRUCTION}"},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"}
         ]
-        content = self._call_with_fallback(messages, temperature=0.8)
+        content, _ = self._call_with_fallback(messages, temperature=0.8)
         return content.strip().replace(chr(34), "")
 
     def generate_hook_variants(self, topic, n=5):
@@ -102,6 +145,7 @@ REGLES POUR CHAQUE HOOK :
   personnelle, contre-intuition, mise en garde.
 - N'utilise jamais "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
 - N'invente ni dates, ni chiffres, ni noms precis non verifiables.
+- {ACCENT_INSTRUCTION}
 
 FORMAT DE SORTIE :
 Retourne uniquement un objet JSON valide, sans bloc Markdown.
@@ -117,11 +161,17 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 }}
 """
         messages = [
-            {"role": "system", "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks."},
+            {"role": "system", "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks. {ACCENT_INSTRUCTION}"},
             {"role": "user", "content": prompt},
         ]
-        content = self._call_with_fallback(messages, temperature=1.1, json_mode=True)
+        content, provider_used = self._call_with_fallback(messages, temperature=1.1, json_mode=True)
         data = json.loads(content)
+
+        if provider_used == "groq" and _script_missing_accents({"scenes": [{"text": h.get("text", "")} for h in data.get("hooks", [])]}):
+            print("⚠️ Accents manquants detectes (Groq), nouvelle tentative via Gemini...")
+            content, _ = self._call_with_fallback(messages, temperature=1.1, json_mode=True, skip_providers={"groq"})
+            data = json.loads(content)
+
         hooks = data.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != n:
             raise ValueError(f"Nombre de hooks invalide: {len(hooks) if isinstance(hooks, list) else 0} au lieu de {n}.")
@@ -161,10 +211,12 @@ CONTRAINTE ABSOLUE :
 Genere exactement {scene_count} scenes.
 
 LANGUES :
-- "text" : uniquement en francais naturel et oral.
+- "text" : uniquement en francais naturel et oral, PARFAITEMENT ACCENTUE.
 - "stock_search" : uniquement en anglais, mots-cles concrets.
 - "image_prompt" : uniquement en anglais.
 - "mood" et "role" : uniquement parmi les valeurs autorisees.
+
+{ACCENT_INSTRUCTION}
 
 STRUCTURE NARRATIVE :
 - {hook_instruction}
@@ -250,14 +302,21 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
                     "Tu produis uniquement du JSON valide. "
                     f"La cle scenes contient exactement {scene_count} scenes. "
                     "Tu respectes strictement les langues, roles, longueurs, "
-                    "le rythme alterne et le CTA polarisant. Aucun texte hors du JSON."
+                    "le rythme alterne et le CTA polarisant. Aucun texte hors du JSON. "
+                    f"{ACCENT_INSTRUCTION}"
                 ),
             },
             {"role": "user", "content": prompt},
         ]
 
-        content = self._call_with_fallback(messages, temperature=0.75, json_mode=True)
+        content, provider_used = self._call_with_fallback(messages, temperature=0.75, json_mode=True)
         data = json.loads(content)
+
+        if provider_used == "groq" and _script_missing_accents(data):
+            print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
+            content, _ = self._call_with_fallback(messages, temperature=0.75, json_mode=True, skip_providers={"groq"})
+            data = json.loads(content)
+
         scenes = data.get("scenes")
 
         if not isinstance(scenes, list):
