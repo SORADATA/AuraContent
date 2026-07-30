@@ -1,5 +1,4 @@
 import os
-import io
 import wave
 import base64
 import asyncio
@@ -48,7 +47,10 @@ class AudioEngine:
         self._kokoro_pipeline = None
         if self.use_kokoro:
             try:
-                self._kokoro_pipeline = KPipeline(lang_code="f")
+                self._kokoro_pipeline = KPipeline(
+                    lang_code="f",
+                    repo_id="hexgrad/Kokoro-82M"
+                )
                 print("      Kokoro initialise")
             except Exception as e:
                 print(f"      Kokoro indisponible: {e}")
@@ -61,16 +63,12 @@ class AudioEngine:
 
     def stylize_for_gemini(self, text):
         cleaned = self.clean_text(text)
-        return (
-            f"{self.GEMINI_STYLE_PROMPT} "
-            f"[short pause] {cleaned}"
-        )
+        return f"{self.GEMINI_STYLE_PROMPT} [short pause] {cleaned}"
 
     def get_audio_duration(self, file_path):
         try:
             if file_path.endswith(".mp3"):
                 return MP3(file_path).info.length
-            import soundfile as sf
             info = sf.info(file_path)
             return float(info.duration)
         except Exception:
@@ -80,7 +78,8 @@ class AudioEngine:
         return
 
     def pad_to_min_duration(self, file_path, min_duration):
-        return self.get_audio_duration(file_path)
+        current_duration = self.get_audio_duration(file_path)
+        return max(current_duration, min_duration)
 
     def _save_pcm_wav(self, pcm_bytes, output_path, sample_rate=24000, channels=1, sampwidth=2):
         with wave.open(output_path, "wb") as wf:
@@ -93,7 +92,10 @@ class AudioEngine:
         if not self.use_gemini:
             return False
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.GEMINI_MODEL}:generateContent?key={self.gemini_api_key}"
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.GEMINI_MODEL}:generateContent?key={self.gemini_api_key}"
+        )
 
         payload = {
             "contents": [
@@ -117,6 +119,7 @@ class AudioEngine:
 
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             inline_data = None
+
             for part in parts:
                 if "inlineData" in part:
                     inline_data = part["inlineData"]
@@ -163,6 +166,7 @@ class AudioEngine:
                 return True
 
             return False
+
         except Exception as e:
             print(f"      Kokoro indisponible: {e}")
             return False
@@ -188,13 +192,36 @@ class AudioEngine:
         if self._try_gemini(text, wav_path):
             return wav_path, "gemini-tts"
 
+        if self._try_kokoro(text, wav_path):
+            return wav_path, "kokoro"
+
         try:
             await self._try_edge(text, mp3_path)
             return mp3_path, "edge-tts"
         except Exception as e:
             print(f"      Edge indisponible: {e}")
 
-        if self._try_kokoro(text, wav_path):
-            return wav_path, "kokoro"
-
         raise RuntimeError("Aucun moteur TTS disponible")
+
+    async def process_script(self, script_data):
+        print("Generation audio (Gemini TTS, fallback Kokoro, puis Edge-TTS)...")
+
+        for scene in script_data:
+            scene_id = scene["id"]
+            text = scene["text"]
+            output_filename = f"scene_{scene_id}.wav"
+
+            audio_path, engine_used = await self.generate_audio(text, output_filename)
+
+            scene["audio_path"] = audio_path
+            scene["tts_engine"] = engine_used
+
+            duration = self.get_audio_duration(audio_path)
+            scene["duration"] = max(duration, self.min_scene_duration)
+
+            print(
+                f"      Scene {scene_id}: audio genere via {engine_used} "
+                f"({scene['duration']:.2f}s)"
+            )
+
+        return script_data
