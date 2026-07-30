@@ -209,8 +209,8 @@ class Composer:
     def _mix_background_music(self, stitched_path, output_path):
         """
         Mixe la voix et la musique avec ducking automatique.
-        La musique baisse quand la voix parle, ce qui rend la narration
-        beaucoup plus propre qu'un simple amix statique.
+        Version corrigee pour ffmpeg-python avec duplication explicite
+        des flux reutilises dans plusieurs branches.
         """
         try:
             video_duration = self.get_duration(stitched_path)
@@ -219,21 +219,34 @@ class Composer:
             voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
 
-            voice_audio = (
+            voice_audio_base = (
                 voice.audio
                 .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
                 .filter("volume", self.voice_gain)
+                .filter("atrim", duration=video_duration)
+                .filter("asetpts", "PTS-STARTPTS")
             )
 
-            music_audio = (
+            music_audio_base = (
                 music.audio
                 .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
                 .filter("volume", self.music_gain)
+                .filter("atrim", duration=video_duration)
+                .filter("asetpts", "PTS-STARTPTS")
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
+            # Duplication explicite des flux reutilises
+            voice_split = voice_audio_base.filter_multi_output("asplit", 2)
+            voice_for_sidechain = voice_split[0]
+            voice_for_mix = voice_split[1]
+
+            music_split = music_audio_base.filter_multi_output("asplit", 2)
+            music_for_sidechain = music_split[0]
+            music_for_mix = music_split[1]
+
             ducked_music = ffmpeg.filter(
-                [music_audio, voice_audio],
+                [music_for_sidechain, voice_for_sidechain],
                 "sidechaincompress",
                 threshold=0.03,
                 ratio=10,
@@ -242,18 +255,17 @@ class Composer:
                 makeup=1
             )
 
-            mixed_audio = ffmpeg.filter(
-                [voice_audio, ducked_music],
-                "amix",
-                inputs=2,
-                duration="first",
-                dropout_transition=2,
-                normalize=0
-            ).filter(
-                "loudnorm",
-                I=-16,
-                TP=-1.5,
-                LRA=11
+            mixed_audio = (
+                ffmpeg
+                .filter(
+                    [voice_for_mix, ducked_music],
+                    "amix",
+                    inputs=2,
+                    duration="first",
+                    dropout_transition=2,
+                    normalize=0
+                )
+                .filter("loudnorm", I=-16, TP=-1.5, LRA=11)
             )
 
             final_runner = ffmpeg.output(
