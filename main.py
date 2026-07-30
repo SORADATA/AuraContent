@@ -1,9 +1,10 @@
-
 import asyncio
 import os
 import shutil
+import math
 from datetime import datetime
 from huggingface_hub import HfApi
+
 from modules.brain import ContentBrain
 from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
@@ -12,12 +13,16 @@ from modules.composer import Composer
 
 def upload_to_huggingface(video_path, topic):
     hf_token = os.getenv("HF_TOKEN")
-    if not hf_token or not video_path or not os.path.exists(video_path):
-        print("Upload HF ignore (token manquant ou fichier introuvable)")
-        return
+    if not hf_token:
+        print("Upload HF ignore : token manquant.")
+        return False
+
+    if not video_path or not os.path.exists(video_path):
+        print("Upload HF ignore : fichier video introuvable.")
+        return False
 
     api = HfApi(token=hf_token)
-    repo_id = "soradata/AIShortvideos"
+    repo_id = os.getenv("HF_REPO_ID", "soradata/AIShortvideos")
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     safe_topic = "".join(c if c.isalnum() else "_" for c in topic)[:50]
@@ -29,14 +34,17 @@ def upload_to_huggingface(video_path, topic):
             path_in_repo=remote_filename,
             repo_id=repo_id,
             repo_type="dataset",
+            commit_message=f"Add generated short: {safe_topic}"
         )
-        print(f"Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
+        print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
+        return True
     except Exception as e:
-        print(f"Echec upload Hugging Face : {e}")
+        print(f"❌ Echec upload Hugging Face : {e}")
+        return False
 
 
 def clean_cache():
-    print("Cleaning up temporary files...")
+    print("🧹 Cleaning up temporary files...")
 
     folders_to_clean = [
         os.path.join(os.getcwd(), "assets", "audio_clips"),
@@ -47,9 +55,14 @@ def clean_cache():
     for folder in folders_to_clean:
         if not os.path.exists(folder):
             continue
-        if "assets" not in folder:
-            print(f"    SECURITY ALERT: Skipping {folder} because it looks unsafe!")
+
+        normalized = os.path.abspath(folder)
+        cwd = os.path.abspath(os.getcwd())
+
+        if not normalized.startswith(os.path.join(cwd, "assets")):
+            print(f"    SECURITY ALERT: Skipping unsafe path {folder}")
             continue
+
         for filename in os.listdir(folder):
             file_path = os.path.join(folder, filename)
             try:
@@ -60,27 +73,58 @@ def clean_cache():
             except Exception as e:
                 print(f"    Failed to delete {file_path}. Reason: {e}")
 
-    print("Workspace clean!")
+    print("✅ Workspace clean!")
 
 
-def generate_word_by_word_srt(text, duration, output_path):
+def format_srt_timestamp(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+
+
+def chunk_words_for_subtitles(words, max_words=3):
+    chunks = []
+    current = []
+
+    for word in words:
+        current.append(word)
+        if len(current) >= max_words:
+            chunks.append(current)
+            current = []
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def generate_grouped_srt(text, duration, output_path, max_words_per_caption=3, min_caption_dur=0.45):
     words = text.split()
     if not words:
         return None
 
-    per_word = duration / len(words)
+    chunks = chunk_words_for_subtitles(words, max_words=max_words_per_caption)
+    total_words = len(words)
+    cursor = 0.0
     lines = []
-    for i, word in enumerate(words):
-        start = i * per_word
-        end = start + per_word
 
-        def fmt(t):
-            h = int(t // 3600)
-            m = int((t % 3600) // 60)
-            s = t % 60
-            return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+    for idx, chunk in enumerate(chunks, start=1):
+        proportion = len(chunk) / total_words
+        seg_duration = max(duration * proportion, min_caption_dur)
 
-        lines.append(f"{i + 1}\n{fmt(start)} --> {fmt(end)}\n{word}\n")
+        start = cursor
+        end = min(start + seg_duration, duration)
+        cursor = end
+
+        caption_text = " ".join(chunk)
+        lines.append(f"{idx}\n{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}\n{caption_text}\n")
+
+    if lines:
+        last_block = lines[-1].split("\n")
+        if len(last_block) >= 3:
+            start_line = last_block[1].split(" --> ")[0]
+            lines[-1] = f"{len(lines)}\n{start_line} --> {format_srt_timestamp(duration)}\n{last_block[2]}\n"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -92,8 +136,23 @@ def estimate_scene_count(duration_target):
     return max(6, min(14, round(duration_target / 5)))
 
 
+def validate_script_payload(script_payload):
+    if not isinstance(script_payload, dict):
+        raise ValueError("script_payload doit etre un dict.")
+
+    scenes = script_payload.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise ValueError("script_payload['scenes'] est vide ou invalide.")
+
+    for scene in scenes:
+        if "id" not in scene or "text" not in scene or "image_prompt" not in scene:
+            raise ValueError(f"Scene invalide : {scene}")
+
+    return True
+
+
 async def main():
-    print("STARTING AUTOMATION...")
+    print("🚀 STARTING AUTOMATION...")
 
     topic_input = os.getenv("VIDEO_TOPIC", "").strip()
     duration_target = int(os.getenv("VIDEO_DURATION", "45"))
@@ -101,79 +160,107 @@ async def main():
     use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
 
     brain = ContentBrain()
+
     try:
         if topic_input:
             topic = topic_input
-            print(f"Sujet fourni manuellement : {topic}")
+            print(f"📌 Sujet fourni manuellement : {topic}")
             if refine_angle:
                 topic = brain.refine_topic_angle(topic)
-                print(f"Angle affine : {topic}")
+                print(f"🎯 Angle affine : {topic}")
         else:
             topic = brain.get_trending_topic()
-            print(f"Sujet selectionne automatiquement : {topic}")
+            print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
         chosen_hook = None
         if use_hooks_ab_test:
             try:
                 hooks = brain.generate_hook_variants(topic, n=5)
                 chosen_hook = hooks[0]["text"]
-                print(f"Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
+                print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
             except Exception as e:
-                print(f"Generation des hooks alternatifs echouee, hook auto genere par le script: {e}")
+                print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
 
         scene_count = estimate_scene_count(duration_target)
-        print(f"Duree cible: {duration_target}s -> {scene_count} scenes")
+        print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
 
-        # generate_script_with_target retourne un dict {title, visual_identity, scenes}
         script_payload = brain.generate_script_with_target(
-            topic, scene_count, chosen_hook=chosen_hook
+            topic,
+            scene_count,
+            chosen_hook=chosen_hook
         )
+
+        validate_script_payload(script_payload)
+
         script = script_payload["scenes"]
         visual_identity = script_payload.get("visual_identity")
         video_title = script_payload.get("title", topic)
 
     except Exception as e:
-        print(f"Brain Error: {e}")
+        print(f"❌ Brain Error: {e}")
         return
 
     if not script:
-        print("Script generation failed.")
+        print("❌ Script generation failed.")
         return
 
     audio_engine = AudioEngine()
+
     try:
+        print("🎙️ Generation audio...")
         script = await audio_engine.process_script(script)
     except Exception as e:
-        print(f"Audio Error: {e}")
+        print(f"❌ Audio Error: {e}")
         return
 
     subs_dir = os.path.join(os.getcwd(), "assets", "temp", "subs")
     os.makedirs(subs_dir, exist_ok=True)
 
+    print("📝 Generation des sous-titres...")
     for scene in script:
         srt_path = os.path.join(subs_dir, f"scene_{scene['id']}.srt")
-        result = generate_word_by_word_srt(scene["text"], scene["duration"], srt_path)
+        result = generate_grouped_srt(
+            text=scene["text"],
+            duration=scene["duration"],
+            output_path=srt_path,
+            max_words_per_caption=3,
+            min_caption_dur=0.45
+        )
         scene["srt_path"] = result
 
-    asset_manager = AssetManager()
-    assets_map = asset_manager.get_videos(script, visual_identity=visual_identity)
+    try:
+        print("🖼️ Generation des assets visuels...")
+        asset_manager = AssetManager()
+        assets_map = asset_manager.get_videos(script, visual_identity=visual_identity)
+    except Exception as e:
+        print(f"❌ Asset Error: {e}")
+        return
 
-    composer = Composer()
-    final_scene_paths = composer.render_all_scenes(script, assets_map)
+    try:
+        print("🎞️ Composition video...")
+        composer = Composer()
+        final_scene_paths = composer.render_all_scenes(script, assets_map)
+    except Exception as e:
+        print(f"❌ Render Error: {e}")
+        return
 
-    if final_scene_paths:
+    if not final_scene_paths:
+        print("❌ Failed to generate any scenes.")
+        return
+
+    try:
         final_path = composer.concatenate_with_transitions(final_scene_paths)
+    except Exception as e:
+        print(f"❌ Final assembly error: {e}")
+        return
 
-        if final_path:
-            upload_to_huggingface(final_path, video_title)
-        else:
-            print("L'assemblage final a echoue, upload annule.")
-
+    if final_path:
+        print(f"✅ Video finale prete : {final_path}")
+        upload_to_huggingface(final_path, video_title)
         clean_cache()
     else:
-        print("Failed to generate any scenes.")
+        print("❌ L'assemblage final a echoue, upload annule.")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
