@@ -1,4 +1,3 @@
-
 import os
 import random
 import ffmpeg
@@ -17,12 +16,27 @@ class Composer:
         self.transitions = ["fade", "diagbr", "diagtl"]
         self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
 
-        # Volume de la musique AVANT compensation de la normalisation amix.
-        # amix divise le volume total par le nombre d'entrees (ici 2), donc
-        # on booste la musique pour qu'elle reste audible malgre ce facteur.
-        self.music_volume = 0.35
-        self.voice_volume = 2.0
+        self.video_width = 1080
+        self.video_height = 1920
+        self.fps = 30
+
+        self.voice_gain = 1.15
+        self.music_gain = 0.12
         self.music_fade_duration = 1.5
+        self.transition_duration = 0.45
+
+        self.subtitle_style = (
+            "FontName=Arial Black,"
+            "FontSize=18,"
+            "PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,"
+            "BackColour=&H66000000,"
+            "BorderStyle=3,"
+            "Outline=2.2,"
+            "Shadow=0,"
+            "Alignment=2,"
+            "MarginV=115"
+        )
 
     def get_duration(self, filepath):
         try:
@@ -34,7 +48,7 @@ class Composer:
     def process_scene(self, scene, image_pair):
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
-        total_duration = scene["duration"]
+        total_duration = float(scene["duration"])
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
         try:
@@ -50,23 +64,37 @@ class Composer:
             else:
                 path_a = path_b = str(image_pair)
 
-            duration_a = total_duration / 2
-            duration_b = (total_duration / 2) + 0.5
+            duration_a = max(total_duration / 2, 0.1)
+            duration_b = max((total_duration / 2) + 0.35, 0.1)
 
-            frames_a = int(duration_a * 30)
-            frames_b = int(duration_b * 30)
+            frames_a = max(int(duration_a * self.fps), 1)
+            frames_b = max(int(duration_b * self.fps), 1)
 
             stream_a = (
-                ffmpeg.input(path_a, loop=1, t=duration_a)
-                .filter("scale", 2000, -1)
-                .filter("zoompan", z="min(zoom+0.0015,1.3)", d=frames_a, s="1080x1920", fps=30)
+                ffmpeg
+                .input(path_a, loop=1, t=duration_a)
+                .filter("scale", 2200, -1)
+                .filter(
+                    "zoompan",
+                    z="min(zoom+0.0012,1.18)",
+                    d=frames_a,
+                    s=f"{self.video_width}x{self.video_height}",
+                    fps=self.fps
+                )
                 .setpts("PTS-STARTPTS")
             )
 
             stream_b = (
-                ffmpeg.input(path_b, loop=1, t=duration_b)
-                .filter("scale", 2000, -1)
-                .filter("zoompan", z="if(eq(on,1),1.2,max(zoom-0.0015,1.0))", d=frames_b, s="1080x1920", fps=30)
+                ffmpeg
+                .input(path_b, loop=1, t=duration_b)
+                .filter("scale", 2200, -1)
+                .filter(
+                    "zoompan",
+                    z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))",
+                    d=frames_b,
+                    s=f"{self.video_width}x{self.video_height}",
+                    fps=self.fps
+                )
                 .setpts("PTS-STARTPTS")
             )
 
@@ -77,7 +105,7 @@ class Composer:
                 video_stream = video_stream.filter(
                     "subtitles",
                     filename=srt_path,
-                    force_style="FontName=Arial Black,FontSize=16,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=120"
+                    force_style=self.subtitle_style
                 )
 
             runner = ffmpeg.output(
@@ -87,6 +115,9 @@ class Composer:
                 vcodec="libx264",
                 acodec="aac",
                 pix_fmt="yuv420p",
+                r=self.fps,
+                crf=18,
+                preset="medium",
                 shortest=None
             )
 
@@ -111,7 +142,8 @@ class Composer:
 
         return rendered_paths
 
-    def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=0.5):
+    def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=None):
+        trans_dur = trans_dur or self.transition_duration
         dur_a = self.get_duration(clip_a)
         offset = max(dur_a - trans_dur, 0)
         effect = random.choice(self.transitions)
@@ -126,6 +158,7 @@ class Composer:
             duration=trans_dur,
             offset=offset
         )
+
         a_stream = ffmpeg.filter(
             [input_a.audio, input_b.audio],
             "acrossfade",
@@ -145,15 +178,39 @@ class Composer:
         runner.run(overwrite_output=True, quiet=True)
         return effect, offset
 
+    def _normalize_audio_track(self, input_video_path, output_video_path):
+        try:
+            src = ffmpeg.input(input_video_path)
+
+            normalized_audio = src.audio.filter(
+                "loudnorm",
+                I=-16,
+                TP=-1.5,
+                LRA=11
+            )
+
+            runner = ffmpeg.output(
+                src.video,
+                normalized_audio,
+                output_video_path,
+                vcodec="copy",
+                acodec="aac",
+                audio_bitrate="192k",
+                movflags="faststart"
+            )
+            runner.run(overwrite_output=True, quiet=True)
+            return True
+
+        except ffmpeg.Error as e:
+            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+            print(f"⚠️ Loudnorm failed: {error_log}")
+            return False
+
     def _mix_background_music(self, stitched_path, output_path):
         """
-        Mixe la musique de fond (en boucle) avec la piste voix/video deja stitchee.
-
-        IMPORTANT: le filtre amix normalise automatiquement le volume total
-        en le divisant par le nombre d'entrees (ici 2), ce qui rendait la
-        musique quasi inaudible meme a volume=0.08. On desactive cette
-        normalisation avec normalize=0 et on regle manuellement le volume
-        relatif voix/musique en amont.
+        Mixe la voix et la musique avec ducking automatique.
+        La musique baisse quand la voix parle, ce qui rend la narration
+        beaucoup plus propre qu'un simple amix statique.
         """
         try:
             video_duration = self.get_duration(stitched_path)
@@ -162,21 +219,41 @@ class Composer:
             voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
 
-            voice_audio = voice.audio.filter("volume", self.voice_volume)
+            voice_audio = (
+                voice.audio
+                .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
+                .filter("volume", self.voice_gain)
+            )
 
             music_audio = (
                 music.audio
-                .filter("volume", self.music_volume)
+                .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
+                .filter("volume", self.music_gain)
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
+            ducked_music = ffmpeg.filter(
+                [music_audio, voice_audio],
+                "sidechaincompress",
+                threshold=0.03,
+                ratio=10,
+                attack=20,
+                release=250,
+                makeup=1
+            )
+
             mixed_audio = ffmpeg.filter(
-                [voice_audio, music_audio],
+                [voice_audio, ducked_music],
                 "amix",
                 inputs=2,
                 duration="first",
                 dropout_transition=2,
                 normalize=0
+            ).filter(
+                "loudnorm",
+                I=-16,
+                TP=-1.5,
+                LRA=11
             )
 
             final_runner = ffmpeg.output(
@@ -185,6 +262,7 @@ class Composer:
                 output_path,
                 vcodec="libx264",
                 acodec="aac",
+                audio_bitrate="192k",
                 pix_fmt="yuv420p",
                 movflags="faststart",
                 preset="medium"
@@ -215,6 +293,7 @@ class Composer:
             stitched_path = video_paths[0]
         else:
             courant = video_paths[0]
+
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
                 merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
@@ -238,13 +317,28 @@ class Composer:
             stitched_path = courant
 
         if os.path.exists(self.bg_music_path):
-            print("🎵 Mixing background music...")
+            print("🎵 Mixing background music with ducking...")
             success = self._mix_background_music(stitched_path, output_path)
+
             if not success:
-                os.replace(stitched_path, output_path)
+                normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+                print("🔈 Fallback: export sans musique, avec normalisation voix...")
+                ok = self._normalize_audio_track(stitched_path, normalized_fallback)
+
+                if ok and os.path.exists(normalized_fallback):
+                    os.replace(normalized_fallback, output_path)
+                else:
+                    os.replace(stitched_path, output_path)
         else:
-            print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export sans musique.")
-            os.replace(stitched_path, output_path)
+            print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
+            normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+            ok = self._normalize_audio_track(stitched_path, normalized_fallback)
+
+            if ok and os.path.exists(normalized_fallback):
+                os.replace(normalized_fallback, output_path)
+            else:
+                os.replace(stitched_path, output_path)
+
             print(f"✅ FINAL VIDEO SAVED: {output_path}")
 
         if stitched_path != output_path and os.path.exists(stitched_path):
@@ -254,4 +348,3 @@ class Composer:
                 pass
 
         return output_path
-
