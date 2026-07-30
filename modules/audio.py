@@ -33,12 +33,33 @@ class AudioEngine:
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)
 
-        self.edge_rate = "-15%"
-        self.edge_volume = "-15%"
+        # Debit ralenti et pitch abaisse pour un ton de confession/mystere.
+        # -15% etait trop subtil, -27% donne un rythme nettement plus pose
+        # sans devenir robotique ou trop lent a l'oreille.
+        self.edge_rate = "-27%"
+        self.edge_volume = "+0%"
+        self.edge_pitch = "-3Hz"
+
+        # Duree plancher minimale d'une scene, et duree de silence ajoutee
+        # (au fichier audio lui-meme, pas seulement a la video) pour eviter
+        # tout desynchro audio/video quand une phrase est courte.
+        self.min_scene_duration = 3.5
 
     def clean_text(self, text):
         clean = text.replace("...", " ").replace("\u2014", " ").replace("\u2013", " ")
         return clean.strip()
+
+    def add_dramatic_pauses(self, text):
+        """
+        Insere de courtes pauses (virgules) apres les points pour ralentir
+        le phrase, en complement du rate global. Edge-TTS ne supporte pas
+        le SSML <break> arbitraire via Communicate(), donc on joue sur la
+        ponctuation qui influence naturellement le moteur prosodique.
+        """
+        text = text.replace(". ", "... ")
+        text = text.replace("? ", "?... ")
+        text = text.replace("! ", "!... ")
+        return text
 
     def trim_silence(self, file_path):
         temp_path = file_path.replace(".wav", "_temp.wav")
@@ -58,6 +79,33 @@ class AudioEngine:
                 os.replace(temp_path, file_path)
         except Exception as e:
             print(f"      Echec du trim silence: {e}")
+
+    def pad_to_min_duration(self, file_path, min_duration):
+        """
+        Ajoute du vrai silence a la fin du fichier audio (pas seulement a
+        la video) si sa duree est inferieure au minimum souhaite. Evite
+        toute impression de precipitation due a un mismatch audio/video.
+        """
+        current_duration = self.get_audio_duration(file_path)
+        if current_duration <= 0 or current_duration >= min_duration:
+            return current_duration
+
+        temp_path = file_path + ".pad.tmp" + os.path.splitext(file_path)[1]
+        try:
+            (
+                ffmpeg
+                .input(file_path)
+                .filter("apad", whole_dur=min_duration)
+                .output(temp_path)
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            if os.path.exists(temp_path):
+                os.replace(temp_path, file_path)
+                return min_duration
+        except Exception as e:
+            print(f"      Echec apad: {e}")
+        return current_duration
 
     def _try_bark(self, text, output_path):
         if not self.base_url:
@@ -89,15 +137,20 @@ class AudioEngine:
             return False
 
     async def _try_edge(self, text, output_path_mp3):
+        cleaned_text = self.add_dramatic_pauses(self.clean_text(text))
         last_error = None
         for voice in self.EDGE_FALLBACK_VOICES:
             try:
                 communicate = edge_tts.Communicate(
-                    text, voice, rate=self.edge_rate, volume=self.edge_volume
+                    cleaned_text,
+                    voice,
+                    rate=self.edge_rate,
+                    volume=self.edge_volume,
+                    pitch=self.edge_pitch,
                 )
                 await communicate.save(output_path_mp3)
                 if os.path.exists(output_path_mp3) and os.path.getsize(output_path_mp3) > 0:
-                    print(f"      Voix Edge-TTS utilisee : {voice}")
+                    print(f"      Voix Edge-TTS utilisee : {voice} (rate={self.edge_rate}, pitch={self.edge_pitch})")
                     return True
                 raise RuntimeError("Fichier audio vide")
             except Exception as e:
@@ -139,8 +192,12 @@ class AudioEngine:
             try:
                 file_path, engine_used = await self.generate_audio(text, filename)
                 duration = self.get_audio_duration(file_path)
-                if duration < 3.5:
-                    duration = 3.5
+
+                if duration < self.min_scene_duration:
+                    duration = self.pad_to_min_duration(file_path, self.min_scene_duration)
+                    if duration < self.min_scene_duration:
+                        duration = self.min_scene_duration
+
                 scene["audio_path"] = file_path
                 scene["duration"] = duration
                 scene["voice_engine"] = engine_used
@@ -148,7 +205,7 @@ class AudioEngine:
             except Exception as e:
                 print(f"   Echec total Scene {scene_id}: {e}")
                 scene["audio_path"] = None
-                scene["duration"] = 3.5
+                scene["duration"] = self.min_scene_duration
 
         return script_data
 
