@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import requests
@@ -63,10 +62,11 @@ class AudioEngine:
         return clean.strip()
 
     def add_dramatic_pauses(self, text):
-        text = text.replace(". ", "... ")
-        text = text.replace("? ", "?... ")
-        text = text.replace("! ", "!... ")
-        return text
+        clean = text.replace("...", ", ... ")
+        clean = clean.replace(". ", ". — ")
+        clean = clean.replace("? ", "? — ")
+        clean = clean.replace("! ", "! — ")
+        return clean
 
     def trim_silence(self, file_path):
         temp_path = file_path.replace(".wav", "_temp.wav")
@@ -141,7 +141,7 @@ class AudioEngine:
     def _try_kokoro(self, text, output_path_wav):
         """
         Genere la voix localement avec Kokoro TTS (gratuit, illimite,
-        aucune cle API, tourne sur CPU). Plus naturel qu'Edge-TTS.
+        aucune cle API, tourne sur CPU) avec un débit ralenti pour le mystère.
         """
         if not self.use_kokoro or self._kokoro_pipeline is None:
             return False
@@ -149,12 +149,16 @@ class AudioEngine:
         cleaned_text = self.add_dramatic_pauses(self.clean_text(text))
 
         try:
-            generator = self._kokoro_pipeline(cleaned_text, voice=self.KOKORO_FRENCH_VOICES[0])
+            generator = self._kokoro_pipeline(
+                cleaned_text, 
+                voice=self.KOKORO_FRENCH_VOICES[0], 
+                speed=0.95
+            )
             for _, _, audio in generator:
                 sf.write(output_path_wav, audio, 24000)
                 break
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
-                print(f"      Voix Kokoro TTS utilisee (locale, gratuite)")
+                print(f"      Voix Kokoro TTS utilisee (locale, gratuite, mode mystère)")
                 self.trim_silence(output_path_wav)
                 return True
             return False
@@ -210,7 +214,7 @@ class AudioEngine:
             return 0.0
 
     async def process_script(self, script_data):
-        print("Generation audio (Bark cloud, fallback Kokoro local, puis Edge-TTS)...")
+        print("Generation audio (Minute Mystère KO - Bark cloud, Kokoro local, Edge-TTS)...")
 
         for scene in script_data:
             scene_id = scene["id"]
@@ -236,4 +240,3 @@ class AudioEngine:
                 scene["duration"] = self.min_scene_duration
 
         return script_data
-
