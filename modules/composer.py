@@ -1,6 +1,8 @@
+
 import os
 import random
 import ffmpeg
+
 
 class Composer:
     def __init__(self):
@@ -14,6 +16,8 @@ class Composer:
 
         self.transitions = ["fade", "diagbr", "diagtl"]
         self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
+        self.music_volume = 0.08
+        self.music_fade_duration = 1.5
 
     def get_duration(self, filepath):
         try:
@@ -136,6 +140,49 @@ class Composer:
         runner.run(overwrite_output=True, quiet=True)
         return effect, offset
 
+    def _mix_background_music(self, stitched_path, output_path):
+        """
+        Mixe la musique de fond (en boucle) avec la piste voix/video deja stitchee.
+        Applique un volume reduit et un fade-out en fin de piste pour eviter
+        une coupure brusque. Retourne True si le mix a reussi, False sinon
+        (l'appelant doit alors faire un fallback vers la version sans musique).
+        """
+        try:
+            video_duration = self.get_duration(stitched_path)
+            fade_start = max(video_duration - self.music_fade_duration, 0)
+
+            voice = ffmpeg.input(stitched_path)
+            music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
+
+            music_audio = (
+                music.audio
+                .filter("volume", self.music_volume)
+                .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
+            )
+
+            mixed_audio = ffmpeg.filter(
+                [voice.audio, music_audio], "amix", duration="first", dropout_transition=2
+            )
+
+            final_runner = ffmpeg.output(
+                voice.video,
+                mixed_audio,
+                output_path,
+                vcodec="libx264",
+                acodec="aac",
+                pix_fmt="yuv420p",
+                movflags="faststart",
+                preset="medium"
+            )
+            final_runner.run(overwrite_output=True, quiet=False)
+            print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
+            return True
+
+        except ffmpeg.Error as e:
+            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+            print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
+            return False
+
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
         print("🎬 Stitching final video (cascade mode)...")
         output_path = os.path.join(self.final_dir, output_filename)
@@ -177,30 +224,8 @@ class Composer:
 
         if os.path.exists(self.bg_music_path):
             print("🎵 Mixing background music...")
-            try:
-                voice = ffmpeg.input(stitched_path)
-                music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
-
-                music_audio = music.audio.filter("volume", 0.08)
-                mixed_audio = ffmpeg.filter(
-                    [voice.audio, music_audio], "amix", duration="first", dropout_transition=2
-                )
-
-                final_runner = ffmpeg.output(
-                    voice.video,
-                    mixed_audio,
-                    output_path,
-                    vcodec="libx264",
-                    acodec="aac",
-                    pix_fmt="yuv420p",
-                    movflags="faststart",
-                    preset="medium"
-                )
-                final_runner.run(overwrite_output=True, quiet=False)
-                print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
-            except ffmpeg.Error as e:
-                error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-                print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
+            success = self._mix_background_music(stitched_path, output_path)
+            if not success:
                 os.replace(stitched_path, output_path)
         else:
             print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export sans musique.")
