@@ -19,6 +19,7 @@ class Composer:
         self.final_dir.mkdir(parents=True, exist_ok=True)
         self.music_dir.mkdir(parents=True, exist_ok=True)
 
+<<<<<<< HEAD:modules/video/composer.py
         self.transitions = self.composer_profile.transitions
         self.bg_music_path = str(self.music_dir / self.composer_profile.bg_track_filename)
 
@@ -32,6 +33,29 @@ class Composer:
         self.transition_duration = self.composer_profile.transition_duration
 
         self.subtitle_style = self.composer_profile.subtitle_style
+=======
+        self.video_width = 1080
+        self.video_height = 1920
+        self.fps = 30
+
+        self.voice_gain = 1.15
+        self.music_gain = 0.12
+        self.music_fade_duration = 1.5
+        self.transition_duration = 0.45
+
+        self.subtitle_style = (
+            "FontName=Arial Black,"
+            "FontSize=18,"
+            "PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,"
+            "BackColour=&H66000000,"
+            "BorderStyle=3,"
+            "Outline=2.2,"
+            "Shadow=0,"
+            "Alignment=2,"
+            "MarginV=115"
+        )
+>>>>>>> Main:modules/composer.py
 
     def get_duration(self, filepath):
         try:
@@ -44,7 +68,11 @@ class Composer:
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
+<<<<<<< HEAD:modules/video/composer.py
         output_path = str(self.temp_dir / f"scene_{scene_id}.mp4")
+=======
+        output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
+>>>>>>> Main:modules/composer.py
 
         try:
             input_audio = ffmpeg.input(audio_path)
@@ -202,6 +230,14 @@ class Composer:
             return False
 
     def _mix_background_music(self, stitched_path, output_path):
+<<<<<<< HEAD:modules/video/composer.py
+=======
+        """
+        Mixe la voix et la musique avec ducking automatique.
+        Version corrigee pour ffmpeg-python avec duplication explicite
+        des flux reutilises dans plusieurs branches.
+        """
+>>>>>>> Main:modules/composer.py
         try:
             video_duration = self.get_duration(stitched_path)
             fade_start = max(video_duration - self.music_fade_duration, 0)
@@ -226,6 +262,10 @@ class Composer:
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
+<<<<<<< HEAD:modules/video/composer.py
+=======
+            # Duplication explicite des flux reutilises
+>>>>>>> Main:modules/composer.py
             voice_split = voice_audio_base.filter_multi_output("asplit", 2)
             voice_for_sidechain = voice_split[0]
             voice_for_mix = voice_split[1]
@@ -322,7 +362,11 @@ class Composer:
             success = self._mix_background_music(stitched_path, output_path)
 
             if not success:
+<<<<<<< HEAD:modules/video/composer.py
                 normalized_fallback = str(self.temp_dir / "normalized_no_music.mp4")
+=======
+                normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+>>>>>>> Main:modules/composer.py
                 print("🔈 Fallback: export sans musique, avec normalisation voix...")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
@@ -332,7 +376,11 @@ class Composer:
                     os.replace(stitched_path, output_path)
         else:
             print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
+<<<<<<< HEAD:modules/video/composer.py
             normalized_fallback = str(self.temp_dir / "normalized_no_music.mp4")
+=======
+            normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+>>>>>>> Main:modules/composer.py
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
             if ok and os.path.exists(normalized_fallback):
@@ -348,4 +396,8 @@ class Composer:
             except Exception:
                 pass
 
+<<<<<<< HEAD:modules/video/composer.py
         return output_path
+=======
+        return output_path
+>>>>>>> Main:modules/composer.py

@@ -4,52 +4,89 @@ on:
   workflow_dispatch:
     inputs:
       topic:
-        description: "Sujet de la video (laisser vide pour choix automatique par l'IA)"
+        description: "Sujet de la vidéo (laisser vide pour choix automatique par l'IA)"
         required: false
         default: ""
       duration:
-        description: "Duree souhaitee en secondes (20 a 90)"
+        description: "Durée souhaitée en secondes (20 à 90)"
         required: false
         default: "45"
       refine_angle:
         description: "Laisser l'IA reformuler l'angle du sujet"
         required: false
         default: "true"
+      use_hook_variants:
+        description: "Tester plusieurs hooks avant génération"
+        required: false
+        default: "true"
+
   schedule:
-    - cron: "0 4 * * *" # 06H Paris
-    - cron: "0 11 * * *" # 13h Paris
+  - cron: "7 1 * * *"   # 03h07 Paris
+  - cron: "7 8 * * *"   # 10h07 Paris
 
 jobs:
   build-and-generate:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
+      VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
+      REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
+      USE_HOOK_VARIANTS: ${{ github.event.inputs.use_hook_variants || 'true' }}
 
     steps:
-    - name: 📥 Cloner le dépôt
-      uses: actions/checkout@v4
+      - name: 📥 Cloner le dépôt
+        uses: actions/checkout@v4
 
-    - name: ⚙️ Installer FFmpeg (Moteur vidéo)
-      run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: ⚙️ Installer FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-    - name: 🐍 Configurer Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: 🐍 Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
 
-    - name: 📦 Installer les dépendances
-      run: pip install -r requirements.txt
+      - name: 🗃️ Cache Hugging Face
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-huggingface-kokoro-v1
+          restore-keys: |
+            ${{ runner.os }}-huggingface-kokoro-
 
-    - name: 🎬 Générer la vidéo
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        VIDEO_TOPIC: ${{ github.event.inputs.topic }}
-        VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
-        REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
-      run: python main.py
+      - name: 📦 Installer les dépendances
+        run: pip install -r requirements.txt
 
-    - name: 💾 Sauvegarder la vidéo finale
-      uses: actions/upload-artifact@v4
-      with:
-        name: Video-TikTok-Prete-${{ github.run_id }}
-        path: assets/final/final_short.mp4
+      - name: 🎬 Générer la vidéo
+        run: python main.py
+
+      - name: 🔊 Vérifier le niveau sonore
+        if: always()
+        run: |
+          if [ -f assets/final/final_short.mp4 ]; then
+            ffmpeg -i assets/final/final_short.mp4 -af loudnorm=print_format=summary -f null - 2>&1 | tee loudness_report.txt
+          else
+            echo "Aucune vidéo finale trouvée." | tee loudness_report.txt
+          fi
+
+      - name: 💾 Sauvegarder le rapport de loudness
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loudness-Report-${{ github.run_id }}
+          path: loudness_report.txt
+          if-no-files-found: warn
+
+      - name: 💾 Sauvegarder la vidéo finale
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-TikTok-Prete-${{ github.run_id }}
+          path: assets/final/final_short.mp4
+          if-no-files-found: warn

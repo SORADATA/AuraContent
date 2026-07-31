@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name: Multi-Channel Publisher [Bot]
 
 on:
@@ -10,29 +11,40 @@ on:
         description: "Nom de la chaîne à publier (ex: minute_mystere, finance)"
         required: true
         default: "minute_mystere"
+=======
+name: Publisher [Bot]
+
+on:
+  workflow_dispatch:
+>>>>>>> Main
 
 jobs:
   publier_video:
     runs-on: ubuntu-latest
+<<<<<<< HEAD
 
     env:
       TARGET_CHANNEL: ${{ github.event.inputs.channel || 'minute_mystere' }}
 
+=======
+    timeout-minutes: 20
+>>>>>>> Main
     steps:
       - name: 📥 Récupérer le code
         uses: actions/checkout@v4
-
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: 📦 Installer les dépendances
+          python-version: "3.10"
+          cache: "pip"
+      - name: ⚙️ Installer FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: 📦 Installer les dépendances minimales
         run: pip install requests
-
       - name: 🚀 Lancer le script de publication
         env:
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+<<<<<<< HEAD
           # Secrets pour Minute Mystère
           TIKTOK_ACCOUNT_ID_MYSTERE: ${{ secrets.TIKTOK_ACCOUNT_ID_MYSTERE }}
           YOUTUBE_ACCOUNT_ID_MYSTERE: ${{ secrets.YOUTUBE_ACCOUNT_ID_MYSTERE }}
@@ -40,3 +52,15 @@ jobs:
           TIKTOK_ACCOUNT_ID_FINANCE: ${{ secrets.TIKTOK_ACCOUNT_ID_FINANCE }}
           YOUTUBE_ACCOUNT_ID_FINANCE: ${{ secrets.YOUTUBE_ACCOUNT_ID_FINANCE }}
         run: python publisher.py --channel ${{ env.TARGET_CHANNEL }}
+=======
+          TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
+          YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
+        run: python publish.py
+      - name: 💾 Sauvegarder le rapport de loudness
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loudness-Report-Publish-${{ github.run_id }}
+          path: loudness_report.txt
+          if-no-files-found: ignore
+>>>>>>> Main
