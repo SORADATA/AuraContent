@@ -1,24 +1,26 @@
 import os
 import random
+from pathlib import Path
 import ffmpeg
 
 from modules.video.composer_profile import ComposerProfile
 
 
 class Composer:
-    def __init__(self, composer_profile=None):
+    def __init__(self, root_dir: Path, composer_profile=None):
         self.composer_profile = composer_profile or ComposerProfile()
 
-        self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
-        self.final_dir = os.path.join(os.getcwd(), "assets", "final")
-        self.music_dir = os.path.join(os.getcwd(), "assets", "music")
+        self.root_dir = root_dir
+        self.temp_dir = self.root_dir / "assets" / "temp"
+        self.final_dir = self.root_dir / "assets" / "final"
+        self.music_dir = self.root_dir / "assets" / "music"
 
-        os.makedirs(self.temp_dir, exist_ok=True)
-        os.makedirs(self.final_dir, exist_ok=True)
-        os.makedirs(self.music_dir, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.final_dir.mkdir(parents=True, exist_ok=True)
+        self.music_dir.mkdir(parents=True, exist_ok=True)
 
         self.transitions = self.composer_profile.transitions
-        self.bg_music_path = os.path.join(self.music_dir, self.composer_profile.bg_track_filename)
+        self.bg_music_path = str(self.music_dir / self.composer_profile.bg_track_filename)
 
         self.video_width = self.composer_profile.video_width
         self.video_height = self.composer_profile.video_height
@@ -42,7 +44,7 @@ class Composer:
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
-        output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
+        output_path = str(self.temp_dir / f"scene_{scene_id}.mp4")
 
         try:
             input_audio = ffmpeg.input(audio_path)
@@ -200,11 +202,6 @@ class Composer:
             return False
 
     def _mix_background_music(self, stitched_path, output_path):
-        """
-        Mixe la voix et la musique avec ducking automatique.
-        Version corrigee pour ffmpeg-python avec duplication explicite
-        des flux reutilises dans plusieurs branches.
-        """
         try:
             video_duration = self.get_duration(stitched_path)
             fade_start = max(video_duration - self.music_fade_duration, 0)
@@ -282,7 +279,7 @@ class Composer:
 
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
         print("🎬 Stitching final video (cascade mode)...")
-        output_path = os.path.join(self.final_dir, output_filename)
+        output_path = str(self.final_dir / output_filename)
 
         if os.path.exists(output_path):
             try:
@@ -300,7 +297,7 @@ class Composer:
 
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
-                merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
+                merge_output = str(self.temp_dir / f"merge_step_{i}.mp4")
 
                 try:
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output)
@@ -310,7 +307,7 @@ class Composer:
                     print(f"❌ Stitching Error at step {i}: {error_log}")
                     return None
 
-                if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
+                if i > 1 and courant.startswith(str(self.temp_dir / "merge_step_")):
                     try:
                         os.remove(courant)
                     except Exception:
@@ -325,7 +322,7 @@ class Composer:
             success = self._mix_background_music(stitched_path, output_path)
 
             if not success:
-                normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+                normalized_fallback = str(self.temp_dir / "normalized_no_music.mp4")
                 print("🔈 Fallback: export sans musique, avec normalisation voix...")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
@@ -335,7 +332,7 @@ class Composer:
                     os.replace(stitched_path, output_path)
         else:
             print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
-            normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+            normalized_fallback = str(self.temp_dir / "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
             if ok and os.path.exists(normalized_fallback):

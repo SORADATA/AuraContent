@@ -32,27 +32,20 @@ class AssetManager:
             print(f"Scene {scene_id} - génération des visuels IA...")
 
             base_prompt = scene["image_prompt"].strip()
-            prompt_a = self.image_service.compose_prompt(
-                base_prompt,
-                visual_identity=visual_identity,
-                variant="a",
-            )
-            prompt_b = self.image_service.compose_prompt(
-                base_prompt,
-                visual_identity=visual_identity,
-                variant="b",
-            )
 
             ok_a = self.paths.file_ready(path_a) or self.image_service.generate_with_retry(
-                prompt_a,
-                path_a,
+                base_prompt=base_prompt,
+                output_path=path_a,
                 visual_identity=visual_identity,
+                variant="a",
                 retries=2,
             )
+            
             ok_b = self.paths.file_ready(path_b) or self.image_service.generate_with_retry(
-                prompt_b,
-                path_b,
+                base_prompt=base_prompt,
+                output_path=path_b,
                 visual_identity=visual_identity,
+                variant="b",
                 retries=2,
             )
 
@@ -74,3 +67,22 @@ class AssetManager:
                     pairs.append(None)
 
         return pairs
+
+
+class AssetPaths:
+    def __init__(self, root_dir: Path | None = None):
+        self.root_dir = root_dir or Path.cwd()
+        self.assets_dir = self.root_dir / "assets"
+        self.video_clips_dir = self.assets_dir / "video_clips"
+        self.fallback_image = self.assets_dir / "fallback.png"
+
+        self.video_clips_dir.mkdir(parents=True, exist_ok=True)
+
+    def scene_image_a(self, scene_id: int) -> Path:
+        return self.video_clips_dir / f"scene_{scene_id}_a.png"
+
+    def scene_image_b(self, scene_id: int) -> Path:
+        return self.video_clips_dir / f"scene_{scene_id}_b.png"
+
+    def file_ready(self, path: Path) -> bool:
+        return path.exists() and path.stat().st_size > 0

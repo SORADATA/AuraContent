@@ -28,6 +28,7 @@ class AIImageGenerator:
         self.VISUAL_CONTINUITY_LABEL = self.image_profile.visual_continuity_label
         self.VARIANT_A_SUFFIX = self.image_profile.variant_a_suffix
         self.VARIANT_B_SUFFIX = self.image_profile.variant_b_suffix
+        self.GLOBAL_VISUAL_RULES = self.image_profile.global_visual_rules
 
         print("Utilisation du generateur d'images Pollinations.ai (sans token requis)")
 
@@ -39,7 +40,8 @@ class AIImageGenerator:
     def _build_prompt(self, prompt_text, visual_identity=None, variant=None):
         fixed_parts = [
             prompt_text.strip().rstrip(",."),
-            self.BASE_STYLE
+            self.BASE_STYLE,
+            self.GLOBAL_VISUAL_RULES
         ]
 
         if visual_identity:
@@ -132,7 +134,7 @@ class AIImageGenerator:
         seed=None,
         variant=None
     ):
-        print(f"Generation d'une image pour : {prompt_text}")
+        print(f"Generation d'une image pour : {prompt_text} (Variante: {variant})")
 
         retries = self.DEFAULT_RETRIES if retries is None else retries
 

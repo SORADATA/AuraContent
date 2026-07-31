@@ -1,6 +1,6 @@
+# channels/minute_mystere/config.py
 from modules.brain.models import BrainChannelConfig
 from channels.minute_mystere.prompts.script_prompt import build_script_prompt
-from pathlib import Path
 # importe tes autres builders...
 
 minute_mystere_config = BrainChannelConfig(
@@ -11,5 +11,4 @@ minute_mystere_config = BrainChannelConfig(
     # hook_prompt_builder=build_hook_prompt,
 )
 
-
-MINUTE_MYSTERE_HF_REPO = "https://huggingface.co/datasets/soradata/ai_videos_minute_mystere"
+FINANCE_HF_REPO = "https://huggingface.co/datasets/soradata/ai_videos_Finance"

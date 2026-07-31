@@ -11,7 +11,4 @@ Contraintes :
 
 
 def build_prompt() -> str:
-    """
-
-    """
     return MINUTE_MYSTERE_TITLE_PROMPT

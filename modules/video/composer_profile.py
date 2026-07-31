@@ -3,9 +3,6 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ComposerProfile:
-    """
-    varier transitions, sous-titres, gains audio ou format par chaîne, sans toucher au moteur.
-    """
     transitions: list[str] = field(default_factory=lambda: ["fade", "diagbr", "diagtl"])
     bg_track_filename: str = "bg_track.mp3"
 

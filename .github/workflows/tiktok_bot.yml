@@ -1,15 +1,22 @@
-name: TikTok Publisher [Bot]
+name: Multi-Channel Publisher [Bot]
 
 on:
   schedule:
     # Se lance tous les jours à 09H & 16H Paris
     - cron: '0 7,14 * * *' 
   workflow_dispatch: 
-    # Permet de lancer le script manuellement depuis l'interface GitHub
+    inputs:
+      channel:
+        description: "Nom de la chaîne à publier (ex: minute_mystere, finance)"
+        required: true
+        default: "minute_mystere"
 
 jobs:
   publier_video:
     runs-on: ubuntu-latest
+
+    env:
+      TARGET_CHANNEL: ${{ github.event.inputs.channel || 'minute_mystere' }}
 
     steps:
       - name: 📥 Récupérer le code
@@ -25,7 +32,11 @@ jobs:
 
       - name: 🚀 Lancer le script de publication
         env:
-          # Connexion sécurisée avec tes secrets GitHub
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
-          TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
-        run: python publish.py
+          # Secrets pour Minute Mystère
+          TIKTOK_ACCOUNT_ID_MYSTERE: ${{ secrets.TIKTOK_ACCOUNT_ID_MYSTERE }}
+          YOUTUBE_ACCOUNT_ID_MYSTERE: ${{ secrets.YOUTUBE_ACCOUNT_ID_MYSTERE }}
+          # Secrets pour Finance
+          TIKTOK_ACCOUNT_ID_FINANCE: ${{ secrets.TIKTOK_ACCOUNT_ID_FINANCE }}
+          YOUTUBE_ACCOUNT_ID_FINANCE: ${{ secrets.YOUTUBE_ACCOUNT_ID_FINANCE }}
+        run: python publisher.py --channel ${{ env.TARGET_CHANNEL }}
