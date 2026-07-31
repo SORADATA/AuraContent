@@ -54,7 +54,7 @@ def clean_mimolune_cache():
 
 async def main():
     print("🚀 DÉMARRAGE DU PIPELINE MIMOLUNE...")
-    
+
     mimolune_dir = os.path.join("assets", "mimolune")
     topic = os.getenv("VIDEO_TOPIC", "Les couleurs magiques")
 
@@ -67,7 +67,7 @@ async def main():
     scenes = data["scenes"]
     theme_title = data.get("theme", topic)
 
-    # 2. Audio (Voix & Enveloppes de bouche)
+    # 2. Audio (Voix + durée par scène)
     tts_engine = KidsAudioEngine()
     try:
         scenes = await tts_engine.process_script(scenes)
@@ -75,12 +75,12 @@ async def main():
         print(f"❌ Erreur Audio TTS : {e}")
         return
 
-    # 3. Récupération des Assets (Personnages et Décors)
+    # 3. Récupération des Assets (Personnages et illustrations de scène)
     char_engine = CharacterEngine()
     char_engine.prepare_assets()
-    scenes = char_engine.generate_backgrounds(scenes)
+    scenes = char_engine.generate_scene_images(scenes)
 
-    # 4. Animation des scènes (FFmpeg overlay + bouches)
+    # 4. Animation des scènes (Wan 2.2 + fallback FFmpeg zoompan)
     animator = SceneAnimator()
     scenes = animator.animate_all_scenes(scenes)
 
@@ -93,19 +93,15 @@ async def main():
         final_dir = os.path.join(mimolune_dir, "final")
         os.makedirs(final_dir, exist_ok=True)
         final_dest = os.path.join(final_dir, "final_short.mp4")
-        
-        # Vérification propre pour éviter l'erreur de copie sur soi-même
+
         if os.path.abspath(final_path) != os.path.abspath(final_dest):
             shutil.copy(final_path, final_dest)
         else:
             print("✅ Le fichier final est déjà au bon emplacement.")
-        
+
         print(f"🎉 PIPELINE TERMINÉ AVEC SUCCÈS ! Vidéo sauvée : {final_dest}")
-        
-        # Upload vers Hugging Face
+
         upload_to_huggingface(final_dest, theme_title)
-        
-        # Nettoyage des fichiers temporaires
         clean_mimolune_cache()
     else:
         print("❌ Échec de la génération de la vidéo finale Mimolune.")

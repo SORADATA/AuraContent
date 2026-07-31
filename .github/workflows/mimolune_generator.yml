@@ -7,25 +7,32 @@ on:
         description: "Thème de la comptine (laisser vide pour choix automatique)"
         required: false
         default: ""
- # schedule:
- #   - cron: "17 4 * * *" # Décalé pour éviter le rush (06h17 Paris)
- #   - cron: "43 10 * * *" # Décalé pour éviter le rush (12h43 Paris)
+  # schedule:
+  #   - cron: "17 4 * * *"
+  #   - cron: "43 10 * * *"
 
 jobs:
   build-and-generate-mimolune:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
     - name: 📥 Cloner le dépôt
       uses: actions/checkout@v4
 
-    - name: ⚙️ Installer FFmpeg (Moteur vidéo)
+    - name: ⚙️ Installer FFmpeg
       run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+    - name: 🔎 Vérifier FFmpeg et FFprobe
+      run: |
+        ffmpeg -version
+        ffprobe -version
 
     - name: 🐍 Configurer Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: "3.10"
+        cache: "pip"
 
     - name: 📦 Installer les dépendances
       run: pip install -r requirements.txt
@@ -37,6 +44,9 @@ jobs:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
         VIDEO_TOPIC: ${{ github.event.inputs.topic }}
       run: python main_kids.py
+
+    - name: ✅ Vérifier la vidéo finale
+      run: test -f assets/mimolune/final/final_short.mp4
 
     - name: 💾 Sauvegarder la vidéo finale Mimolune
       uses: actions/upload-artifact@v4

@@ -35,13 +35,15 @@ Personnages secondaires possibles : fruit_fraise, fruit_banane.
             "id": 1,
             "speaker": "mimolune",
             "text": "Texte francais rime ici...",
-            "background": "english prompt for image generation, kids illustration style, vibrant pastel colors",
+            "scene_prompt": "english prompt describing the character AND the full scene together for AI video animation, e.g. 'Mimolune the round joyful moon character dances happily in a colorful rainbow garden, kids illustration style, vibrant pastel colors, cinematic gentle motion'",
             "action": "dance"
         }}
     ]
 }}
 
 Genere exactement {scene_count} scenes. "speaker" doit etre une valeur parmi : {SPEAKERS}.
+Le champ "scene_prompt" doit TOUJOURS decrire le personnage ET le decor ensemble, jamais le decor seul,
+et doit inclure une description du mouvement correspondant a "action" (danse joyeuse ou geste doux).
 La derniere scene doit etre un au revoir joyeux de Mimolune invitant a revenir ("action": "wave").
 """
 
