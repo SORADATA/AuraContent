@@ -1,53 +1,69 @@
 import os
-from gradio_client import Client, handle_file
+import time
+from pathlib import Path
 
-SPACES = [
-    {"id": "zerogpu-aoti/wan2-2-fp8da-aoti-faster", "extra": {}},
-    {"id": "r3gm/wan2-2-fp8da-aoti-preview", "extra": {
-        "last_image": None,
-        "quality": 6,
-        "scheduler": "UniPCMultistep",
-        "flow_shift": 3,
-        "frame_multiplier": "16",
-        "video_component": True,
-        "safe_mode": True,
-        "enable_safety_checker": True,
-    }},
-    {"id": "cinderholm/wan2-2-i2v-v3", "extra": {}},
-]
-
-NEG_PROMPT = ("色调艳丽, 过曝, 静态, 细节模糊不清, 字幕, 风格, 画面, 静止, "
-              "最差质量, 低质量, 丑陋的, 畸形的, 手指融合")
+from gradio_client import Client
 
 
-def generate_animated_scene(image_path, prompt, duration=3.5):
-    """
-    Essaie d'animer une image via plusieurs Spaces Wan 2.2 Lightning (gratuits).
-    Retourne le chemin de la vidéo générée, ou None si tous échouent.
-    """
-    for space in SPACES:
+class WanVideoGenerator:
+    def __init__(self, hf_token=None):
+        self.hf_token = hf_token or os.getenv("HF_TOKEN")
+        self.space_candidates = [
+            "zerogpu-aoti/wan2-2-fp8da-aoti-faster",
+            "r3gm/wan2-2-fp8da-aoti-preview",
+            "cinderholm/wan2-2-i2v-v3",
+        ]
+
+    def _build_client(self, space_name):
+        if self.hf_token:
+            try:
+                return Client(space_name, token=self.hf_token)
+            except TypeError:
+                pass
+
         try:
-            client = Client(space["id"], hf_token=os.environ.get("HF_TOKEN"))
-            params = dict(
-                input_image=handle_file(image_path),
-                prompt=prompt,
-                steps=6,
-                negative_prompt=NEG_PROMPT,
-                duration_seconds=duration,
-                guidance_scale=1,
-                guidance_scale_2=1,
-                seed=42,
-                randomize_seed=True,
-                api_name="/generate_video",
-            )
-            params.update(space["extra"])
-            result = client.predict(**params)
-            video_path = result[0] if isinstance(result, (list, tuple)) else result
-            if video_path and os.path.exists(video_path):
-                return video_path
-        except Exception as e:
-            print(f"   ⚠️ {space['id']} indisponible ({e}), essai suivant")
-            continue
+            return Client(space_name)
+        except TypeError:
+            return Client(space_name)
 
-    print("   ❌ Tous les Spaces Wan 2.2 indisponibles.")
-    return None
+    def _generate_with_space(self, space_name, scene_prompt, image_path=None):
+        client = self._build_client(space_name)
+
+        if image_path:
+            result = client.predict(
+                image=image_path,
+                prompt=scene_prompt,
+                api_name="/predict"
+            )
+        else:
+            result = client.predict(
+                prompt=scene_prompt,
+                api_name="/predict"
+            )
+
+        return result
+
+    def generate_clip(self, scene_prompt, image_path=None):
+        last_error = None
+
+        for space_name in self.space_candidates:
+            try:
+                print(f"   🔁 Tentative Wan 2.2 via {space_name}...")
+                result = self._generate_with_space(
+                    space_name=space_name,
+                    scene_prompt=scene_prompt,
+                    image_path=image_path
+                )
+                print(f"   ✅ Wan 2.2 OK via {space_name}")
+                return result
+            except Exception as e:
+                print(f"   ⚠️ {space_name} indisponible ({e}), essai suivant")
+                last_error = e
+                continue
+
+        raise RuntimeError(f"Tous les Spaces Wan 2.2 sont indisponibles: {last_error}")
+
+    @staticmethod
+    def ensure_output_dir(path):
+        Path(path).mkdir(parents=True, exist_ok=True)
+        return path
