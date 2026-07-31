@@ -1,69 +1,135 @@
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
-from gradio_client import Client
+from gradio_client import Client, handle_file
 
 
-class WanVideoGenerator:
-    def __init__(self, hf_token=None):
-        self.hf_token = hf_token or os.getenv("HF_TOKEN")
-        self.space_candidates = [
-            "zerogpu-aoti/wan2-2-fp8da-aoti-faster",
-            "r3gm/wan2-2-fp8da-aoti-preview",
-            "cinderholm/wan2-2-i2v-v3",
-        ]
+WAN_SPACES = [
+    "zerogpu-aoti/wan2-2-fp8da-aoti-faster",
+    "r3gm/wan2-2-fp8da-aoti-preview",
+    "cinderholm/wan2-2-i2v-v3",
+]
 
-    def _build_client(self, space_name):
-        if self.hf_token:
-            try:
-                return Client(space_name, token=self.hf_token)
-            except TypeError:
-                pass
 
+def _build_client(space_name, hf_token=None):
+    hf_token = hf_token or os.getenv("HF_TOKEN")
+
+    if hf_token:
         try:
-            return Client(space_name)
+            return Client(space_name, token=hf_token)
         except TypeError:
-            return Client(space_name)
+            pass
+        except Exception:
+            raise
 
-    def _generate_with_space(self, space_name, scene_prompt, image_path=None):
-        client = self._build_client(space_name)
+    return Client(space_name)
 
-        if image_path:
-            result = client.predict(
-                image=image_path,
-                prompt=scene_prompt,
-                api_name="/predict"
-            )
-        else:
-            result = client.predict(
-                prompt=scene_prompt,
-                api_name="/predict"
-            )
 
+def _extract_video_path(result):
+    if isinstance(result, str) and result.endswith(".mp4"):
         return result
 
-    def generate_clip(self, scene_prompt, image_path=None):
-        last_error = None
+    if isinstance(result, dict):
+        for key in ("video", "value", "path"):
+            value = result.get(key)
+            if isinstance(value, str) and value.endswith(".mp4"):
+                return value
 
-        for space_name in self.space_candidates:
-            try:
-                print(f"   🔁 Tentative Wan 2.2 via {space_name}...")
-                result = self._generate_with_space(
-                    space_name=space_name,
-                    scene_prompt=scene_prompt,
-                    image_path=image_path
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            path = _extract_video_path(item)
+            if path:
+                return path
+
+    return None
+
+
+def _make_zoompan_fallback(image_path, output_path, duration=4):
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loop", "1",
+        "-i", str(image_path),
+        "-vf",
+        (
+            "scale=720:1280:force_original_aspect_ratio=increase,"
+            "crop=720:1280,"
+            "zoompan=z='min(zoom+0.0008,1.08)':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"d={duration * 25}:s=720x1280:fps=25"
+        ),
+        "-t", str(duration),
+        "-r", "25",
+        "-pix_fmt", "yuv420p",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return output_path
+
+
+def generate_animated_scene(
+    image_path,
+    scene_prompt,
+    output_path,
+    hf_token=None,
+    duration=4,
+):
+    """
+    Génère une scène animée via plusieurs Spaces Wan 2.2.
+    Si aucun Space ne répond, fallback vidéo zoompan à partir de l'image.
+    """
+    output_path = str(output_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    last_error = None
+
+    for space_name in WAN_SPACES:
+        try:
+            client = _build_client(space_name, hf_token=hf_token)
+
+            print(f"   🔁 Tentative Wan 2.2 via {space_name}...")
+
+            result = client.predict(
+                image=handle_file(str(image_path)),
+                prompt=scene_prompt,
+                api_name="/predict",
+            )
+
+            video_path = _extract_video_path(result)
+            if not video_path:
+                raise RuntimeError(f"Aucune vidéo exploitable retournée par {space_name}: {result}")
+
+            if video_path.startswith("http://") or video_path.startswith("https://"):
+                tmp_dir = tempfile.mkdtemp(prefix="wan_video_")
+                tmp_file = os.path.join(tmp_dir, "scene.mp4")
+                subprocess.run(
+                    ["curl", "-L", video_path, "-o", tmp_file],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-                print(f"   ✅ Wan 2.2 OK via {space_name}")
-                return result
-            except Exception as e:
-                print(f"   ⚠️ {space_name} indisponible ({e}), essai suivant")
-                last_error = e
-                continue
+                shutil.copy(tmp_file, output_path)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            else:
+                shutil.copy(video_path, output_path)
 
-        raise RuntimeError(f"Tous les Spaces Wan 2.2 sont indisponibles: {last_error}")
+            print(f"   ✅ Wan 2.2 OK via {space_name}")
+            return output_path
 
-    @staticmethod
-    def ensure_output_dir(path):
-        Path(path).mkdir(parents=True, exist_ok=True)
-        return path
+        except Exception as e:
+            print(f"   ⚠️ {space_name} indisponible ({e}), essai suivant")
+            last_error = e
+            time.sleep(1)
+            continue
+
+    print("   ❌ Tous les Spaces Wan 2.2 indisponibles.")
+    print("   ↪️ Fallback zoompan")
+    _make_zoompan_fallback(image_path, output_path, duration=duration)
+    return output_path
