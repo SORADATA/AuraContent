@@ -23,8 +23,6 @@ def _build_client(space_name, hf_token=None):
             return Client(space_name, token=hf_token)
         except TypeError:
             pass
-        except Exception:
-            raise
 
     return Client(space_name)
 
@@ -34,7 +32,7 @@ def _extract_video_path(result):
         return result
 
     if isinstance(result, dict):
-        for key in ("video", "value", "path"):
+        for key in ("video", "value", "path", "url"):
             value = result.get(key)
             if isinstance(value, str) and value.endswith(".mp4"):
                 return value
@@ -46,6 +44,13 @@ def _extract_video_path(result):
                 return path
 
     return None
+
+
+def _default_output_path(image_path):
+    image_path = Path(image_path)
+    out_dir = image_path.parent.parent / "animated"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return str(out_dir / f"{image_path.stem}_animated.mp4")
 
 
 def _make_zoompan_fallback(image_path, output_path, duration=4):
@@ -77,14 +82,18 @@ def _make_zoompan_fallback(image_path, output_path, duration=4):
 def generate_animated_scene(
     image_path,
     scene_prompt,
-    output_path,
+    output_path=None,
     hf_token=None,
     duration=4,
 ):
     """
     Génère une scène animée via plusieurs Spaces Wan 2.2.
+    Compatible avec les anciens appels qui ne fournissent pas output_path.
     Si aucun Space ne répond, fallback vidéo zoompan à partir de l'image.
     """
+    if output_path is None:
+        output_path = _default_output_path(image_path)
+
     output_path = str(output_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -127,9 +136,7 @@ def generate_animated_scene(
             print(f"   ⚠️ {space_name} indisponible ({e}), essai suivant")
             last_error = e
             time.sleep(1)
-            continue
 
     print("   ❌ Tous les Spaces Wan 2.2 indisponibles.")
     print("   ↪️ Fallback zoompan")
-    _make_zoompan_fallback(image_path, output_path, duration=duration)
-    return output_path
+    return _make_zoompan_fallback(image_path, output_path, duration=duration)
