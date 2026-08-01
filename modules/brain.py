@@ -4,6 +4,11 @@ import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
+try:
+    from modules.utils.zernio_client import get_latest_videos_stats
+except ImportError:
+    print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
+    def get_latest_videos_stats(): return None
 
 load_dotenv()
 
@@ -41,6 +46,30 @@ def _script_missing_accents(script_data):
         return False
     full_text = " ".join(s.get("text", "") for s in scenes)
     return _has_missing_accents(full_text)
+
+
+def _format_stats_instruction(previous_stats_list, label="hooks"):
+    """
+    Formate une liste de stats Zernio en instruction textuelle pour le LLM.
+    Retourne une chaine vide si aucune stat n'est disponible.
+    """
+    if not previous_stats_list:
+        return ""
+
+    stats_text = "\n".join([
+        f'- Titre : "{s["title"]}" | Vues : {s["views"]} | Likes : {s["likes"]}'
+        for s in previous_stats_list
+    ])
+
+    return f"""
+ANALYSE DES PERFORMANCES RECENTES (FEEDBACK LOOP) :
+Voici les resultats de nos dernieres videos publiees :
+{stats_text}
+
+INSTRUCTION D'APPRENTISSAGE (AGENT IA) :
+Agis comme un Growth Hacker. Analyse brievement quels themes ou structures ont obtenu le plus ou le moins de vues.
+Sers-toi de cette deduction pour ajuster le {label} que tu vas generer.
+"""
 
 
 class ContentBrain:
@@ -101,7 +130,10 @@ class ContentBrain:
 
         raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
 
-    def get_trending_topic(self):
+    # --- AMELIORE : Ajout de previous_stats_list, tout le reste inchange ---
+    def get_trending_topic(self, previous_stats_list=None):
+        stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
+
         messages = [
             {
                 "role": "system",
@@ -114,7 +146,10 @@ class ContentBrain:
             },
             {
                 "role": "user",
-                "content": "Donne un sujet viral totalement inédit et surprenant pour TikTok en français."
+                "content": (
+                    "Donne un sujet viral totalement inédit et surprenant pour TikTok en français."
+                    + stats_instruction
+                )
             }
         ]
         content, _ = self._call_with_fallback(messages, temperature=1.2)
@@ -139,11 +174,15 @@ class ContentBrain:
         content, _ = self._call_with_fallback(messages, temperature=0.8)
         return content.strip().replace(chr(34), "")
 
-    def generate_hook_variants(self, topic, n=5):
+    def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         print(f"Generation de {n} hooks alternatifs pour: {topic}...")
+
+        stats_instruction = _format_stats_instruction(previous_stats_list, label="niveau de mystere, le vocabulaire ou la structure des nouveaux hooks")
 
         prompt = f"""
 Tu es un expert en hooks viraux pour TikTok, specialise dans le mystere et l'inexplique.
+
+{stats_instruction}
 
 SUJET :
 {topic}
@@ -167,6 +206,7 @@ FORMAT DE SORTIE :
 Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
 {{
+  "analyse_agent": "Une phrase courte (max 20 mots) expliquant comment tu as adapte tes hooks en fonction des stats fournies.",
   "hooks": [
     {{
       "text": "Phrase du hook.",
@@ -205,6 +245,10 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
                 skip_providers={"groq"}
             )
             data = json.loads(content)
+
+        analyse = data.get("analyse_agent", "")
+        if analyse:
+            print(f"\n🧠 Réflexion de l'Agent IA : {analyse}\n")
 
         hooks = data.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != n:
@@ -427,7 +471,6 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             if not image_prompt:
                 raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
 
-            # Emphase : validation souple
             if emphasis:
                 normalized_text = text.lower()
                 normalized_emphasis = str(emphasis).strip().lower()
@@ -452,10 +495,16 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 if __name__ == "__main__":
     brain = ContentBrain()
 
-    topic = brain.get_trending_topic()
+    # --- AMELIORE : Recuperation des stats avant meme le choix du sujet ---
+    print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
+    stats_historique = get_latest_videos_stats()
+
+    # --- AMELIORE : Injection des stats dans le choix du sujet ---
+    topic = brain.get_trending_topic(previous_stats_list=stats_historique)
     print(f"\nSujet retenu : {topic}\n")
 
-    hooks = brain.generate_hook_variants(topic, n=5)
+    hooks = brain.generate_hook_variants(topic, n=5, previous_stats_list=stats_historique)
+
     for i, h in enumerate(hooks, 1):
         print(f"{i}. [{h['pattern']}] {h['text']}")
 
