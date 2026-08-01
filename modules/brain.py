@@ -4,18 +4,23 @@ import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
+
 try:
     from modules.utils.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
     def get_latest_videos_stats(): return None
 
+
 load_dotenv()
+
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.5-flash"
 
+
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
+
 
 ACCENT_INSTRUCTION = (
     "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
@@ -49,10 +54,6 @@ def _script_missing_accents(script_data):
 
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
-    """
-    Formate une liste de stats Zernio en instruction textuelle pour le LLM.
-    Retourne une chaine vide si aucune stat n'est disponible.
-    """
     if not previous_stats_list:
         return ""
 
@@ -70,6 +71,47 @@ INSTRUCTION D'APPRENTISSAGE (AGENT IA) :
 Agis comme un Growth Hacker. Analyse brievement quels themes ou structures ont obtenu le plus ou le moins de vues.
 Sers-toi de cette deduction pour ajuster le {label} que tu vas generer.
 """
+
+
+def _clean_single_line_title(text):
+    if not text:
+        return ""
+
+    cleaned = text.replace('"', '').replace('“', '').replace('”', '').strip()
+    lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    first_line = lines[0]
+    first_line = re.sub(r"\s+", " ", first_line).strip()
+    return first_line
+
+
+def _is_valid_topic_candidate(topic):
+    if not topic:
+        return False
+
+    lowered = topic.lower().strip()
+    invalid_markers = [
+        "mais voici", "voici le bon", "je me suis trompé", "je me suis trompe",
+        "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
+        "\n", "hook", "analyse", "explication"
+    ]
+
+    if any(marker in lowered for marker in invalid_markers):
+        return False
+
+    word_count = len(topic.split())
+    if word_count < 4 or word_count > 18:
+        return False
+
+    if lowered.endswith(":"):
+        return False
+
+    if topic.count('.') > 1:
+        return False
+
+    return True
 
 
 class ContentBrain:
@@ -130,7 +172,6 @@ class ContentBrain:
 
         raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
 
-    # --- AMELIORE : Ajout de previous_stats_list, tout le reste inchange ---
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
 
@@ -140,7 +181,9 @@ class ContentBrain:
                 "content": (
                     "Tu es un strategiste de contenu viral. "
                     "Trouve un sujet de mini-documentaire court, captivant et inattendu. "
-                    "Reponds UNIQUEMENT avec le titre en francais, sans guillemets. "
+                    "Reponds UNIQUEMENT avec un seul titre en francais, sur UNE seule ligne, "
+                    "sans guillemets, sans liste, sans justification, sans deuxieme proposition. "
+                    "Maximum 18 mots. "
                     f"{ACCENT_INSTRUCTION}"
                 )
             },
@@ -152,8 +195,19 @@ class ContentBrain:
                 )
             }
         ]
-        content, _ = self._call_with_fallback(messages, temperature=1.2)
-        return content.strip().replace(chr(34), "")
+
+        last_topic = ""
+        for attempt in range(2):
+            content, _ = self._call_with_fallback(messages, temperature=0.9)
+            topic = _clean_single_line_title(content)
+            last_topic = topic
+
+            if _is_valid_topic_candidate(topic):
+                return topic
+
+            print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
+
+        raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
@@ -495,11 +549,9 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 if __name__ == "__main__":
     brain = ContentBrain()
 
-    # --- AMELIORE : Recuperation des stats avant meme le choix du sujet ---
     print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
     stats_historique = get_latest_videos_stats()
 
-    # --- AMELIORE : Injection des stats dans le choix du sujet ---
     topic = brain.get_trending_topic(previous_stats_list=stats_historique)
     print(f"\nSujet retenu : {topic}\n")
 
