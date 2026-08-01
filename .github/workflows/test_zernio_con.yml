@@ -1,0 +1,11 @@
+      - name: 🔍 Tester la connexion Zernio
+        run: |
+          python -c "
+          import os, requests
+          api_key = os.getenv('ZERNIO_API_KEY')
+          print('Cle presente :', bool(api_key))
+          headers = {'Authorization': f'Bearer {api_key}'}
+          resp = requests.get('https://zernio.com/api/v1/analytics?sortBy=engagement&limit=5', headers=headers)
+          print('Status:', resp.status_code)
+          print('Body:', resp.json())
+          "
