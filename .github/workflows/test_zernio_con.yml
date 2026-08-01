@@ -1,2 +1,33 @@
-- name: 🔍 Test de l'API Zernio (Debug)
-        run: python -c "import os, requests; key = os.getenv('ZERNIO_API_KEY'); print('Clé présente:', bool(key)); headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}; res = requests.get('https://zernio.com/api/v1/analytics?sortBy=engagement&limit=5', headers=headers); print('Status:', res.status_code); print('Body:', res.json())"
+name: Test Zernio
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-zernio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Cloner le dépôt
+        uses: actions/checkout@v4
+
+      - name: 🐍 Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 📦 Installer requests
+        run: pip install requests
+
+      - name: 🔍 Test de l'API Zernio (Debug)
+        env:
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+        run: |
+          python -c "
+          import os, requests
+          key = os.getenv('ZERNIO_API_KEY')
+          print('Clé présente:', bool(key))
+          headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+          res = requests.get('https://zernio.com/api/v1/analytics?sortBy=engagement&limit=5', headers=headers)
+          print('Status Code:', res.status_code)
+          print('Response Body:', res.text)
+          "
