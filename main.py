@@ -10,6 +10,12 @@ from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
 from modules.composer import Composer
 
+try:
+    from modules.utils.zernio_client import get_latest_videos_stats
+except ImportError:
+    print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
+    def get_latest_videos_stats(): return None
+
 
 def upload_to_huggingface(video_path, topic):
     hf_token = os.getenv("HF_TOKEN")
@@ -161,6 +167,14 @@ async def main():
 
     brain = ContentBrain()
 
+    # --- NOUVEAU : Recuperation des stats Zernio pour le feedback loop ---
+    print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
+    try:
+        stats_historique = get_latest_videos_stats()
+    except Exception as e:
+        print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
+        stats_historique = None
+
     try:
         if topic_input:
             topic = topic_input
@@ -169,13 +183,15 @@ async def main():
                 topic = brain.refine_topic_angle(topic)
                 print(f"🎯 Angle affine : {topic}")
         else:
-            topic = brain.get_trending_topic()
+            # --- NOUVEAU : Injection des stats dans le choix du sujet ---
+            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
             print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
         chosen_hook = None
         if use_hooks_ab_test:
             try:
-                hooks = brain.generate_hook_variants(topic, n=5)
+                # --- NOUVEAU : Injection des stats dans la generation de hooks ---
+                hooks = brain.generate_hook_variants(topic, n=5, previous_stats_list=stats_historique)
                 chosen_hook = hooks[0]["text"]
                 print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
             except Exception as e:
