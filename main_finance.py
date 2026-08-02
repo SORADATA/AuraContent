@@ -12,7 +12,7 @@ from modules.audio_engine_finance import AudioEngine
 from modules.composer_finance import Composer
 
 try:
-    from modules.utils.zernio_client import get_latest_videos_stats
+    from modules.utils.zernio_client_finance import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
     def get_latest_videos_stats():
