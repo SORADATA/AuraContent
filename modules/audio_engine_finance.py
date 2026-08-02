@@ -3,6 +3,7 @@ import asyncio
 import base64
 import wave
 import requests
+import re
 from mutagen.mp3 import MP3
 
 try:
@@ -51,9 +52,13 @@ class AudioEngine:
                 self.use_kokoro = False
 
     def clean_text(self, text):
+        text = str(text)
         text = text.replace("\u2014", ", ").replace("\u2013", ", ")
         text = text.replace("...", ". ")
-        return " ".join(text.split()).strip()
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[“”«»]", '"', text)
+        text = re.sub(r"[•·]", ", ", text)
+        return text.strip()
 
     def get_audio_duration(self, file_path):
         try:
@@ -85,7 +90,7 @@ class AudioEngine:
         )
 
         payload = {
-            "contents": [{"parts": [{"text": f"{self.GEMINI_STYLE_PROMPT}\n\nText: {text}"}]}],
+            "contents": [{"parts": [{"text": f"{self.GEMINI_STYLE_PROMPT}\n\nText: {self.clean_text(text)}"}]}],
             "generationConfig": {"responseModalities": ["AUDIO"]}
         }
 
@@ -106,7 +111,7 @@ class AudioEngine:
                 return False
 
             audio_bytes = base64.b64decode(inline_data["data"])
-            mime_type = inline_data.get("mimeType", "")
+            mime_type = inline_data.get("mimeType", "").lower()
 
             if "wav" in mime_type:
                 with open(output_path_wav, "wb") as f:
@@ -163,7 +168,8 @@ class AudioEngine:
 
         try:
             await self._try_edge(text, mp3_path)
-            return mp3_path, "edge-tts"
+            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+                return mp3_path, "edge-tts"
         except Exception as e:
             print(f"     Edge indisponible: {e}")
 
