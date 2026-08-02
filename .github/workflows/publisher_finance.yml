@@ -28,7 +28,7 @@ jobs:
           ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }}
           TIKTOK_CAPITAL_SIMPLE_ID: ${{ secrets.TIKTOK_CAPITAL_SIMPLE_ID }}
           YOUTUBE_CAPITAL_SIMPLE_ID: ${{ secrets.YOUTUBE_CAPITAL_SIMPLE_ID }}
-        run: python publish.py
+        run: python publish_finance.py
 
       - name: 💾 Sauvegarder le rapport de loudness
         if: always()
