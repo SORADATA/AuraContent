@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import requests
 from datetime import datetime
-from constants import API_URL, DIRECT_URL
+from constants import API_URL_FINANCE, DIRECT_URL_FINANCE
 
 
 def get_latest_video_url():
@@ -11,7 +11,7 @@ def get_latest_video_url():
     Interroge l'API Hugging Face pour trouver la TOUTE DERNIÈRE vidéo générée.
     Vérifie qu'elle a bien été générée aujourd'hui pour éviter de recycler du vieux contenu.
     """
-    response = requests.get(API_URL)
+    response = requests.get(API_URL_FINANCE)
 
     if response.status_code != 200:
         raise Exception(f"❌ Erreur de lecture sur HF : {response.status_code}")
@@ -37,7 +37,7 @@ def get_latest_video_url():
 
     print(f"🎯 Vidéo du jour sélectionnée : {filename}")
 
-    direct_url = f"{DIRECT_URL}{target_video_path}"
+    direct_url = f"{DIRECT_URL_FINANCE}{target_video_path}"
     return direct_url, target_video_path
 
 
@@ -90,7 +90,7 @@ def publish_to_tiktok():
     raw_filename = file_path.split("/")[-1]
     clean_title = raw_filename.replace(".mp4", "").replace("_", " ")[16:]
 
-    caption = f"{clean_title} 💼📈 #Finance #Business #Investissement"
+    caption = f"{clean_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
     print(f"📝 Légende générée : {caption}")
 
     url = "https://zernio.com/api/v1/posts"
