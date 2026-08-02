@@ -4,6 +4,7 @@ import base64
 import wave
 import requests
 import re
+import ffmpeg
 from mutagen.mp3 import MP3
 
 try:
@@ -33,6 +34,19 @@ class AudioEngine:
     EDGE_VOLUME = "+0%"
 
     KOKORO_FRENCH_VOICE = "ff_siwis"
+
+    # --- Cible de normalisation par scène ---
+    # On vise un peu SOUS le -16 LUFS final (appliqué globalement par le
+    # Composer) pour laisser de la marge : chaque scène est ainsi
+    # homogène en amont, et le loudnorm final du Composer n'a plus qu'à
+    # ajuster finement plutôt que rattraper de gros écarts entre moteurs.
+    SCENE_TARGET_LUFS = -19.0
+    SCENE_TRUE_PEAK = -1.5
+    SCENE_LRA = 11
+    # Limiteur de sécurité (marge sous 0 dBFS) pour absorber tout pic
+    # résiduel que loudnorm n'aurait pas totalement lissé — c'est
+    # généralement la cause des "craquements" entendus en aval.
+    SAFETY_LIMITER_LEVEL = 0.97
 
     def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
@@ -66,10 +80,31 @@ class AudioEngine:
         return text.strip()
 
     def get_audio_duration(self, file_path):
+        """Mesure de durée fiable pour n'importe quel format audio.
+
+        Le bug initial utilisait mutagen.mp3.MP3, qui ne sait lire QUE du
+        MP3 : sur les fichiers .wav produits par Gemini/Kokoro, ça
+        renvoyait silencieusement 0.0, forçant ensuite la scène à durer
+        min_scene_duration au lieu de sa durée réelle (voix coupée en
+        plein milieu, ou silences en trop côté vidéo).
+
+        On utilise ffprobe (via ffmpeg-python) en priorité car il gère
+        tous les formats de façon fiable ; mutagen sert de filet de
+        secours pour les .mp3 si ffprobe n'est pas disponible.
+        """
         try:
-            return MP3(file_path).info.length
+            probe = ffmpeg.probe(file_path)
+            return float(probe["format"]["duration"])
         except Exception:
-            return 0.0
+            pass
+
+        if file_path.lower().endswith(".mp3"):
+            try:
+                return MP3(file_path).info.length
+            except Exception:
+                pass
+
+        return 0.0
 
     def trim_silence(self, file_path):
         return
@@ -84,6 +119,53 @@ class AudioEngine:
             wf.setsampwidth(sampwidth)
             wf.setframerate(sample_rate)
             wf.writeframes(pcm_bytes)
+
+    def _normalize_scene_audio(self, audio_path):
+        """Normalise un clip TTS individuel (loudnorm) et lui applique un
+        limiteur de sécurité pour éviter tout écrêtage/craquement, quel
+        que soit le moteur TTS d'origine (Edge / Gemini / Kokoro ont des
+        niveaux de sortie naturels très différents).
+
+        Écrit dans un fichier temporaire puis remplace l'original en
+        place, pour que le reste du pipeline (Composer) n'ait rien à
+        changer.
+        """
+        ext = os.path.splitext(audio_path)[1].lower()
+        base, _ = os.path.splitext(audio_path)
+        tmp_path = f"{base}__norm{ext}"
+
+        output_kwargs = {}
+        if ext == ".wav":
+            output_kwargs["acodec"] = "pcm_s16le"
+        elif ext == ".mp3":
+            output_kwargs["acodec"] = "libmp3lame"
+            output_kwargs["audio_bitrate"] = "192k"
+
+        try:
+            (
+                ffmpeg
+                .input(audio_path)
+                .filter("loudnorm", I=self.SCENE_TARGET_LUFS, TP=self.SCENE_TRUE_PEAK, LRA=self.SCENE_LRA)
+                .filter("alimiter", limit=self.SAFETY_LIMITER_LEVEL)
+                .output(tmp_path, **output_kwargs)
+                .run(overwrite_output=True, quiet=True)
+            )
+
+            if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                os.replace(tmp_path, audio_path)
+                return True
+
+            return False
+
+        except ffmpeg.Error as e:
+            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+            print(f"     ⚠️ Normalisation scène échouée ({audio_path}): {error_log}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            return False
 
     def _try_gemini(self, text, output_path_wav):
         if not self.use_gemini:
@@ -174,14 +256,17 @@ class AudioEngine:
         try:
             await self._try_edge(text, mp3_path)
             if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+                self._normalize_scene_audio(mp3_path)
                 return mp3_path, "edge-tts"
         except Exception as e:
             print(f"     Edge indisponible: {e}")
 
         if self._try_gemini(text, wav_path):
+            self._normalize_scene_audio(wav_path)
             return wav_path, "gemini-tts"
 
         if self._try_kokoro(text, wav_path):
+            self._normalize_scene_audio(wav_path)
             return wav_path, "kokoro"
 
         raise RuntimeError("Aucun moteur TTS disponible")
