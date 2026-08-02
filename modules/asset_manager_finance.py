@@ -1,44 +1,58 @@
 import os
+import urllib.parse
+import requests
 from modules.utils.pexels_client import get_pexels_video
 
 
-FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback_finance.mp4")
+FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
 
 
 class AssetManager:
     def __init__(self):
-        # On renomme intelligemment le dossier en "video_clips"
         self.video_dir = os.path.join(os.getcwd(), "assets", "video_clips")
         os.makedirs(self.video_dir, exist_ok=True)
 
     def get_videos(self, script_data):
         """
-        Récupère 1 vidéo Pexels par scène en utilisant le 'stock_search' du script.
-        Si échec, utilise la vidéo de secours (fallback).
-        Retourne une liste simple de chemins vidéos alignée avec script_data.
+        Récupère un visuel par scène selon le rôle :
+        - Pexels pour hook/example/cta
+        - Pollinations pour analogy/misconception
+        - fallback vidéo si tout échoue
+        Retourne une liste de chemins vidéos alignée avec script_data.
         """
         video_paths = []
 
         for scene in script_data:
             scene_id = scene["id"]
+            role = scene.get("role", "example")
             output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
 
-            print(f"🎬 Scene {scene_id} - Récupération de la vidéo Pexels...")
-
-            # On vérifie si la vidéo existe déjà (pratique si tu relances le script après un bug)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id}")
+                print(f"   ✅ Vidéo déjà en cache pour la scène {scene_id}")
                 video_paths.append(output_path)
                 continue
 
-            # On extrait les mots-clés générés par le Cerveau IA
             query = scene.get("stock_search", "finance")
-            
-            # Appel à notre script Pexels
-            video_path = get_pexels_video(query, output_path)
+            image_prompt = scene.get("image_prompt", "")
 
-            if video_path and os.path.exists(video_path):
-                video_paths.append(video_path)
+            # Pollinations pour les scènes abstraites / métaphores
+            if role in {"analogy", "misconception"} and image_prompt:
+                print(f"🎨 Scene {scene_id} - Pollinations pour {role}...")
+                pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path)
+                if pollinations_path:
+                    video_paths.append(pollinations_path)
+                    continue
+
+            # Pexels par défaut
+            print(f"🎬 Scene {scene_id} - Récupération de la vidéo Pexels...")
+            pexels_path = self._try_pexels(query, output_path)
+            if pexels_path:
+                video_paths.append(pexels_path)
+                continue
+
+            print(f"   ⚠️ Scene {scene_id}: échec Pexels/Pollinations, utilisation de la vidéo fallback")
+            if os.path.exists(FALLBACK_VIDEO):
+                video_paths.append(FALLBACK_VIDEO)
             else:
                 print(f"    ⚠️ Scene {scene_id}: échec Pexels, utilisation de la vidéo de fallback")
                 if os.path.exists(FALLBACK_VIDEO):

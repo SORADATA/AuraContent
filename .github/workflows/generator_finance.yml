@@ -33,7 +33,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      #ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }} # zernio
+      ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }} # zernio finance
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
 
       VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}

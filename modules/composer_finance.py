@@ -1,6 +1,17 @@
 import os
 import random
+import time
+import urllib.parse
+import requests
 import ffmpeg
+
+
+try:
+    from modules.kinetic_typography_v2 import KineticTypographyEngineV2
+    KINETIC_AVAILABLE = True
+except ImportError:
+    print("⚠️ kinetic_typography_v2.py introuvable. Fallback sur Pexels par défaut.")
+    KINETIC_AVAILABLE = False
 
 
 class Composer:
@@ -16,7 +27,6 @@ class Composer:
         self.transitions = ["fade", "diagbr", "diagtl"]
         self.bg_music_path = os.path.join(self.music_dir, "bg_track_finance.mp3")
         
-
         self.video_width = 1080
         self.video_height = 1920
         self.fps = 30
@@ -26,19 +36,26 @@ class Composer:
         self.music_fade_duration = 1.5
         self.transition_duration = 0.45
 
-        # Police moderne pour la finance (Montserrat ou Roboto)
+        # Style de sous-titres moderne et lisible par-dessus les vidéos de fond
         self.subtitle_style = (
             "FontName=Montserrat,"
-            "FontSize=18,"
+            "FontSize=22,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
-            "BackColour=&H66000000,"
+            "BackColour=&H99000000,"
             "BorderStyle=3,"
-            "Outline=2.2,"
+            "Outline=2.5,"
             "Shadow=0,"
             "Alignment=2,"
-            "MarginV=115"
+            "MarginV=130"
         )
+
+        if KINETIC_AVAILABLE:
+            self.kinetic_engine = KineticTypographyEngineV2(
+                width=self.video_width, 
+                height=self.video_height, 
+                fps=self.fps
+            )
 
     def get_duration(self, filepath):
         try:
@@ -47,6 +64,77 @@ class Composer:
         except Exception:
             return 0.0
 
+    # ----------------------------------------------------------------
+    # GESTION DE POLLINATIONS (SANS TOKEN)
+    # ----------------------------------------------------------------
+    def _generate_pollinations_video(self, scene_id, prompt, duration):
+        """Génère une image via Pollinations (anonyme) puis la transforme en vidéo avec un zoom lent (Ken Burns)."""
+        if not prompt: return None
+        
+        image_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.jpg")
+        video_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.mp4")
+        
+        encoded_prompt = urllib.parse.quote(prompt)
+        seed = random.randint(1, 999999)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={self.video_width}&height={self.video_height}&model=flux&nologo=true&seed={seed}"
+        
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code == 200:
+                with open(image_path, "wb") as f:
+                    f.write(response.content)
+            else:
+                return None
+        except Exception as e:
+            print(f"⚠️ Pollinations erreur: {e}")
+            return None
+
+        try:
+            zoom_frames = int(duration * self.fps)
+            (
+                ffmpeg.input(image_path, loop=1, t=duration)
+                .filter("scale", self.video_width * 2, self.video_height * 2)
+                .filter(
+                    "zoompan",
+                    z="min(zoom+0.0008,1.15)",
+                    d=zoom_frames,
+                    x="iw/2-(iw/zoom/2)",
+                    y="ih/2-(ih/zoom/2)",
+                    s=f"{self.video_width}x{self.video_height}",
+                    fps=self.fps,
+                )
+                .output(video_path, vcodec="libx264", pix_fmt="yuv420p", crf=18, preset="medium", t=duration)
+                .run(overwrite_output=True, quiet=True)
+            )
+            return video_path
+        except Exception:
+            return None
+
+    # ----------------------------------------------------------------
+    # SÉLECTEUR VISUEL TOUJOURS DYNAMIQUE (PEXELS OU POLLINATIONS)
+    # ----------------------------------------------------------------
+    def _get_visual_for_scene(self, scene, default_pexels_path, total_duration):
+        scene_id = scene["id"]
+        prompt = scene.get("image_prompt", "")
+
+        # 1. Si on a une vidéo Pexels valide, on l'utilise en priorité pour garder du mouvement réel
+        if default_pexels_path and os.path.exists(default_pexels_path):
+            print(f"    🎬 Scène {scene_id} : Vidéo Pexels dynamique")
+            return default_pexels_path, "video"
+
+        # 2. Sinon, on génère une image IA via Pollinations avec un effet de zoom
+        if prompt:
+            print(f"    🎨 Scène {scene_id} : Génération image Pollinations IA + Zoom")
+            pollinations_out = self._generate_pollinations_video(scene_id, prompt, total_duration)
+            if pollinations_out:
+                return pollinations_out, "image_ai"
+
+        # 3. Fallback ultime si rien d'autre n'est dispo
+        return default_pexels_path, "video"
+
+    # ----------------------------------------------------------------
+    # TRAITEMENT PRINCIPAL DE LA SCÈNE
+    # ----------------------------------------------------------------
     def process_scene(self, scene, video_path):
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
@@ -54,14 +142,19 @@ class Composer:
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
         try:
-            print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Pexels Video + Cropping 9:16")
+            # Récupération d'un fond visuel vivant (Pexels ou IA animée)
+            final_video_path, visual_type = self._get_visual_for_scene(scene, video_path, total_duration)
+            
+            if not final_video_path or not os.path.exists(final_video_path):
+                print(f"❌ Impossible de trouver un visuel pour la scène {scene_id}")
+                return None
+
+            print(f"    ⚙️ Assemblage FFmpeg Scène {scene_id} (Fond dynamique)")
             
             input_audio = ffmpeg.input(audio_path)
-            
-            # 1. On charge la vidéo Pexels en boucle (au cas où elle soit plus courte que l'audio)
-            input_video = ffmpeg.input(video_path, stream_loop=-1)
+            input_video = ffmpeg.input(final_video_path, stream_loop=-1)
 
-            # 2. On la coupe à la durée exacte de la voix + recadrage parfait en 1080x1920
+            # Recadrage propre en 9:16 vertical
             video_stream = (
                 input_video.video
                 .trim(duration=total_duration)
@@ -70,7 +163,7 @@ class Composer:
                 .filter("crop", "1080", "1920")
             )
 
-            # 3. Ajout des sous-titres
+            # Incrustation des sous-titres dynamiques par-dessus la vidéo de fond
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
                 video_stream = video_stream.filter(
@@ -79,7 +172,7 @@ class Composer:
                     force_style=self.subtitle_style
                 )
 
-            # 4. Rendu de la scène
+            # Rendu de la scène
             runner = ffmpeg.output(
                 video_stream,
                 input_audio,
@@ -102,16 +195,11 @@ class Composer:
 
     def render_all_scenes(self, script_data, video_paths):
         rendered_paths = []
-
         for i, scene in enumerate(script_data):
-            current_video = video_paths[i]
-            if current_video is None:
-                continue
-
+            current_video = video_paths[i] if i < len(video_paths) else None
             output_path = self.process_scene(scene, current_video)
             if output_path:
                 rendered_paths.append(output_path)
-
         return rendered_paths
 
     def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=None):
@@ -153,26 +241,15 @@ class Composer:
     def _normalize_audio_track(self, input_video_path, output_video_path):
         try:
             src = ffmpeg.input(input_video_path)
-
             normalized_audio = src.audio.filter(
-                "loudnorm",
-                I=-16,
-                TP=-1.5,
-                LRA=11
+                "loudnorm", I=-16, TP=-1.5, LRA=11
             )
-
             runner = ffmpeg.output(
-                src.video,
-                normalized_audio,
-                output_video_path,
-                vcodec="copy",
-                acodec="aac",
-                audio_bitrate="192k",
-                movflags="faststart"
+                src.video, normalized_audio, output_video_path,
+                vcodec="copy", acodec="aac", audio_bitrate="192k", movflags="faststart"
             )
             runner.run(overwrite_output=True, quiet=True)
             return True
-
         except ffmpeg.Error as e:
             error_log = e.stderr.decode("utf8") if e.stderr else str(e)
             print(f"⚠️ Loudnorm failed: {error_log}")
@@ -214,41 +291,23 @@ class Composer:
             ducked_music = ffmpeg.filter(
                 [music_for_sidechain, voice_for_sidechain],
                 "sidechaincompress",
-                threshold=0.03,
-                ratio=10,
-                attack=20,
-                release=250,
-                makeup=1
+                threshold=0.03, ratio=10, attack=20, release=250, makeup=1
             )
 
             mixed_audio = (
                 ffmpeg
-                .filter(
-                    [voice_for_mix, ducked_music],
-                    "amix",
-                    inputs=2,
-                    duration="first",
-                    dropout_transition=2,
-                    normalize=0
-                )
+                .filter([voice_for_mix, ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0)
                 .filter("loudnorm", I=-16, TP=-1.5, LRA=11)
             )
 
             final_runner = ffmpeg.output(
-                voice.video,
-                mixed_audio,
-                output_path,
-                vcodec="libx264",
-                acodec="aac",
-                audio_bitrate="192k",
-                pix_fmt="yuv420p",
-                movflags="faststart",
-                preset="medium"
+                voice.video, mixed_audio, output_path,
+                vcodec="libx264", acodec="aac", audio_bitrate="192k",
+                pix_fmt="yuv420p", movflags="faststart", preset="medium"
             )
             final_runner.run(overwrite_output=True, quiet=False)
             print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
             return True
-
         except ffmpeg.Error as e:
             error_log = e.stderr.decode("utf8") if e.stderr else str(e)
             print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
@@ -259,70 +318,51 @@ class Composer:
         output_path = os.path.join(self.final_dir, output_filename)
 
         if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except Exception:
-                print(f"⚠️ Warning: Could not delete old file {output_path}.")
+            try: os.remove(output_path)
+            except Exception: pass
 
-        if not video_paths:
-            return None
+        if not video_paths: return None
 
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
         else:
             courant = video_paths[0]
-
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
                 merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
-
                 try:
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output)
                     print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
                 except ffmpeg.Error as e:
-                    error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-                    print(f"❌ Stitching Error at step {i}: {error_log}")
+                    print(f"❌ Stitching Error at step {i}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
                     return None
 
                 if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
-                    try:
-                        os.remove(courant)
-                    except Exception:
-                        pass
+                    try: os.remove(courant)
+                    except Exception: pass
 
                 courant = merge_output
-
             stitched_path = courant
 
         if os.path.exists(self.bg_music_path):
             print("🎵 Mixing background music with ducking...")
             success = self._mix_background_music(stitched_path, output_path)
-
             if not success:
                 normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
-                print("🔈 Fallback: export sans musique, avec normalisation voix...")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-
-                if ok and os.path.exists(normalized_fallback):
-                    os.replace(normalized_fallback, output_path)
-                else:
-                    os.replace(stitched_path, output_path)
+                if ok and os.path.exists(normalized_fallback): os.replace(normalized_fallback, output_path)
+                else: os.replace(stitched_path, output_path)
         else:
-            print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
+            print("⚠️ Aucune musique de fond trouvée, export avec voix normalisée.")
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
+            if ok and os.path.exists(normalized_fallback): os.replace(normalized_fallback, output_path)
+            else: os.replace(stitched_path, output_path)
 
-            if ok and os.path.exists(normalized_fallback):
-                os.replace(normalized_fallback, output_path)
-            else:
-                os.replace(stitched_path, output_path)
-
-            print(f"✅ FINAL VIDEO SAVED: {output_path}")
+        print(f"✅ FINAL VIDEO SAVED: {output_path}")
 
         if stitched_path != output_path and os.path.exists(stitched_path):
-            try:
-                os.remove(stitched_path)
-            except Exception:
-                pass
+            try: os.remove(stitched_path)
+            except Exception: pass
 
         return output_path
