@@ -21,30 +21,23 @@ except ImportError:
 
 class AudioEngine:
     GEMINI_MODEL = "gemini-2.5-flash-preview-tts"
-    
-    # --- CHANGEMENT FINANCE : Prompt vocal ---
-    # On force une voix masculine ("male"), confiante, tranchante, façon podcast business.
     GEMINI_STYLE_PROMPT = (
         "French male professional narrator. Confident, sharp, authoritative, persuasive, modern. "
         "Clear diction, deep engaging tone, dynamic pacing, business podcast style."
     )
 
-    # --- CHANGEMENT FINANCE : Paramètres Edge-TTS ---
-    EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural" # Voix masculine (très pro)
-    EDGE_FALLBACK_RATE = "+5%"  # Légèrement plus rapide pour le dynamisme TikTok
-    EDGE_FALLBACK_PITCH = "-2Hz" # Légèrement plus grave pour l'autorité financière
+    EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
+    EDGE_FALLBACK_RATE = "+5%"
+    EDGE_FALLBACK_PITCH = "-2Hz"
     EDGE_FALLBACK_VOLUME = "+0%"
 
-    # Note : Kokoro n'a pas encore de modèle masculin français natif très stable (ff_siwis est féminin).
-    # Gemini ou Edge-TTS (Henri) prendront le relais prioritairement.
-    KOKORO_FRENCH_VOICE = "ff_siwis" 
+    KOKORO_FRENCH_VOICE = "ff_siwis"
 
     def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.min_scene_duration = 3.0
-
         self.use_gemini = use_gemini and bool(os.getenv("GEMINI_API_KEY"))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
 
@@ -52,10 +45,7 @@ class AudioEngine:
         self._kokoro_pipeline = None
         if self.use_kokoro:
             try:
-                self._kokoro_pipeline = KPipeline(
-                    lang_code="f",
-                    repo_id="hexgrad/Kokoro-82M"
-                )
+                self._kokoro_pipeline = KPipeline(lang_code="f", repo_id="hexgrad/Kokoro-82M")
                 print("      Kokoro initialise")
             except Exception as e:
                 print(f"      Kokoro indisponible: {e}")
@@ -103,18 +93,8 @@ class AudioEngine:
         )
 
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": self.stylize_for_gemini(text)
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"]
-            }
+            "contents": [{"parts": [{"text": self.stylize_for_gemini(text)}]}],
+            "generationConfig": {"responseModalities": ["AUDIO"]}
         }
 
         try:
@@ -124,7 +104,6 @@ class AudioEngine:
 
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             inline_data = None
-
             for part in parts:
                 if "inlineData" in part:
                     inline_data = part["inlineData"]
@@ -146,7 +125,6 @@ class AudioEngine:
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
                 print("      Voix Gemini TTS utilisee")
                 return True
-
             return False
 
         except Exception as e:
@@ -158,10 +136,7 @@ class AudioEngine:
             return False
 
         try:
-            generator = self._kokoro_pipeline(
-                self.clean_text(text),
-                voice=self.KOKORO_FRENCH_VOICE
-            )
+            generator = self._kokoro_pipeline(self.clean_text(text), voice=self.KOKORO_FRENCH_VOICE)
             for _, _, audio in generator:
                 sf.write(output_path_wav, audio, 24000)
                 break
@@ -194,15 +169,12 @@ class AudioEngine:
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
-        # Priorité 1 : Gemini (Voix masculine premium générative)
         if self._try_gemini(text, wav_path):
             return wav_path, "gemini-tts"
 
-        # Priorité 2 : Kokoro
         if self._try_kokoro(text, wav_path):
             return wav_path, "kokoro"
 
-        # Priorité 3 : Edge TTS (Voix masculine Henri Neural modifiée)
         try:
             await self._try_edge(text, mp3_path)
             return mp3_path, "edge-tts"
@@ -220,16 +192,12 @@ class AudioEngine:
             output_filename = f"scene_{scene_id}.wav"
 
             audio_path, engine_used = await self.generate_audio(text, output_filename)
-
             scene["audio_path"] = audio_path
             scene["tts_engine"] = engine_used
 
             duration = self.get_audio_duration(audio_path)
             scene["duration"] = max(duration, self.min_scene_duration)
 
-            print(
-                f"      Scene {scene_id}: audio genere via {engine_used} "
-                f"({scene['duration']:.2f}s)"
-            )
+            print(f"      Scene {scene_id}: audio genere via {engine_used} ({scene['duration']:.2f}s)")
 
         return script_data

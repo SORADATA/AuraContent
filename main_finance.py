@@ -1,8 +1,8 @@
 import asyncio
 import os
 import shutil
-import math
 from datetime import datetime
+
 from huggingface_hub import HfApi
 
 from modules.brain_finance import ContentBrain
@@ -14,7 +14,8 @@ try:
     from modules.utils.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
-    def get_latest_videos_stats(): return None
+    def get_latest_videos_stats():
+        return None
 
 
 def upload_to_huggingface(video_path, topic):
@@ -28,7 +29,6 @@ def upload_to_huggingface(video_path, topic):
         return False
 
     api = HfApi(token=hf_token)
-    # J'ai changé le repo par défaut pour la finance au cas où
     repo_id = os.getenv("HF_REPO_ID", "soradata/ai_videos_Finance")
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -67,7 +67,7 @@ def clean_cache():
         cwd = os.path.abspath(os.getcwd())
 
         if not normalized.startswith(os.path.join(cwd, "assets")):
-            print(f"    SECURITY ALERT: Skipping unsafe path {folder}")
+            print(f"   SECURITY ALERT: Skipping unsafe path {folder}")
             continue
 
         for filename in os.listdir(folder):
@@ -78,7 +78,7 @@ def clean_cache():
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path)
             except Exception as e:
-                print(f"    Failed to delete {file_path}. Reason: {e}")
+                print(f"   Failed to delete {file_path}. Reason: {e}")
 
     print("✅ Workspace clean!")
 
@@ -93,16 +93,13 @@ def format_srt_timestamp(seconds):
 def chunk_words_for_subtitles(words, max_words=3):
     chunks = []
     current = []
-
     for word in words:
         current.append(word)
         if len(current) >= max_words:
             chunks.append(current)
             current = []
-
     if current:
         chunks.append(current)
-
     return chunks
 
 
@@ -153,7 +150,7 @@ def validate_script_payload(script_payload):
 
     for scene in scenes:
         if "id" not in scene or "text" not in scene or "stock_search" not in scene:
-            raise ValueError(f"Scene invalide (vérifie le 'stock_search') : {scene}")
+            raise ValueError(f"Scene invalide (verifie le 'stock_search') : {scene}")
 
     return True
 
@@ -178,18 +175,31 @@ async def main():
     try:
         if topic_input:
             topic = topic_input
+            notion = topic_input
+            angle = "custom"
             print(f"📌 Sujet fourni manuellement : {topic}")
-            if refine_angle:
+            if refine_angle and hasattr(brain, "refine_topic_angle"):
                 topic = brain.refine_topic_angle(topic)
                 print(f"🎯 Angle affine : {topic}")
         else:
-            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
-            print(f"🔥 Sujet selectionne automatiquement : {topic}")
+            result = brain.get_pedagogical_topic(previous_stats_list=stats_historique)
+            topic = result["topic"]
+            notion = result.get("notion", topic)
+            angle = result.get("angle", "");
+            print(f"🔥 Sujet sélectionné automatiquement : {topic}")
+            print(f"📘 Notion : {notion}")
+            print(f"🎭 Angle : {angle}")
 
         chosen_hook = None
         if use_hooks_ab_test:
             try:
-                hooks = brain.generate_hook_variants(topic, n=5, previous_stats_list=stats_historique)
+                hooks = brain.generate_hook_variants(
+                    topic,
+                    notion=notion,
+                    angle=angle,
+                    n=5,
+                    previous_stats_list=stats_historique,
+                )
                 chosen_hook = hooks[0]["text"]
                 print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
             except Exception as e:
@@ -198,14 +208,14 @@ async def main():
         scene_count = estimate_scene_count(duration_target)
         print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
 
-        script_payload = brain.generate_script_with_target(
+        script_payload = brain.generate_script(
             topic,
-            scene_count,
-            chosen_hook=chosen_hook
+            notion=notion,
+            angle=angle,
+            chosen_hook=chosen_hook,
         )
 
         validate_script_payload(script_payload)
-
         script = script_payload["scenes"]
         video_title = script_payload.get("title", topic)
 
@@ -237,14 +247,13 @@ async def main():
             duration=scene["duration"],
             output_path=srt_path,
             max_words_per_caption=3,
-            min_caption_dur=0.45
+            min_caption_dur=0.45,
         )
         scene["srt_path"] = result
 
     try:
-        print("🎞️ Téléchargement des B-Rolls depuis Pexels...")
+        print("🎞️ Téléchargement des B-Rolls depuis Pexels / visuels hybrides...")
         asset_manager = AssetManager()
-        # MODIFICATION MAJEURE ICI : on a supprimé "visual_identity"
         video_paths = asset_manager.get_videos(script)
     except Exception as e:
         print(f"❌ Asset Error: {e}")
@@ -253,7 +262,6 @@ async def main():
     try:
         print("🎬 Montage de la vidéo finale...")
         composer = Composer()
-        # MODIFICATION ICI : on passe video_paths au lieu de assets_map
         final_scene_paths = composer.render_all_scenes(script, video_paths)
     except Exception as e:
         print(f"❌ Render Error: {e}")
@@ -270,11 +278,11 @@ async def main():
         return
 
     if final_path:
-        print(f"✅ Video finale prete : {final_path}")
+        print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)
         clean_cache()
     else:
-        print("❌ L'assemblage final a echoue, upload annule.")
+        print("❌ L'assemblage final a échoué, upload annulé.")
 
 
 if __name__ == "__main__":

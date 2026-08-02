@@ -1,13 +1,11 @@
 import os
 import random
-import time
 import urllib.parse
 import requests
 import ffmpeg
 
-
 try:
-    from kinetic_typography import KineticTypographyEngineV2
+    from kinetic_typography_v2 import KineticTypographyEngineV2
     KINETIC_AVAILABLE = True
 except ImportError:
     print("⚠️ kinetic_typography_v2.py introuvable. Fallback sur Pexels par défaut.")
@@ -26,11 +24,9 @@ class Composer:
 
         self.transitions = ["fade", "diagbr", "diagtl"]
         self.bg_music_path = os.path.join(self.music_dir, "bg_track_finance.mp3")
-        
         self.video_width = 1080
         self.video_height = 1920
         self.fps = 30
-
         self.voice_gain = 1.15
         self.music_gain = 0.12
         self.music_fade_duration = 1.5
@@ -51,9 +47,9 @@ class Composer:
 
         if KINETIC_AVAILABLE:
             self.kinetic_engine = KineticTypographyEngineV2(
-                width=self.video_width, 
-                height=self.video_height, 
-                fps=self.fps
+                width=self.video_width,
+                height=self.video_height,
+                fps=self.fps,
             )
 
     def get_duration(self, filepath):
@@ -63,21 +59,20 @@ class Composer:
         except Exception:
             return 0.0
 
-    # ----------------------------------------------------------------
-    # GESTION DE POLLINATIONS (SANS TOKEN)
-    # ----------------------------------------------------------------
     def _generate_pollinations_video(self, scene_id, prompt, duration):
-        """Génère une image via Pollinations (anonyme) puis la transforme en vidéo avec un zoom."""
-        if not prompt: return None
-        
+        if not prompt:
+            return None
+
         image_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.jpg")
         video_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.mp4")
-        
-        # 1. Récupération de l'image (sans API key)
+
         encoded_prompt = urllib.parse.quote(prompt)
         seed = random.randint(1, 999999)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={self.video_width}&height={self.video_height}&model=flux&nologo=true&seed={seed}"
-        
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            f"?width={self.video_width}&height={self.video_height}&model=flux&nologo=true&seed={seed}"
+        )
+
         try:
             response = requests.get(url, timeout=30)
             if response.status_code == 200:
@@ -89,7 +84,6 @@ class Composer:
             print(f"⚠️ Pollinations erreur: {e}")
             return None
 
-        # 2. Conversion en vidéo avec effet Ken Burns (Zoom lent)
         try:
             zoom_frames = int(duration * self.fps)
             (
@@ -111,18 +105,10 @@ class Composer:
         except Exception:
             return None
 
-
-    # ----------------------------------------------------------------
-    # SÉLECTEUR INTELLIGENT (LA CASCADE)
-    # ----------------------------------------------------------------
     def _get_visual_for_scene(self, scene, default_pexels_path, total_duration):
         role = scene.get("role", "example")
         scene_id = scene["id"]
-        
-        visual_type = "pexels"
-        final_path = default_pexels_path
 
-        # 1. THÉORIE -> Kinetic Typography
         if role in ["definition", "mechanism", "summary"] and KINETIC_AVAILABLE:
             print(f"    🔤 Scene {scene_id} ({role}): Kinetic Typography...")
             kinetic_out = os.path.join(self.temp_dir, f"kinetic_{scene_id}.mp4")
@@ -130,35 +116,29 @@ class Composer:
             if result:
                 return result, "kinetic"
 
-        # 2. MÉTAPHORES -> Pollinations IA (sans token)
         elif role in ["analogy", "misconception"]:
             print(f"    🎨 Scene {scene_id} ({role}): Pollinations IA...")
             prompt = scene.get("image_prompt", "")
             pollinations_out = self._generate_pollinations_video(scene_id, prompt, total_duration)
-            
             if pollinations_out:
                 return pollinations_out, "pollinations"
-            
-            # Fallback si Pollinations échoue
+
             print(f"    ⚠️ Pollinations a échoué -> Fallback Kinetic")
             if KINETIC_AVAILABLE:
                 kinetic_out = os.path.join(self.temp_dir, f"kinetic_fallback_{scene_id}.mp4")
                 result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-                if result: return result, "kinetic"
+                if result:
+                    return result, "kinetic"
 
-        # 3. PEXELS (hook, example, cta ou fallback ultime)
         print(f"    🎬 Scene {scene_id} ({role}): Vidéo Pexels...")
-        if not final_path or not os.path.exists(final_path):
-            # Ultime sécurité si Pexels n'avait pas trouvé de vidéo
+        if not default_pexels_path or not os.path.exists(default_pexels_path):
             if KINETIC_AVAILABLE:
                 kinetic_out = os.path.join(self.temp_dir, f"kinetic_safety_{scene_id}.mp4")
-                return self.kinetic_engine.generate(scene, total_duration, kinetic_out), "kinetic"
+                result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
+                if result:
+                    return result, "kinetic"
+        return default_pexels_path, "pexels"
 
-        return final_path, "pexels"
-
-    # ----------------------------------------------------------------
-    # TRAITEMENT PRINCIPAL DE LA SCÈNE
-    # ----------------------------------------------------------------
     def process_scene(self, scene, video_path):
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
@@ -166,19 +146,15 @@ class Composer:
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
         try:
-            # 1. Choix du visuel via la cascade
             final_video_path, visual_type = self._get_visual_for_scene(scene, video_path, total_duration)
-            
             if not final_video_path:
                 print(f"❌ Impossible de trouver un visuel pour la scène {scene_id}")
                 return None
 
             print(f"    ⚙️ Assemblage FFmpeg Scene {scene_id} (Type: {visual_type})")
-            
             input_audio = ffmpeg.input(audio_path)
             input_video = ffmpeg.input(final_video_path, stream_loop=-1)
 
-            # 2. Recadrage 9:16 (s'applique même aux visuels IA pour garantir le format)
             video_stream = (
                 input_video.video
                 .trim(duration=total_duration)
@@ -187,7 +163,6 @@ class Composer:
                 .filter("crop", "1080", "1920")
             )
 
-            # 3. Ajout des sous-titres UNIQUEMENT si ce n'est pas du Kinetic Typography
             if visual_type != "kinetic":
                 srt_path = scene.get("srt_path")
                 if srt_path and os.path.exists(srt_path):
@@ -199,7 +174,6 @@ class Composer:
             else:
                 print(f"    ℹ️ Sous-titres SRT désactivés pour la scène {scene_id} (déjà inclus dans Kinetic)")
 
-            # 4. Rendu de la scène
             runner = ffmpeg.output(
                 video_stream,
                 input_audio,
@@ -212,7 +186,6 @@ class Composer:
                 preset="medium",
                 shortest=None
             )
-
             runner.run(overwrite_output=True, quiet=True)
             return output_path
 
@@ -268,12 +241,15 @@ class Composer:
     def _normalize_audio_track(self, input_video_path, output_video_path):
         try:
             src = ffmpeg.input(input_video_path)
-            normalized_audio = src.audio.filter(
-                "loudnorm", I=-16, TP=-1.5, LRA=11
-            )
+            normalized_audio = src.audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
             runner = ffmpeg.output(
-                src.video, normalized_audio, output_video_path,
-                vcodec="copy", acodec="aac", audio_bitrate="192k", movflags="faststart"
+                src.video,
+                normalized_audio,
+                output_video_path,
+                vcodec="copy",
+                acodec="aac",
+                audio_bitrate="192k",
+                movflags="faststart"
             )
             runner.run(overwrite_output=True, quiet=True)
             return True
@@ -318,23 +294,41 @@ class Composer:
             ducked_music = ffmpeg.filter(
                 [music_for_sidechain, voice_for_sidechain],
                 "sidechaincompress",
-                threshold=0.03, ratio=10, attack=20, release=250, makeup=1
+                threshold=0.03,
+                ratio=10,
+                attack=20,
+                release=250,
+                makeup=1
             )
 
             mixed_audio = (
                 ffmpeg
-                .filter([voice_for_mix, ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0)
+                .filter(
+                    [voice_for_mix, ducked_music],
+                    "amix",
+                    inputs=2,
+                    duration="first",
+                    dropout_transition=2,
+                    normalize=0
+                )
                 .filter("loudnorm", I=-16, TP=-1.5, LRA=11)
             )
 
             final_runner = ffmpeg.output(
-                voice.video, mixed_audio, output_path,
-                vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", movflags="faststart", preset="medium"
+                voice.video,
+                mixed_audio,
+                output_path,
+                vcodec="libx264",
+                acodec="aac",
+                audio_bitrate="192k",
+                pix_fmt="yuv420p",
+                movflags="faststart",
+                preset="medium"
             )
             final_runner.run(overwrite_output=True, quiet=False)
             print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
             return True
+
         except ffmpeg.Error as e:
             error_log = e.stderr.decode("utf8") if e.stderr else str(e)
             print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
@@ -345,10 +339,13 @@ class Composer:
         output_path = os.path.join(self.final_dir, output_filename)
 
         if os.path.exists(output_path):
-            try: os.remove(output_path)
-            except Exception: pass
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
 
-        if not video_paths: return None
+        if not video_paths:
+            return None
 
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
@@ -361,14 +358,18 @@ class Composer:
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output)
                     print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
                 except ffmpeg.Error as e:
-                    print(f"❌ Stitching Error at step {i}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
+                    error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+                    print(f"❌ Stitching Error at step {i}: {error_log}")
                     return None
 
                 if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
-                    try: os.remove(courant)
-                    except Exception: pass
+                    try:
+                        os.remove(courant)
+                    except Exception:
+                        pass
 
                 courant = merge_output
+
             stitched_path = courant
 
         if os.path.exists(self.bg_music_path):
@@ -376,20 +377,27 @@ class Composer:
             success = self._mix_background_music(stitched_path, output_path)
             if not success:
                 normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
+                print("🔈 Fallback: export sans musique, avec normalisation voix...")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-                if ok and os.path.exists(normalized_fallback): os.replace(normalized_fallback, output_path)
-                else: os.replace(stitched_path, output_path)
+                if ok and os.path.exists(normalized_fallback):
+                    os.replace(normalized_fallback, output_path)
+                else:
+                    os.replace(stitched_path, output_path)
         else:
             print("⚠️ Aucune musique de fond trouvée, export avec voix normalisée.")
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-            if ok and os.path.exists(normalized_fallback): os.replace(normalized_fallback, output_path)
-            else: os.replace(stitched_path, output_path)
+            if ok and os.path.exists(normalized_fallback):
+                os.replace(normalized_fallback, output_path)
+            else:
+                os.replace(stitched_path, output_path)
 
         print(f"✅ FINAL VIDEO SAVED: {output_path}")
 
         if stitched_path != output_path and os.path.exists(stitched_path):
-            try: os.remove(stitched_path)
-            except Exception: pass
+            try:
+                os.remove(stitched_path)
+            except Exception:
+                pass
 
         return output_path
