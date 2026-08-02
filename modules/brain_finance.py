@@ -4,13 +4,10 @@ import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
-
 print("⚠️ Zernio désactivé. L'Agent IA va travailler sans historique pour le moment.")
-
 
 def get_latest_videos_stats():
     return None
-
 
 load_dotenv()
 
@@ -393,7 +390,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
   "visual_identity": "One concise English sentence defining recurring clean financial visual continuity",
   "audio_profile": "French premium narrator, confident, sharp, professional, persuasive, natural pacing",
   "scenes": [
-    {
+    {{
       "id": 1,
       "text": "Phrase francaise complete de douze a vingt-deux mots.",
       "voice_direction": "French premium narrator, confident, sharp, engaging",
@@ -403,7 +400,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
       "image_prompt": "Detailed English visual prompt for one vertical cinematic financial shot",
       "mood": "persuasive",
       "role": "hook"
-    }
+    }}
   ]
 }}
 """
