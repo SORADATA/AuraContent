@@ -1,6 +1,5 @@
 import os
-import math
-import textwrap
+import re
 import ffmpeg
 
 PALETTE_BY_MOOD = {
@@ -39,7 +38,7 @@ class KineticTypographyEngineV2:
             .replace("\n", " ")
         )
 
-    def _split_text(self, text, max_chars=42):
+    def _split_text(self, text, max_chars=38):
         words = text.split()
         lines = []
         current = []
@@ -67,24 +66,26 @@ class KineticTypographyEngineV2:
 
         before = " ".join(words[:idx]).strip()
         keyword = words[idx].strip()
-        after = " ".join(words[idx + 1 :]).strip()
+        after = " ".join(words[idx + 1:]).strip()
         return before, keyword, after
 
-    def _draw_gradient_bg(self, duration, palette):
-        return ffmpeg.input(
+    def _build_background(self, duration, palette):
+        bg = ffmpeg.input(
             f"color=c={palette['bg1']}:s={self.width}x{self.height}:d={duration}:r={self.fps}",
             f="lavfi",
-        ).video.filter(
-            "gradients",
-            s=f"{self.width}x{self.height}",
-            c0=palette["bg1"],
-            c1=palette["bg2"],
-            x0=0,
-            y0=0,
-            x1=self.width,
-            y1=self.height,
-            d=duration,
-            rate=self.fps,
+        ).video
+
+        overlay = ffmpeg.input(
+            f"color=c={palette['bg2']}@0.10:s={self.width}x{self.height}:d={duration}:r={self.fps}",
+            f="lavfi",
+        ).video
+
+        combined = ffmpeg.overlay(bg, overlay, x=0, y=0)
+
+        return (
+            combined
+            .filter("scale", self.width + 24, self.height + 24)
+            .filter("crop", self.width, self.height)
         )
 
     def generate(self, scene, duration, output_path):
@@ -95,24 +96,39 @@ class KineticTypographyEngineV2:
 
         before, keyword, after = self._split_around_emphasis(text, emphasis_word)
 
-        base = ffmpeg.input(
-            f"gradients=s={self.width}x{self.height}:c0={palette['bg1']}:c1={palette['bg2']}:"
-            f"x0=0:y0=0:x1={self.width}:y1={self.height}:d={duration}:rate={self.fps}",
-            f="lavfi",
+        video_stream = self._build_background(duration, palette)
+
+        intro = 0.35
+        settle = 0.25
+
+        bg_shift_x = f"0.5*sin(2*PI*t/{max(duration, 1) * 3})"
+        bg_shift_y = f"0.5*cos(2*PI*t/{max(duration, 1) * 4})"
+
+        video_stream = video_stream.filter(
+            "pad",
+            self.width + 40,
+            self.height + 40,
+            20,
+            20,
+            color=palette["bg1"]
+        ).filter(
+            "crop",
+            f"{self.width}:{self.height}",
+            x=f"20+{bg_shift_x}",
+            y=f"20+{bg_shift_y}"
         )
 
-        video_stream = base.video
-        anim_in = 0.35
-        slide_x = f"if(lt(t,{anim_in}),(w-text_w)/2-60+60*(t/{anim_in}),(w-text_w)/2)"
-        fade_alpha = f"if(lt(t,{anim_in}),t/{anim_in},1)"
-
         if keyword:
-            before_lines = self._split_text(before, 46) if before else []
-            after_lines = self._split_text(after, 46) if after else []
+            before_lines = self._split_text(before, 42) if before else []
+            after_lines = self._split_text(after, 42) if after else []
 
-            y_top = int(self.height * 0.33)
-            y_mid = int(self.height * 0.45)
-            y_bottom = int(self.height * 0.57)
+            top_y = int(self.height * 0.31)
+            mid_y = int(self.height * 0.45)
+            bot_y = int(self.height * 0.58)
+
+            slide_in = f"(w-text_w)/2 - 58*(1-min(t/{intro},1))"
+            alpha_in = f"if(lt(t,{intro}),t/{intro},1)"
+            small_pop = f"1+0.05*sin(min(t/{intro},1)*3.14159)"
 
             if before_lines:
                 video_stream = video_stream.filter(
@@ -121,12 +137,12 @@ class KineticTypographyEngineV2:
                     text=self._escape_text("\n".join(before_lines)),
                     fontsize=44,
                     fontcolor="0xE8EDF2",
-                    alpha=fade_alpha,
-                    x=slide_x,
-                    y=y_top,
+                    alpha=alpha_in,
+                    x=slide_in,
+                    y=top_y,
                     line_spacing=10,
                     box=1,
-                    boxcolor="0x000000@0.18",
+                    boxcolor="0x000000@0.16",
                     boxborderw=18,
                 )
 
@@ -134,16 +150,20 @@ class KineticTypographyEngineV2:
                 "drawtext",
                 fontfile=self.font_bold,
                 text=self._escape_text(keyword.upper()),
-                fontsize=84,
+                fontsize=86,
                 fontcolor=palette["accent"],
-                alpha=f"if(lt(t,{anim_in + 0.08}),(t-0.08)/{anim_in},1)",
-                x="(w-text_w)/2",
-                y=y_mid,
+                alpha=f"if(lt(t,{intro + 0.08}),(t-0.08)/{intro},1)",
+                x=f"(w-text_w)/2 + 8*sin(t*2.2)",
+                y=mid_y,
                 borderw=2,
-                bordercolor="0x000000@0.45",
+                bordercolor="0x000000@0.42",
                 box=1,
-                boxcolor="0x000000@0.20",
-                boxborderw=16,
+                boxcolor="0x000000@0.18",
+                boxborderw=18,
+            ).filter(
+                "scale",
+                f"iw*{small_pop}",
+                f"ih*{small_pop}"
             )
 
             if after_lines:
@@ -153,50 +173,48 @@ class KineticTypographyEngineV2:
                     text=self._escape_text("\n".join(after_lines)),
                     fontsize=44,
                     fontcolor="0xD9E2EC",
-                    alpha=fade_alpha,
-                    x=slide_x,
-                    y=y_bottom,
+                    alpha=alpha_in,
+                    x=slide_in,
+                    y=bot_y,
                     line_spacing=10,
                     box=1,
-                    boxcolor="0x000000@0.18",
+                    boxcolor="0x000000@0.16",
                     boxborderw=18,
                 )
         else:
             lines = self._split_text(text, 40)
-            y_center = int(self.height * 0.43)
+            y_center = int(self.height * 0.42)
             video_stream = video_stream.filter(
                 "drawtext",
                 fontfile=self.font_bold,
                 text=self._escape_text("\n".join(lines)),
-                fontsize=58,
+                fontsize=60,
                 fontcolor="0xE8EDF2",
-                alpha=fade_alpha,
-                x="(w-text_w)/2",
+                alpha=f"if(lt(t,{intro}),t/{intro},1)",
+                x="(w-text_w)/2 + 6*sin(t*1.8)",
                 y=y_center,
                 line_spacing=14,
                 box=1,
-                boxcolor="0x000000@0.20",
+                boxcolor="0x000000@0.18",
                 boxborderw=18,
             )
 
-        progress_h = 6
         video_stream = video_stream.filter(
             "drawbox",
             x=0,
-            y=self.height - 12,
+            y=self.height - 16,
             w=self.width,
-            h=progress_h,
+            h=7,
             color=f"{palette['accent']}@0.22",
-            t="fill",
-        )
-        video_stream = video_stream.filter(
+            t="fill"
+        ).filter(
             "drawbox",
             x=0,
-            y=self.height - 12,
+            y=self.height - 16,
             w=f"iw*min(t/{duration},1)",
-            h=progress_h,
+            h=7,
             color=f"{palette['accent']}@0.95",
-            t="fill",
+            t="fill"
         )
 
         try:
@@ -205,7 +223,7 @@ class KineticTypographyEngineV2:
                 output_path,
                 vcodec="libx264",
                 pix_fmt="yuv420p",
-                r=60,
+                r=self.fps,
                 crf=16,
                 preset="slow",
                 t=duration,
