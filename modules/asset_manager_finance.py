@@ -2,7 +2,8 @@ import os
 import urllib.parse
 import requests
 
-FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "fallback_finance.mp4")
+
+FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
 
 
 class AssetManager:
@@ -59,7 +60,7 @@ class AssetManager:
 
     def _try_pexels(self, query, output_path):
         try:
-            from modules.pexels_client import get_pexels_video
+            from modules.utils.pexels_client import get_pexels_video
             video_path = get_pexels_video(query, output_path)
             if video_path and os.path.exists(video_path):
                 return video_path
