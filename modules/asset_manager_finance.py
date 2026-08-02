@@ -1,6 +1,5 @@
 import os
-# On importe notre nouveau script Pexels au lieu du générateur d'images IA
-from modules.pexels_client import get_pexels_video 
+from modules.utils.pexels_client import get_pexels_video
 
 
 FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback_finance.mp4")
