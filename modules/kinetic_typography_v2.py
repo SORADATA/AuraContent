@@ -1,403 +1,183 @@
+"""
+Kinetic Typography v2 — version "pro" pour chaine finance.
+
+Ameliorations vs v1 :
+- Le mot-cle de la scene (tts_emphasis_word) est affiche en GRAND et en
+  couleur accent, le reste du texte en plus petit et en blanc/gris clair
+  => hierarchie visuelle, comme dans les explainers finance pro.
+- Mouvement directionnel (slide-in + scale) au lieu d'un simple fade,
+  pour un effet "le mot atterrit" plutot que "le mot apparait mollement".
+- Fond en degrade subtil (pas juste une couleur plate) pour eviter l'effet
+  "diapo PowerPoint".
+- Une fine ligne de progression en bas d'ecran (comme une barre de lecture)
+  pour renforcer le cote "pro/dashboard financier".
+- Rendu force en 1080x1920 60fps-ready, crf bas pour un rendu net (pas de
+  pixelisation, cf. bonnes pratiques kinetic typography).
+"""
+
 import os
-import random
-import urllib.parse
-import requests
 import ffmpeg
 
-try:
-    from kinetic_typography_v2 import KineticTypographyEngineV2
-    KINETIC_AVAILABLE = True
-except ImportError:
-    print("⚠️ kinetic_typography_v2.py introuvable. Fallback sur Pexels par défaut.")
-    KINETIC_AVAILABLE = False
+
+PALETTE_BY_MOOD = {
+    "confident": {"bg1": "0x0B1424", "bg2": "0x152238", "accent": "0x00D9B5"},
+    "sharp":     {"bg1": "0x140E1F", "bg2": "0x231433", "accent": "0xFF5C5C"},
+    "clear":     {"bg1": "0x0A1B2A", "bg2": "0x123047", "accent": "0x4CC9F0"},
+    "pedagogical": {"bg1": "0x0C1420", "bg2": "0x18293D", "accent": "0xFFC857"},
+    "engaging":  {"bg1": "0x0D1B2A", "bg2": "0x1B2F4A", "accent": "0x06D6A0"},
+    "revelatory": {"bg1": "0x160F26", "bg2": "0x281B3D", "accent": "0xEF476F"},
+}
+DEFAULT_PALETTE = {"bg1": "0x0E1420", "bg2": "0x1A2438", "accent": "0x4CC9F0"}
 
 
-class Composer:
-    def __init__(self):
-        self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
-        self.final_dir = os.path.join(os.getcwd(), "assets", "final")
-        self.music_dir = os.path.join(os.getcwd(), "assets", "music")
+class KineticTypographyEngineV2:
+    def __init__(self, font_bold=None, font_regular=None, width=1080, height=1920, fps=30):
+        fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
+        self.font_bold = font_bold or os.path.join(fonts_dir, "Montserrat-Bold.ttf")
+        self.font_regular = font_regular or os.path.join(fonts_dir, "Montserrat-Regular.ttf")
+        self.width = width
+        self.height = height
+        self.fps = fps
 
-        os.makedirs(self.temp_dir, exist_ok=True)
-        os.makedirs(self.final_dir, exist_ok=True)
-        os.makedirs(self.music_dir, exist_ok=True)
+        for path in (self.font_bold, self.font_regular):
+            if not os.path.exists(path):
+                print(f"⚠️ Police manquante : {path} (a telecharger gratuitement sur Google Fonts).")
 
-        self.transitions = ["fade", "diagbr", "diagtl"]
-        self.bg_music_path = os.path.join(self.music_dir, "bg_track_finance.mp3")
-        self.video_width = 1080
-        self.video_height = 1920
-        self.fps = 30
-        self.voice_gain = 1.15
-        self.music_gain = 0.12
-        self.music_fade_duration = 1.5
-        self.transition_duration = 0.45
+    def _escape_text(self, text):
+        text = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\u2019").replace("%", "\\%")
+        return text
 
-        self.subtitle_style = (
-            "FontName=Montserrat,"
-            "FontSize=18,"
-            "PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,"
-            "BackColour=&H66000000,"
-            "BorderStyle=3,"
-            "Outline=2.2,"
-            "Shadow=0,"
-            "Alignment=2,"
-            "MarginV=115"
+    def _split_around_emphasis(self, text, emphasis_word):
+        """Separe le texte en 'avant / mot-cle / apres' pour la hierarchie
+        visuelle. Si pas de mot-cle, tout le texte reste au format normal."""
+        if not emphasis_word:
+            return text, None, ""
+
+        words = text.split()
+        emphasis_lower = emphasis_word.strip().lower()
+        idx = next((i for i, w in enumerate(words) if emphasis_lower in w.lower()), None)
+
+        if idx is None:
+            return text, None, ""
+
+        before = " ".join(words[:idx])
+        keyword = words[idx]
+        after = " ".join(words[idx + 1:])
+        return before, keyword, after
+
+    def generate(self, scene, duration, output_path):
+        text = scene.get("text", "")
+        mood = scene.get("mood", "pedagogical")
+        emphasis_word = scene.get("tts_emphasis_word")
+        palette = PALETTE_BY_MOOD.get(mood, DEFAULT_PALETTE)
+
+        before, keyword, after = self._split_around_emphasis(text, emphasis_word)
+
+        base = ffmpeg.input(
+            f"gradients=s={self.width}x{self.height}:c0={palette['bg1']}:c1={palette['bg2']}:"
+            f"x0=0:y0=0:x1={self.width}:y1={self.height}:d={duration}:rate={self.fps}",
+            f="lavfi",
         )
 
-        if KINETIC_AVAILABLE:
-            self.kinetic_engine = KineticTypographyEngineV2(
-                width=self.video_width,
-                height=self.video_height,
-                fps=self.fps,
-            )
+        video_stream = base.video
 
-    def get_duration(self, filepath):
-        try:
-            probe = ffmpeg.probe(filepath)
-            return float(probe["format"]["duration"])
-        except Exception:
-            return 0.0
+        anim_in = 0.35
+        settle_time = 0.35
 
-    def _generate_pollinations_video(self, scene_id, prompt, duration):
-        if not prompt:
-            return None
+        if keyword:
+            y_before = int(self.height * 0.40)
+            y_keyword = int(self.height * 0.47)
+            y_after = int(self.height * 0.58)
 
-        image_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.jpg")
-        video_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.mp4")
+            slide_expr_x = f"if(lt(t,{anim_in}),(w-text_w)/2-40+40*(t/{anim_in}),(w-text_w)/2)"
+            scale_alpha = f"if(lt(t,{anim_in}),t/{anim_in},1)"
 
-        encoded_prompt = urllib.parse.quote(prompt)
-        seed = random.randint(1, 999999)
-        url = (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width={self.video_width}&height={self.video_height}&model=flux&nologo=true&seed={seed}"
-        )
-
-        try:
-            response = requests.get(url, timeout=30)
-            if response.status_code == 200:
-                with open(image_path, "wb") as f:
-                    f.write(response.content)
-            else:
-                return None
-        except Exception as e:
-            print(f"⚠️ Pollinations erreur: {e}")
-            return None
-
-        try:
-            zoom_frames = int(duration * self.fps)
-            (
-                ffmpeg.input(image_path, loop=1, t=duration)
-                .filter("scale", self.video_width * 2, self.video_height * 2)
-                .filter(
-                    "zoompan",
-                    z="min(zoom+0.0008,1.15)",
-                    d=zoom_frames,
-                    x="iw/2-(iw/zoom/2)",
-                    y="ih/2-(ih/zoom/2)",
-                    s=f"{self.video_width}x{self.video_height}",
-                    fps=self.fps,
+            if before:
+                video_stream = video_stream.filter(
+                    "drawtext",
+                    fontfile=self.font_regular,
+                    text=self._escape_text(before),
+                    fontsize=46,
+                    fontcolor="0xE8EDF2",
+                    alpha=scale_alpha,
+                    x=slide_expr_x,
+                    y=y_before,
                 )
-                .output(video_path, vcodec="libx264", pix_fmt="yuv420p", crf=18, preset="medium", t=duration)
-                .run(overwrite_output=True, quiet=True)
+
+            keyword_alpha = f"if(lt(t,{anim_in + 0.1}),(t-0.1)/{anim_in},1)"
+            video_stream = video_stream.filter(
+                "drawtext",
+                fontfile=self.font_bold,
+                text=self._escape_text(keyword.upper()),
+                fontsize=78,
+                fontcolor=f"{palette['accent']}",
+                alpha=keyword_alpha,
+                x="(w-text_w)/2",
+                y=y_keyword,
+                borderw=2,
+                bordercolor="0x000000@0.4",
             )
-            return video_path
-        except Exception:
-            return None
 
-    def _get_visual_for_scene(self, scene, default_pexels_path, total_duration):
-        role = scene.get("role", "example")
-        scene_id = scene["id"]
+            if after:
+                video_stream = video_stream.filter(
+                    "drawtext",
+                    fontfile=self.font_regular,
+                    text=self._escape_text(after),
+                    fontsize=46,
+                    fontcolor="0xE8EDF2",
+                    alpha=scale_alpha,
+                    x=slide_expr_x,
+                    y=y_after,
+                )
+        else:
+            alpha_expr = f"if(lt(t,{anim_in}),t/{anim_in},1)"
+            video_stream = video_stream.filter(
+                "drawtext",
+                fontfile=self.font_bold,
+                text=self._escape_text(text),
+                fontsize=58,
+                fontcolor="0xE8EDF2",
+                alpha=alpha_expr,
+                x="(w-text_w)/2",
+                y="(h-text_h)/2",
+                line_spacing=14,
+            )
 
-        if role in ["definition", "mechanism", "summary"] and KINETIC_AVAILABLE:
-            print(f"    🔤 Scene {scene_id} ({role}): Kinetic Typography...")
-            kinetic_out = os.path.join(self.temp_dir, f"kinetic_{scene_id}.mp4")
-            result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-            if result:
-                return result, "kinetic"
-
-        elif role in ["analogy", "misconception"]:
-            print(f"    🎨 Scene {scene_id} ({role}): Pollinations IA...")
-            prompt = scene.get("image_prompt", "")
-            pollinations_out = self._generate_pollinations_video(scene_id, prompt, total_duration)
-            if pollinations_out:
-                return pollinations_out, "pollinations"
-
-            print(f"    ⚠️ Pollinations a échoué -> Fallback Kinetic")
-            if KINETIC_AVAILABLE:
-                kinetic_out = os.path.join(self.temp_dir, f"kinetic_fallback_{scene_id}.mp4")
-                result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-                if result:
-                    return result, "kinetic"
-
-        print(f"    🎬 Scene {scene_id} ({role}): Vidéo Pexels...")
-        if not default_pexels_path or not os.path.exists(default_pexels_path):
-            if KINETIC_AVAILABLE:
-                kinetic_out = os.path.join(self.temp_dir, f"kinetic_safety_{scene_id}.mp4")
-                result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-                if result:
-                    return result, "kinetic"
-        return default_pexels_path, "pexels"
-
-    def process_scene(self, scene, video_path):
-        scene_id = scene["id"]
-        audio_path = scene["audio_path"]
-        total_duration = float(scene["duration"])
-        output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
+        bar_width_expr = f"{self.width}*min(t/{duration},1)"
+        video_stream = video_stream.filter(
+            "drawbox",
+            x=0,
+            y=self.height - 10,
+            w=int(self.width),
+            h=6,
+            color=f"{palette['accent']}@0.9",
+            t="fill",
+            enable="1",
+        )
+        video_stream = video_stream.filter(
+            "drawbox",
+            x=0,
+            y=self.height - 10,
+            w=f"{bar_width_expr}",
+            h=6,
+            color="0xFFFFFF@0.95",
+            t="fill",
+        )
 
         try:
-            final_video_path, visual_type = self._get_visual_for_scene(scene, video_path, total_duration)
-            if not final_video_path:
-                print(f"❌ Impossible de trouver un visuel pour la scène {scene_id}")
-                return None
-
-            print(f"    ⚙️ Assemblage FFmpeg Scene {scene_id} (Type: {visual_type})")
-            input_audio = ffmpeg.input(audio_path)
-            input_video = ffmpeg.input(final_video_path, stream_loop=-1)
-
-            video_stream = (
-                input_video.video
-                .trim(duration=total_duration)
-                .setpts("PTS-STARTPTS")
-                .filter("scale", "1080", "1920", force_original_aspect_ratio="increase")
-                .filter("crop", "1080", "1920")
-            )
-
-            if visual_type != "kinetic":
-                srt_path = scene.get("srt_path")
-                if srt_path and os.path.exists(srt_path):
-                    video_stream = video_stream.filter(
-                        "subtitles",
-                        filename=srt_path,
-                        force_style=self.subtitle_style
-                    )
-            else:
-                print(f"    ℹ️ Sous-titres SRT désactivés pour la scène {scene_id} (déjà inclus dans Kinetic)")
-
             runner = ffmpeg.output(
                 video_stream,
-                input_audio,
                 output_path,
                 vcodec="libx264",
-                acodec="aac",
                 pix_fmt="yuv420p",
                 r=self.fps,
-                crf=18,
-                preset="medium",
-                shortest=None
+                crf=16,
+                preset="slow",
+                t=duration,
             )
             runner.run(overwrite_output=True, quiet=True)
             return output_path
-
-        except ffmpeg.Error as e:
-            print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
-            return None
-
-    def render_all_scenes(self, script_data, video_paths):
-        rendered_paths = []
-        for i, scene in enumerate(script_data):
-            current_video = video_paths[i] if i < len(video_paths) else None
-            output_path = self.process_scene(scene, current_video)
-            if output_path:
-                rendered_paths.append(output_path)
-        return rendered_paths
-
-    def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=None):
-        trans_dur = trans_dur or self.transition_duration
-        dur_a = self.get_duration(clip_a)
-        offset = max(dur_a - trans_dur, 0)
-        effect = random.choice(self.transitions)
-
-        input_a = ffmpeg.input(clip_a)
-        input_b = ffmpeg.input(clip_b)
-
-        v_stream = ffmpeg.filter(
-            [input_a.video, input_b.video],
-            "xfade",
-            transition=effect,
-            duration=trans_dur,
-            offset=offset
-        )
-
-        a_stream = ffmpeg.filter(
-            [input_a.audio, input_b.audio],
-            "acrossfade",
-            d=trans_dur
-        )
-
-        runner = ffmpeg.output(
-            v_stream,
-            a_stream,
-            output_path,
-            vcodec="libx264",
-            acodec="aac",
-            pix_fmt="yuv420p",
-            crf=18,
-            preset="medium"
-        )
-        runner.run(overwrite_output=True, quiet=True)
-        return effect, offset
-
-    def _normalize_audio_track(self, input_video_path, output_video_path):
-        try:
-            src = ffmpeg.input(input_video_path)
-            normalized_audio = src.audio.filter("loudnorm", I=-16, TP=-1.5, LRA=11)
-            runner = ffmpeg.output(
-                src.video,
-                normalized_audio,
-                output_video_path,
-                vcodec="copy",
-                acodec="aac",
-                audio_bitrate="192k",
-                movflags="faststart"
-            )
-            runner.run(overwrite_output=True, quiet=True)
-            return True
         except ffmpeg.Error as e:
             error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-            print(f"⚠️ Loudnorm failed: {error_log}")
-            return False
-
-    def _mix_background_music(self, stitched_path, output_path):
-        try:
-            video_duration = self.get_duration(stitched_path)
-            fade_start = max(video_duration - self.music_fade_duration, 0)
-
-            voice = ffmpeg.input(stitched_path)
-            music = ffmpeg.input(self.bg_music_path, stream_loop=-1)
-
-            voice_audio_base = (
-                voice.audio
-                .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
-                .filter("volume", self.voice_gain)
-                .filter("atrim", duration=video_duration)
-                .filter("asetpts", "PTS-STARTPTS")
-            )
-
-            music_audio_base = (
-                music.audio
-                .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
-                .filter("volume", self.music_gain)
-                .filter("atrim", duration=video_duration)
-                .filter("asetpts", "PTS-STARTPTS")
-                .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
-            )
-
-            voice_split = voice_audio_base.filter_multi_output("asplit", 2)
-            voice_for_sidechain = voice_split[0]
-            voice_for_mix = voice_split[1]
-
-            music_split = music_audio_base.filter_multi_output("asplit", 2)
-            music_for_sidechain = music_split[0]
-            music_for_mix = music_split[1]
-
-            ducked_music = ffmpeg.filter(
-                [music_for_sidechain, voice_for_sidechain],
-                "sidechaincompress",
-                threshold=0.03,
-                ratio=10,
-                attack=20,
-                release=250,
-                makeup=1
-            )
-
-            mixed_audio = (
-                ffmpeg
-                .filter(
-                    [voice_for_mix, ducked_music],
-                    "amix",
-                    inputs=2,
-                    duration="first",
-                    dropout_transition=2,
-                    normalize=0
-                )
-                .filter("loudnorm", I=-16, TP=-1.5, LRA=11)
-            )
-
-            final_runner = ffmpeg.output(
-                voice.video,
-                mixed_audio,
-                output_path,
-                vcodec="libx264",
-                acodec="aac",
-                audio_bitrate="192k",
-                pix_fmt="yuv420p",
-                movflags="faststart",
-                preset="medium"
-            )
-            final_runner.run(overwrite_output=True, quiet=False)
-            print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
-            return True
-
-        except ffmpeg.Error as e:
-            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-            print(f"⚠️ Music mix failed, falling back to no-music version: {error_log}")
-            return False
-
-    def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
-        print("🎬 Stitching final video (cascade mode)...")
-        output_path = os.path.join(self.final_dir, output_filename)
-
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except Exception:
-                pass
-
-        if not video_paths:
+            print(f"❌ Echec generation kinetic typography v2 : {error_log}")
             return None
-
-        if len(video_paths) == 1:
-            stitched_path = video_paths[0]
-        else:
-            courant = video_paths[0]
-            for i in range(1, len(video_paths)):
-                suivant = video_paths[i]
-                merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
-                try:
-                    effect, offset = self._merge_two_clips(courant, suivant, merge_output)
-                    print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
-                except ffmpeg.Error as e:
-                    error_log = e.stderr.decode("utf8") if e.stderr else str(e)
-                    print(f"❌ Stitching Error at step {i}: {error_log}")
-                    return None
-
-                if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
-                    try:
-                        os.remove(courant)
-                    except Exception:
-                        pass
-
-                courant = merge_output
-
-            stitched_path = courant
-
-        if os.path.exists(self.bg_music_path):
-            print("🎵 Mixing background music with ducking...")
-            success = self._mix_background_music(stitched_path, output_path)
-            if not success:
-                normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
-                print("🔈 Fallback: export sans musique, avec normalisation voix...")
-                ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-                if ok and os.path.exists(normalized_fallback):
-                    os.replace(normalized_fallback, output_path)
-                else:
-                    os.replace(stitched_path, output_path)
-        else:
-            print("⚠️ Aucune musique de fond trouvée, export avec voix normalisée.")
-            normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
-            ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-            if ok and os.path.exists(normalized_fallback):
-                os.replace(normalized_fallback, output_path)
-            else:
-                os.replace(stitched_path, output_path)
-
-        print(f"✅ FINAL VIDEO SAVED: {output_path}")
-
-        if stitched_path != output_path and os.path.exists(stitched_path):
-            try:
-                os.remove(stitched_path)
-            except Exception:
-                pass
-
-        return output_path

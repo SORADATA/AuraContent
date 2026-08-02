@@ -7,7 +7,7 @@ import ffmpeg
 
 
 try:
-    from kinetic_typography import KineticTypographyEngineV2
+    from modules.kinetic_typography_v2 import KineticTypographyEngineV2
     KINETIC_AVAILABLE = True
 except ImportError:
     print("⚠️ kinetic_typography_v2.py introuvable. Fallback sur Pexels par défaut.")

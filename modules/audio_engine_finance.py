@@ -22,12 +22,12 @@ except ImportError:
 class AudioEngine:
     GEMINI_MODEL = "gemini-2.5-flash-preview-tts"
     GEMINI_STYLE_PROMPT = (
-        "French male professional narrator. Confident, sharp, authoritative, persuasive, modern. "
-        "Clear diction, deep engaging tone, dynamic pacing, business podcast style."
+        "French male professional narrator. Calm, poised, authoritative, rhetorical, persuasive. "
+        "Measured pacing, deep tone, clear diction, confident business-finance delivery."
     )
 
     EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
-    EDGE_FALLBACK_RATE = "+5%"
+    EDGE_FALLBACK_RATE = "+0%"
     EDGE_FALLBACK_PITCH = "-2Hz"
     EDGE_FALLBACK_VOLUME = "+0%"
 
@@ -169,22 +169,22 @@ class AudioEngine:
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
-        if self._try_gemini(text, wav_path):
-            return wav_path, "gemini-tts"
-
-        if self._try_kokoro(text, wav_path):
-            return wav_path, "kokoro"
-
         try:
             await self._try_edge(text, mp3_path)
             return mp3_path, "edge-tts"
         except Exception as e:
             print(f"      Edge indisponible: {e}")
 
+        if self._try_gemini(text, wav_path):
+            return wav_path, "gemini-tts"
+
+        if self._try_kokoro(text, wav_path):
+            return wav_path, "kokoro"
+
         raise RuntimeError("Aucun moteur TTS disponible")
 
     async def process_script(self, script_data):
-        print("Generation audio (Gemini TTS, fallback Kokoro, puis Edge-TTS)...")
+        print("Generation audio (Edge-TTS male, fallback Gemini, puis Kokoro)...")
 
         for scene in script_data:
             scene_id = scene["id"]
