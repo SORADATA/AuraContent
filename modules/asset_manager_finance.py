@@ -10,32 +10,10 @@ from modules.utils.pexels_client import get_pexels_video
 
 FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
 
-# Durée par défaut d'un clip Pollinations si aucune durée de scène n'est
-# encore connue (ex: appelé avant la génération audio). Dès que
-# scene["duration"] existe (apres passage par AudioEngine), elle est
-# utilisée à la place pour que le clip n'ait jamais besoin de boucler.
 DEFAULT_CLIP_DURATION = 4.0
-
 
 class AssetManager:
     def __init__(self, run_id=None):
-        """
-        run_id : identifiant unique de la génération en cours. Namespace le
-        cache vidéo pour que deux vidéos différentes ne partagent JAMAIS
-        les mêmes fichiers "scene_1.mp4", "scene_2.mp4", etc.
-
-        Avant ce fix, video_dir était un dossier global partagé entre
-        toutes les générations : une vidéo sur "les intérêts composés"
-        pouvait laisser un scene_3.mp4 en cache, puis une génération
-        ultérieure sur "le PEA" réutilisait silencieusement ce même
-        fichier pour sa propre scène 3 — visuel totalement hors-sujet
-        sans aucune erreur ni avertissement.
-
-        Si run_id n'est pas fourni, on en génère un basé sur l'horodatage
-        pour garantir l'isolation par défaut. Passer un run_id explicite
-        (ex: dérivé du titre du script) permet de reprendre un run
-        interrompu sans tout retélécharger.
-        """
         self.run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
 
         self.video_dir = os.path.join(os.getcwd(), "assets", "video_clips", self.run_id)
@@ -51,7 +29,6 @@ class AssetManager:
         return path and os.path.exists(path) and os.path.getsize(path) > 0
 
     def _try_pexels(self, query, output_path):
-        """Télécharge une vidéo Pexels et la sauvegarde localement."""
         try:
             result_path = get_pexels_video(query, output_path)
             if self._safe_exists(result_path):
@@ -62,9 +39,6 @@ class AssetManager:
             return None
 
     def _pollinations_image_to_video(self, img_path, output_path, duration):
-        """Transforme une image en mini vidéo avec léger zoom, à la durée
-        réelle demandée (évite le à-coup de boucle si le clip devait
-        ensuite être répété par le Composer pour couvrir toute la scène)."""
         try:
             zoom_frames = max(int(duration * self.fps), 1)
             (
@@ -87,44 +61,60 @@ class AssetManager:
             print(f"    ❌ Conversion image->vidéo échouée: {e}")
             return None
 
-    def _try_pollinations(self, scene_id, image_prompt, output_path, duration):
-        """Génère un visuel via Pollinations puis le convertit en vidéo à
-        la durée demandée."""
+    def _try_pollinations(self, scene_id, image_prompt, output_path, duration, retries=3):
+        """Génère un visuel via Pollinations avec le système de retry robuste de ton autre script."""
         img_path = os.path.join(self.temp_dir, f"pollinations_{self.run_id}_{scene_id}.jpg")
-        try:
-            encoded_prompt = urllib.parse.quote(image_prompt)
-            seed = random.randint(1, 999999)
-            url = (
-                f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-                f"?width={self.width}&height={self.height}&nologo=true&seed={seed}"
-            )
+        
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                wait_time = min(4 * (2 ** (attempt - 1)) + random.uniform(0, 1.5), 15)
+                print(f"    ⏳ Tentative {attempt + 1}/{retries + 1} Pollinations (pause {wait_time:.1f}s)...")
+                time.sleep(wait_time)
 
-            response = requests.get(url, timeout=60)
-            response.raise_for_status()
+            try:
+                encoded_prompt = urllib.parse.quote(image_prompt)
+                seed = random.randint(1, 999999)
+                # Ajout de enhance=true comme dans ton script pour de meilleurs visuels
+                url = (
+                    f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+                    f"?width={self.width}&height={self.height}&nologo=true&seed={seed}&enhance=true"
+                )
 
-            with open(img_path, "wb") as f:
-                f.write(response.content)
+                # Timeout passé à 120s avec un User-Agent
+                response = requests.get(
+                    url, 
+                    timeout=120, 
+                    headers={"User-Agent": "FinanceGenerator/1.0"}
+                )
 
-            if not self._safe_exists(img_path):
-                return None
+                content_type = response.headers.get("Content-Type", "")
 
-            return self._pollinations_image_to_video(img_path, output_path, duration=duration)
+                if response.status_code == 200 and content_type.startswith("image/") and len(response.content) > 5000:
+                    with open(img_path, "wb") as f:
+                        f.write(response.content)
 
-        except Exception as e:
-            print(f"    ❌ Erreur Pollinations pour la scène {scene_id}: {e}")
-            return None
-        finally:
-            # L'image intermédiaire ne sert plus une fois la vidéo générée
-            # (ou l'échec constaté) — évite d'accumuler des .jpg dans
-            # temp_dir au fil des runs.
-            if os.path.exists(img_path):
-                try:
-                    os.remove(img_path)
-                except OSError:
-                    pass
+                    if self._safe_exists(img_path):
+                        return self._pollinations_image_to_video(img_path, output_path, duration=duration)
+                
+                elif response.status_code == 429:
+                    print("    ⚠️ Limite de requêtes Pollinations atteinte.")
+                else:
+                    print(f"    ⚠️ Erreur Pollinations : HTTP {response.status_code}")
+
+            except requests.exceptions.Timeout:
+                print("    ⚠️ Timeout Pollinations (serveur surchargé).")
+            except Exception as e:
+                print(f"    ❌ Erreur Pollinations pour la scène {scene_id}: {e}")
+                
+        print(f"    ❌ Échec définitif de Pollinations après {retries} tentatives.")
+        if os.path.exists(img_path):
+            try:
+                os.remove(img_path)
+            except OSError:
+                pass
+        return None
 
     def _copy_fallback(self, output_path):
-        """Retourne une vidéo fallback sûre."""
         try:
             if self._safe_exists(FALLBACK_VIDEO):
                 shutil.copy2(FALLBACK_VIDEO, output_path)
@@ -135,17 +125,6 @@ class AssetManager:
             return None
 
     def get_videos(self, script_data):
-        """
-        Récupère un visuel par scène selon le rôle :
-        - Pollinations pour analogy/misconception
-        - Pexels pour le reste
-        - fallback vidéo si tout échoue
-        Retourne une liste de chemins vidéos alignée avec script_data.
-
-        Le cache (fichiers déjà présents dans self.video_dir) n'est
-        valide qu'au sein d'un même run_id : voir le docstring de
-        __init__ pour le raisonnement.
-        """
         video_paths = []
 
         for scene in script_data:
@@ -153,13 +132,10 @@ class AssetManager:
             role = scene.get("role", "example")
             output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
 
-            # scene["duration"] n'existe que si l'audio a deja ete genere
-            # (AudioEngine.process_script). Sinon on utilise une duree par
-            # defaut raisonnable plutot que de planter.
             duration = float(scene.get("duration") or DEFAULT_CLIP_DURATION)
 
             if self._safe_exists(output_path):
-                print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id} (run {self.run_id})")
+                print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id}")
                 video_paths.append(output_path)
                 continue
 
