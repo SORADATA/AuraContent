@@ -35,24 +35,20 @@ class Composer:
         self.music_fade_duration = 1.5
         self.transition_duration = 0.45
 
+        # Style optimisé pour les sous-titres classiques (si affichés)
         self.subtitle_style = (
             "FontName=Montserrat,"
-            "FontSize=22,"
+            "FontSize=20,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
-            "BackColour=&H99000000,"
+            "BackColour=&HFF000000,"
             "BorderStyle=3,"
-            "Outline=2.5,"
+            "Outline=1.5,"
             "Shadow=0,"
             "Alignment=2,"
-            "MarginV=130"
+            "MarginV=80"
         )
 
-        # --- Instanciation sécurisée du moteur kinetic typography ---
-        # KineticTypographyEngineV2 peut lever FileNotFoundError si les
-        # polices sont manquantes. On ne veut JAMAIS que ça fasse planter
-        # tout le Composer : on bascule proprement sur les fallbacks
-        # (Pexels / Pollinations) si le moteur n'est pas disponible.
         self.kinetic_engine = None
         self.kinetic_available = False
 
@@ -77,10 +73,6 @@ class Composer:
 
     @staticmethod
     def _escape_ffmpeg_path(path):
-        """Escape a filesystem path for use inside an ffmpeg filter option
-        (e.g. subtitles=filename=...). Colons and backslashes must be
-        escaped or the filtergraph parser breaks — this bites hard on
-        Windows paths (C:\\...) and any path containing ':'."""
         return path.replace("\\", "\\\\").replace(":", "\\:")
 
     def _generate_pollinations_video(self, scene_id, prompt, duration):
@@ -193,8 +185,9 @@ class Composer:
                 .filter("crop", "1080", "1920")
             )
 
+            # ➔ CORRECTION : Pas de sous-titres FFmpeg par-dessus la cinétique pour éviter le télescopage
             srt_path = scene.get("srt_path")
-            if srt_path and os.path.exists(srt_path):
+            if visual_type != "kinetic" and srt_path and os.path.exists(srt_path):
                 video_stream = video_stream.filter(
                     "subtitles",
                     filename=self._escape_ffmpeg_path(srt_path),
@@ -363,9 +356,6 @@ class Composer:
             return False
 
     def _cleanup_scene_temp_files(self, video_paths):
-        """Remove the per-scene intermediate .mp4 files once the final
-        video has been stitched, so temp_dir doesn't accumulate disk
-        usage across runs."""
         for path in video_paths:
             if path and os.path.exists(path) and os.path.dirname(path) == self.temp_dir:
                 try:
@@ -436,8 +426,6 @@ class Composer:
             except Exception:
                 pass
 
-        # Nettoyage des clips de scène individuels (scene_*.mp4) maintenant
-        # que le montage final est produit — évite l'accumulation disque.
         self._cleanup_scene_temp_files(video_paths)
 
         return output_path
