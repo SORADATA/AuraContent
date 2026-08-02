@@ -1,5 +1,8 @@
 import os
 import asyncio
+import base64
+import wave
+import requests
 from mutagen.mp3 import MP3
 
 try:
@@ -7,6 +10,13 @@ try:
     EDGE_AVAILABLE = True
 except ImportError:
     EDGE_AVAILABLE = False
+
+try:
+    import soundfile as sf
+    from kokoro import KPipeline
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KOKORO_AVAILABLE = False
 
 
 class AudioEngine:
@@ -16,10 +26,10 @@ class AudioEngine:
         "Measured pacing, deep tone, clear diction, confident business-finance delivery."
     )
 
-    EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
-    EDGE_FALLBACK_RATE = "+0%"
-    EDGE_FALLBACK_PITCH = "-2Hz"
-    EDGE_FALLBACK_VOLUME = "+0%"
+    EDGE_VOICE = "fr-FR-HenriNeural"
+    EDGE_RATE = "+0%"
+    EDGE_PITCH = "-2Hz"
+    EDGE_VOLUME = "+0%"
 
     KOKORO_FRENCH_VOICE = "ff_siwis"
 
@@ -35,9 +45,9 @@ class AudioEngine:
         if self.use_kokoro:
             try:
                 self._kokoro_pipeline = KPipeline(lang_code="f", repo_id="hexgrad/Kokoro-82M")
-                print("      Kokoro initialise")
+                print("     Kokoro initialise")
             except Exception as e:
-                print(f"      Kokoro indisponible: {e}")
+                print(f"     Kokoro indisponible: {e}")
                 self.use_kokoro = False
 
     def clean_text(self, text):
@@ -75,7 +85,7 @@ class AudioEngine:
         )
 
         payload = {
-            "contents": [{"parts": [{"text": self.stylize_for_gemini(text)}]}],
+            "contents": [{"parts": [{"text": f"{self.GEMINI_STYLE_PROMPT}\n\nText: {text}"}]}],
             "generationConfig": {"responseModalities": ["AUDIO"]}
         }
 
@@ -92,7 +102,7 @@ class AudioEngine:
                     break
 
             if not inline_data:
-                print("      Gemini TTS: aucune donnee audio")
+                print("     Gemini TTS: aucune donnee audio")
                 return False
 
             audio_bytes = base64.b64decode(inline_data["data"])
@@ -105,12 +115,12 @@ class AudioEngine:
                 self._save_pcm_wav(audio_bytes, output_path_wav)
 
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
-                print("      Voix Gemini TTS utilisee")
+                print("     Voix Gemini TTS utilisee")
                 return True
             return False
 
         except Exception as e:
-            print(f"      Gemini TTS indisponible: {e}")
+            print(f"     Gemini TTS indisponible: {e}")
             return False
 
     def _try_kokoro(self, text, output_path_wav):
@@ -124,22 +134,19 @@ class AudioEngine:
                 break
 
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
-                print("      Voix Kokoro utilisee")
+                print("     Voix Kokoro utilisee")
                 return True
 
             return False
 
         except Exception as e:
-            print(f"      Kokoro indisponible: {e}")
+            print(f"     Kokoro indisponible: {e}")
             return False
 
     async def _try_edge(self, text, output_path_mp3):
         if not EDGE_AVAILABLE:
             raise RuntimeError("Le module edge_tts n'est pas installé.")
 
-        base_name = output_filename.rsplit(".", 1)[0]
-        mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
-        
         communicate = edge_tts.Communicate(
             text=self.clean_text(text),
             voice=self.EDGE_VOICE,
@@ -158,7 +165,7 @@ class AudioEngine:
             await self._try_edge(text, mp3_path)
             return mp3_path, "edge-tts"
         except Exception as e:
-            print(f"      Edge indisponible: {e}")
+            print(f"     Edge indisponible: {e}")
 
         if self._try_gemini(text, wav_path):
             return wav_path, "gemini-tts"
@@ -183,6 +190,6 @@ class AudioEngine:
             duration = self.get_audio_duration(audio_path)
             scene["duration"] = max(duration, self.min_scene_duration)
 
-            print(f"      Scene {scene_id}: audio genere via {engine_used} ({scene['duration']:.2f}s)")
+            print(f"     Scene {scene_id}: audio genere via {engine_used} ({scene['duration']:.2f}s)")
 
         return script_data
