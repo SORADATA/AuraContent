@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import base64
@@ -38,12 +37,9 @@ class AudioEngine:
     KOKORO_FRENCH_VOICE = "ff_siwis"
 
     # --- Paramètres anti-saturation et confort d'écoute ---
-    # Un niveau légèrement plus bas (-20 LUFS) évite le clipping numérique 
-    # et laisse une marge parfaite pour le mixage final avec une musique de fond.
     SCENE_TARGET_LUFS = -20.0
     SCENE_TRUE_PEAK = -2.0
     SCENE_LRA = 11
-    # Limiteur de sécurité resserré pour bloquer net tout pic de voix parasite
     SAFETY_LIMITER_LEVEL = 0.90
 
     def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
@@ -97,7 +93,7 @@ class AudioEngine:
         return max(current_duration, min_duration)
 
     def _normalize_scene_audio(self, audio_path):
-        """Normalise la voix et applique un limiteur de crête pour bannir tout craquement."""
+        """Nettoie radicalement les fréquences parasites et normalise sans craquement."""
         ext = os.path.splitext(audio_path)[1].lower()
         base, _ = os.path.splitext(audio_path)
         tmp_path = f"{base}__norm{ext}"
@@ -113,6 +109,10 @@ class AudioEngine:
             (
                 ffmpeg
                 .input(audio_path)
+                # ➔ FILTRES ANTI-CRAQUEMENT MAGIQUES :
+                .filter("highpass", f=80)    # Supprime les bruits sourds et vibrations sous 80Hz
+                .filter("lowpass", f=7500)   # Coupe net les aigus métalliques stridents (>7.5kHz) qui saturent les HP de téléphones
+                # ➔ NORMALISATION & LIMITEUR :
                 .filter("loudnorm", I=self.SCENE_TARGET_LUFS, TP=self.SCENE_TRUE_PEAK, LRA=self.SCENE_LRA)
                 .filter("alimiter", limit=self.SAFETY_LIMITER_LEVEL)
                 .output(tmp_path, **output_kwargs)
@@ -225,17 +225,17 @@ class AudioEngine:
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
-        # 1. KOKORO EN PRIORITÉ (Le plus chaud, naturel et agréable pour de la finance)
+        # 1. KOKORO EN PRIORITÉ
         if self._try_kokoro(text, wav_path):
             self._normalize_scene_audio(wav_path)
             return wav_path, "kokoro"
 
-        # 2. GEMINI EN SECONDE PRIORITÉ (Très bonne qualité pro)
+        # 2. GEMINI EN SECONDE PRIORITÉ
         if self._try_gemini(text, wav_path):
             self._normalize_scene_audio(wav_path)
             return wav_path, "gemini-tts"
 
-        # 3. EDGE-TTS EN SECOURS (Avec paramètres adoucis)
+        # 3. EDGE-TTS EN SECOURS
         try:
             await self._try_edge(text, mp3_path)
             if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
@@ -247,7 +247,7 @@ class AudioEngine:
         raise RuntimeError("Aucun moteur TTS disponible")
 
     async def process_script(self, script_data):
-        print("Génération audio optimisée (Kokoro, fallback Gemini, puis Edge-TTS)...")
+        print("Génération audio optimisée et filtrée (Kokoro, fallback Gemini, puis Edge-TTS)...")
 
         for scene in script_data:
             scene_id = scene["id"]
