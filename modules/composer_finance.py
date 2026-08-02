@@ -36,17 +36,18 @@ class Composer:
         self.music_fade_duration = 1.5
         self.transition_duration = 0.45
 
+        # Style de sous-titres moderne et lisible par-dessus les vidéos de fond
         self.subtitle_style = (
             "FontName=Montserrat,"
-            "FontSize=18,"
+            "FontSize=22,"
             "PrimaryColour=&H00FFFFFF,"
             "OutlineColour=&H00000000,"
-            "BackColour=&H66000000,"
+            "BackColour=&H99000000,"
             "BorderStyle=3,"
-            "Outline=2.2,"
+            "Outline=2.5,"
             "Shadow=0,"
             "Alignment=2,"
-            "MarginV=115"
+            "MarginV=130"
         )
 
         if KINETIC_AVAILABLE:
@@ -67,13 +68,12 @@ class Composer:
     # GESTION DE POLLINATIONS (SANS TOKEN)
     # ----------------------------------------------------------------
     def _generate_pollinations_video(self, scene_id, prompt, duration):
-        """Génère une image via Pollinations (anonyme) puis la transforme en vidéo avec un zoom."""
+        """Génère une image via Pollinations (anonyme) puis la transforme en vidéo avec un zoom lent (Ken Burns)."""
         if not prompt: return None
         
         image_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.jpg")
         video_path = os.path.join(self.temp_dir, f"pollinations_{scene_id}.mp4")
         
-        # 1. Récupération de l'image (sans API key)
         encoded_prompt = urllib.parse.quote(prompt)
         seed = random.randint(1, 999999)
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={self.video_width}&height={self.video_height}&model=flux&nologo=true&seed={seed}"
@@ -89,7 +89,6 @@ class Composer:
             print(f"⚠️ Pollinations erreur: {e}")
             return None
 
-        # 2. Conversion en vidéo avec effet Ken Burns (Zoom lent)
         try:
             zoom_frames = int(duration * self.fps)
             (
@@ -111,50 +110,27 @@ class Composer:
         except Exception:
             return None
 
-
     # ----------------------------------------------------------------
-    # SÉLECTEUR INTELLIGENT (LA CASCADE)
+    # SÉLECTEUR VISUEL TOUJOURS DYNAMIQUE (PEXELS OU POLLINATIONS)
     # ----------------------------------------------------------------
     def _get_visual_for_scene(self, scene, default_pexels_path, total_duration):
-        role = scene.get("role", "example")
         scene_id = scene["id"]
-        
-        visual_type = "pexels"
-        final_path = default_pexels_path
+        prompt = scene.get("image_prompt", "")
 
-        # 1. THÉORIE -> Kinetic Typography
-        if role in ["definition", "mechanism", "summary"] and KINETIC_AVAILABLE:
-            print(f"    🔤 Scene {scene_id} ({role}): Kinetic Typography...")
-            kinetic_out = os.path.join(self.temp_dir, f"kinetic_{scene_id}.mp4")
-            result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-            if result:
-                return result, "kinetic"
+        # 1. Si on a une vidéo Pexels valide, on l'utilise en priorité pour garder du mouvement réel
+        if default_pexels_path and os.path.exists(default_pexels_path):
+            print(f"    🎬 Scène {scene_id} : Vidéo Pexels dynamique")
+            return default_pexels_path, "video"
 
-        # 2. MÉTAPHORES -> Pollinations IA (sans token)
-        elif role in ["analogy", "misconception"]:
-            print(f"    🎨 Scene {scene_id} ({role}): Pollinations IA...")
-            prompt = scene.get("image_prompt", "")
+        # 2. Sinon, on génère une image IA via Pollinations avec un effet de zoom
+        if prompt:
+            print(f"    🎨 Scène {scene_id} : Génération image Pollinations IA + Zoom")
             pollinations_out = self._generate_pollinations_video(scene_id, prompt, total_duration)
-            
             if pollinations_out:
-                return pollinations_out, "pollinations"
-            
-            # Fallback si Pollinations échoue
-            print(f"    ⚠️ Pollinations a échoué -> Fallback Kinetic")
-            if KINETIC_AVAILABLE:
-                kinetic_out = os.path.join(self.temp_dir, f"kinetic_fallback_{scene_id}.mp4")
-                result = self.kinetic_engine.generate(scene, total_duration, kinetic_out)
-                if result: return result, "kinetic"
+                return pollinations_out, "image_ai"
 
-        # 3. PEXELS (hook, example, cta ou fallback ultime)
-        print(f"    🎬 Scene {scene_id} ({role}): Vidéo Pexels...")
-        if not final_path or not os.path.exists(final_path):
-            # Ultime sécurité si Pexels n'avait pas trouvé de vidéo
-            if KINETIC_AVAILABLE:
-                kinetic_out = os.path.join(self.temp_dir, f"kinetic_safety_{scene_id}.mp4")
-                return self.kinetic_engine.generate(scene, total_duration, kinetic_out), "kinetic"
-
-        return final_path, "pexels"
+        # 3. Fallback ultime si rien d'autre n'est dispo
+        return default_pexels_path, "video"
 
     # ----------------------------------------------------------------
     # TRAITEMENT PRINCIPAL DE LA SCÈNE
@@ -166,19 +142,19 @@ class Composer:
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
         try:
-            # 1. Choix du visuel via la cascade
+            # Récupération d'un fond visuel vivant (Pexels ou IA animée)
             final_video_path, visual_type = self._get_visual_for_scene(scene, video_path, total_duration)
             
-            if not final_video_path:
+            if not final_video_path or not os.path.exists(final_video_path):
                 print(f"❌ Impossible de trouver un visuel pour la scène {scene_id}")
                 return None
 
-            print(f"    ⚙️ Assemblage FFmpeg Scene {scene_id} (Type: {visual_type})")
+            print(f"    ⚙️ Assemblage FFmpeg Scène {scene_id} (Fond dynamique)")
             
             input_audio = ffmpeg.input(audio_path)
             input_video = ffmpeg.input(final_video_path, stream_loop=-1)
 
-            # 2. Recadrage 9:16 (s'applique même aux visuels IA pour garantir le format)
+            # Recadrage propre en 9:16 vertical
             video_stream = (
                 input_video.video
                 .trim(duration=total_duration)
@@ -187,19 +163,16 @@ class Composer:
                 .filter("crop", "1080", "1920")
             )
 
-            # 3. Ajout des sous-titres UNIQUEMENT si ce n'est pas du Kinetic Typography
-            if visual_type != "kinetic":
-                srt_path = scene.get("srt_path")
-                if srt_path and os.path.exists(srt_path):
-                    video_stream = video_stream.filter(
-                        "subtitles",
-                        filename=srt_path,
-                        force_style=self.subtitle_style
-                    )
-            else:
-                print(f"    ℹ️ Sous-titres SRT désactivés pour la scène {scene_id} (déjà inclus dans Kinetic)")
+            # Incrustation des sous-titres dynamiques par-dessus la vidéo de fond
+            srt_path = scene.get("srt_path")
+            if srt_path and os.path.exists(srt_path):
+                video_stream = video_stream.filter(
+                    "subtitles",
+                    filename=srt_path,
+                    force_style=self.subtitle_style
+                )
 
-            # 4. Rendu de la scène
+            # Rendu de la scène
             runner = ffmpeg.output(
                 video_stream,
                 input_audio,

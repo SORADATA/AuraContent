@@ -1,30 +1,14 @@
-"""
-Kinetic Typography v2 — version "pro" pour chaine finance.
-
-Ameliorations vs v1 :
-- Le mot-cle de la scene (tts_emphasis_word) est affiche en GRAND et en
-  couleur accent, le reste du texte en plus petit et en blanc/gris clair
-  => hierarchie visuelle, comme dans les explainers finance pro.
-- Mouvement directionnel (slide-in + scale) au lieu d'un simple fade,
-  pour un effet "le mot atterrit" plutot que "le mot apparait mollement".
-- Fond en degrade subtil (pas juste une couleur plate) pour eviter l'effet
-  "diapo PowerPoint".
-- Une fine ligne de progression en bas d'ecran (comme une barre de lecture)
-  pour renforcer le cote "pro/dashboard financier".
-- Rendu force en 1080x1920 60fps-ready, crf bas pour un rendu net (pas de
-  pixelisation, cf. bonnes pratiques kinetic typography).
-"""
-
 import os
+import math
+import textwrap
 import ffmpeg
-
 
 PALETTE_BY_MOOD = {
     "confident": {"bg1": "0x0B1424", "bg2": "0x152238", "accent": "0x00D9B5"},
-    "sharp":     {"bg1": "0x140E1F", "bg2": "0x231433", "accent": "0xFF5C5C"},
-    "clear":     {"bg1": "0x0A1B2A", "bg2": "0x123047", "accent": "0x4CC9F0"},
+    "sharp": {"bg1": "0x140E1F", "bg2": "0x231433", "accent": "0xFF5C5C"},
+    "clear": {"bg1": "0x0A1B2A", "bg2": "0x123047", "accent": "0x4CC9F0"},
     "pedagogical": {"bg1": "0x0C1420", "bg2": "0x18293D", "accent": "0xFFC857"},
-    "engaging":  {"bg1": "0x0D1B2A", "bg2": "0x1B2F4A", "accent": "0x06D6A0"},
+    "engaging": {"bg1": "0x0D1B2A", "bg2": "0x1B2F4A", "accent": "0x06D6A0"},
     "revelatory": {"bg1": "0x160F26", "bg2": "0x281B3D", "accent": "0xEF476F"},
 }
 DEFAULT_PALETTE = {"bg1": "0x0E1420", "bg2": "0x1A2438", "accent": "0x4CC9F0"}
@@ -41,29 +25,67 @@ class KineticTypographyEngineV2:
 
         for path in (self.font_bold, self.font_regular):
             if not os.path.exists(path):
-                print(f"⚠️ Police manquante : {path} (a telecharger gratuitement sur Google Fonts).")
+                print(f"⚠️ Police manquante : {path}")
 
     def _escape_text(self, text):
-        text = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\u2019").replace("%", "\\%")
-        return text
+        if text is None:
+            return ""
+        return (
+            str(text)
+            .replace("\\", "\\\\")
+            .replace(":", "\\:")
+            .replace("'", "’")
+            .replace("%", "\\%")
+            .replace("\n", " ")
+        )
+
+    def _split_text(self, text, max_chars=42):
+        words = text.split()
+        lines = []
+        current = []
+        for w in words:
+            test = " ".join(current + [w])
+            if len(test) <= max_chars:
+                current.append(w)
+            else:
+                if current:
+                    lines.append(" ".join(current))
+                current = [w]
+        if current:
+            lines.append(" ".join(current))
+        return lines
 
     def _split_around_emphasis(self, text, emphasis_word):
-        """Separe le texte en 'avant / mot-cle / apres' pour la hierarchie
-        visuelle. Si pas de mot-cle, tout le texte reste au format normal."""
-        if not emphasis_word:
+        if not emphasis_word or not text:
             return text, None, ""
 
         words = text.split()
-        emphasis_lower = emphasis_word.strip().lower()
-        idx = next((i for i, w in enumerate(words) if emphasis_lower in w.lower()), None)
-
+        target = emphasis_word.strip().lower()
+        idx = next((i for i, w in enumerate(words) if target in w.lower()), None)
         if idx is None:
             return text, None, ""
 
-        before = " ".join(words[:idx])
-        keyword = words[idx]
-        after = " ".join(words[idx + 1:])
+        before = " ".join(words[:idx]).strip()
+        keyword = words[idx].strip()
+        after = " ".join(words[idx + 1 :]).strip()
         return before, keyword, after
+
+    def _draw_gradient_bg(self, duration, palette):
+        return ffmpeg.input(
+            f"color=c={palette['bg1']}:s={self.width}x{self.height}:d={duration}:r={self.fps}",
+            f="lavfi",
+        ).video.filter(
+            "gradients",
+            s=f"{self.width}x{self.height}",
+            c0=palette["bg1"],
+            c1=palette["bg2"],
+            x0=0,
+            y0=0,
+            x1=self.width,
+            y1=self.height,
+            d=duration,
+            rate=self.fps,
+        )
 
     def generate(self, scene, duration, output_path):
         text = scene.get("text", "")
@@ -80,87 +102,100 @@ class KineticTypographyEngineV2:
         )
 
         video_stream = base.video
-
         anim_in = 0.35
-        settle_time = 0.35
+        slide_x = f"if(lt(t,{anim_in}),(w-text_w)/2-60+60*(t/{anim_in}),(w-text_w)/2)"
+        fade_alpha = f"if(lt(t,{anim_in}),t/{anim_in},1)"
 
         if keyword:
-            y_before = int(self.height * 0.40)
-            y_keyword = int(self.height * 0.47)
-            y_after = int(self.height * 0.58)
+            before_lines = self._split_text(before, 46) if before else []
+            after_lines = self._split_text(after, 46) if after else []
 
-            slide_expr_x = f"if(lt(t,{anim_in}),(w-text_w)/2-40+40*(t/{anim_in}),(w-text_w)/2)"
-            scale_alpha = f"if(lt(t,{anim_in}),t/{anim_in},1)"
+            y_top = int(self.height * 0.33)
+            y_mid = int(self.height * 0.45)
+            y_bottom = int(self.height * 0.57)
 
-            if before:
+            if before_lines:
                 video_stream = video_stream.filter(
                     "drawtext",
                     fontfile=self.font_regular,
-                    text=self._escape_text(before),
-                    fontsize=46,
+                    text=self._escape_text("\n".join(before_lines)),
+                    fontsize=44,
                     fontcolor="0xE8EDF2",
-                    alpha=scale_alpha,
-                    x=slide_expr_x,
-                    y=y_before,
+                    alpha=fade_alpha,
+                    x=slide_x,
+                    y=y_top,
+                    line_spacing=10,
+                    box=1,
+                    boxcolor="0x000000@0.18",
+                    boxborderw=18,
                 )
 
-            keyword_alpha = f"if(lt(t,{anim_in + 0.1}),(t-0.1)/{anim_in},1)"
             video_stream = video_stream.filter(
                 "drawtext",
                 fontfile=self.font_bold,
                 text=self._escape_text(keyword.upper()),
-                fontsize=78,
-                fontcolor=f"{palette['accent']}",
-                alpha=keyword_alpha,
+                fontsize=84,
+                fontcolor=palette["accent"],
+                alpha=f"if(lt(t,{anim_in + 0.08}),(t-0.08)/{anim_in},1)",
                 x="(w-text_w)/2",
-                y=y_keyword,
+                y=y_mid,
                 borderw=2,
-                bordercolor="0x000000@0.4",
+                bordercolor="0x000000@0.45",
+                box=1,
+                boxcolor="0x000000@0.20",
+                boxborderw=16,
             )
 
-            if after:
+            if after_lines:
                 video_stream = video_stream.filter(
                     "drawtext",
                     fontfile=self.font_regular,
-                    text=self._escape_text(after),
-                    fontsize=46,
-                    fontcolor="0xE8EDF2",
-                    alpha=scale_alpha,
-                    x=slide_expr_x,
-                    y=y_after,
+                    text=self._escape_text("\n".join(after_lines)),
+                    fontsize=44,
+                    fontcolor="0xD9E2EC",
+                    alpha=fade_alpha,
+                    x=slide_x,
+                    y=y_bottom,
+                    line_spacing=10,
+                    box=1,
+                    boxcolor="0x000000@0.18",
+                    boxborderw=18,
                 )
         else:
-            alpha_expr = f"if(lt(t,{anim_in}),t/{anim_in},1)"
+            lines = self._split_text(text, 40)
+            y_center = int(self.height * 0.43)
             video_stream = video_stream.filter(
                 "drawtext",
                 fontfile=self.font_bold,
-                text=self._escape_text(text),
+                text=self._escape_text("\n".join(lines)),
                 fontsize=58,
                 fontcolor="0xE8EDF2",
-                alpha=alpha_expr,
+                alpha=fade_alpha,
                 x="(w-text_w)/2",
-                y="(h-text_h)/2",
+                y=y_center,
                 line_spacing=14,
+                box=1,
+                boxcolor="0x000000@0.20",
+                boxborderw=18,
             )
 
-        bar_width_expr = f"{self.width}*min(t/{duration},1)"
+        progress_h = 6
         video_stream = video_stream.filter(
             "drawbox",
             x=0,
-            y=self.height - 10,
-            w=int(self.width),
-            h=6,
-            color=f"{palette['accent']}@0.9",
+            y=self.height - 12,
+            w=self.width,
+            h=progress_h,
+            color=f"{palette['accent']}@0.22",
             t="fill",
-            enable="1",
         )
         video_stream = video_stream.filter(
             "drawbox",
             x=0,
-            y=self.height - 10,
-            w=f"{bar_width_expr}",
-            h=6,
-            color="0xFFFFFF@0.95",
+            y=self.height - 12,
+            w=f"iw*min(t/{duration},1)",
+            h=progress_h,
+            color=f"{palette['accent']}@0.95",
             t="fill",
         )
 
@@ -170,7 +205,7 @@ class KineticTypographyEngineV2:
                 output_path,
                 vcodec="libx264",
                 pix_fmt="yuv420p",
-                r=self.fps,
+                r=60,
                 crf=16,
                 preset="slow",
                 t=duration,

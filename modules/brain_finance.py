@@ -1,18 +1,3 @@
-"""
-ContentBrain Finance v4 — curriculum auto-extensible base sur des piliers.
-
-Nouveaute vs v3 :
-- CURRICULUM_FINANCE (liste figee) devient une liste de DEPART sous des
-  PILLARS larges et permanents.
-- Quand toutes les notions recentes ont ete traitees, le brain genere lui-meme
-  de nouvelles sous-notions via LLM dans le pilier le moins couvert, et les
-  sauvegarde definitivement dans curriculum_finance_state.json.
-  => Le curriculum ne s'epuise jamais.
-- Si meme l'expansion echoue (LLM indisponible), une notion deja traitee peut
-  revenir, mais TOUJOURS avec un angle different (mythe, etude de cas,
-  comparaison, question d'audience...) pour ne jamais sonner repetitif.
-"""
-
 import os
 import re
 import json
@@ -20,7 +5,6 @@ import random
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
-
 
 try:
     from modules.utils.zernio_client_finance import get_latest_videos_stats
@@ -34,9 +18,7 @@ except ImportError:
     print("⚠️ Module market_data_client introuvable. Aucune donnée de marché live injectée.")
     def get_market_signals(**kwargs): return None
 
-
 load_dotenv()
-
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -71,12 +53,6 @@ PEDAGOGY_INSTRUCTION = (
     "Privilegie la clarte a la sophistication : une seule idee centrale par video."
 )
 
-
-# ----------------------------------------------------------------------
-# PILIERS : themes larges et PERMANENTS. Ne s'epuisent jamais par design.
-# Chaque pilier contient des notions de depart ; le brain en genere d'autres
-# tout seul quand necessaire (voir expand_curriculum_with_llm).
-# ----------------------------------------------------------------------
 CONTENT_PILLARS = {
     "epargne": {
         "label": "Épargne et produits bancaires",
@@ -131,8 +107,8 @@ ANGLES = [
 ]
 
 CURRICULUM_STATE_PATH = "curriculum_finance_state.json"
-RECENT_WINDOW = 15  # nb de dernieres notions a ne pas repeter avant expansion/recyclage
-RECYCLE_COOLDOWN_DAYS = 21  # delai mini avant de reutiliser une notion avec un nouvel angle
+RECENT_WINDOW = 15
+RECYCLE_COOLDOWN_DAYS = 21
 
 
 def _flatten_curriculum(pillars=None):
@@ -167,8 +143,6 @@ def _get_full_curriculum(state):
 
 
 def _pillar_with_least_coverage(state):
-    """Retourne le pilier le moins souvent traite dans l'historique recent,
-    pour equilibrer les themes enseignes sur la duree."""
     history = state.get("history", [])[-60:]
     counts = {key: 0 for key in CONTENT_PILLARS.keys()}
     for h in history:
@@ -211,6 +185,7 @@ ANALYSE DES PERFORMANCES RECENTES (FEEDBACK LOOP) :
 Voici les resultats de nos dernieres videos publiees :
 {stats_text}
 
+
 INSTRUCTION D'APPRENTISSAGE (AGENT IA) :
 Analyse brievement quelles notions ou structures pedagogiques ont le mieux
 retenu l'attention (vues completes, likes). Ajuste le {label} en consequence,
@@ -239,6 +214,7 @@ def _format_market_illustration(market_signals, notion):
     return f"""
 DONNEES DE MARCHE DU JOUR (OPTIONNEL, A UTILISER SEULEMENT SI PERTINENT) :
 {signals_text}
+
 
 INSTRUCTION :
 Si et seulement si un de ces exemples illustre naturellement la notion
@@ -348,12 +324,7 @@ class ContentBrain:
                 continue
         raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
 
-    # ------------------------------------------------------------------
-    # EXPANSION AUTOMATIQUE DU CURRICULUM
-    # ------------------------------------------------------------------
     def expand_curriculum_with_llm(self, pillar_key, existing_notions, n=8):
-        """Genere n nouvelles sous-notions dans un pilier donne, distinctes
-        des notions deja existantes. Ce qui rend le curriculum infini."""
         pillar_label = CONTENT_PILLARS[pillar_key]["label"]
         existing_text = "\n".join(f"- {n_}" for n_ in existing_notions) or "(aucune)"
 
@@ -405,8 +376,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
             return []
 
     def _pick_recycled_notion_with_new_angle(self, state):
-        """Dernier recours : reutilise une ancienne notion mais impose un
-        angle jamais utilise pour elle, et respecte un delai minimum."""
         history = state.get("history", [])
         if not history:
             return None, random.choice(ANGLES)
@@ -442,14 +411,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         return notion_entry, angle
 
     def pick_curriculum_notion(self):
-        """
-        Coeur du systeme anti-epuisement :
-        1. Cherche une notion non traitee recemment.
-        2. Si tout a ete traite, genere de nouvelles notions via LLM dans le
-           pilier le moins couvert (curriculum grandit tout seul, pour de bon).
-        3. Si l'expansion echoue, recycle une vieille notion avec un angle
-           inedit plutot que de planter.
-        """
         state = _load_curriculum_state()
         all_notions = _get_full_curriculum(state)
         recent_notions = {h["notion"] for h in state.get("history", [])[-RECENT_WINDOW:]}
@@ -481,8 +442,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         return notion_entry, angle, state
 
     def get_pedagogical_topic(self, previous_stats_list=None, market_signals=None):
-        """MODE PRINCIPAL : pioche une notion (fraiche ou recyclee avec angle
-        neuf) et genere un titre accrocheur pour l'enseigner."""
         notion_entry, angle, state = self.pick_curriculum_notion()
         notion = notion_entry["notion"]
         niveau = notion_entry.get("niveau", "intermediaire")
@@ -536,8 +495,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
 
     def record_topic_used(self, state, notion, niveau, angle, pillar):
-        """A appeler apres publication reussie pour alimenter l'historique
-        anti-repetition et le suivi de couverture des piliers."""
         state.setdefault("history", []).append({
             "notion": notion,
             "niveau": niveau,
@@ -548,9 +505,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         state["history"] = state["history"][-500:]
         _save_curriculum_state(state)
 
-    # ------------------------------------------------------------------
-    # MODE PONCTUEL : reaction a l'actualite de marche (inchange)
-    # ------------------------------------------------------------------
     def get_newsjacking_topic(self, market_signals, previous_stats_list=None):
         if not market_signals:
             raise ValueError("Pas de signaux de marche disponibles pour le mode newsjacking.")
@@ -603,7 +557,7 @@ captivants sur TikTok, sans jamais sacrifier l'exactitude pedagogique.
 {topic}
 
 OBJECTIF :
-Genere {n} hooks differents pour la meme video pedagogique, tous alignes sur
+Genere {n} hooks differents pour la meme video pedagogique, tous aligns sur
 l'angle impose. Chaque hook doit arreter le scroll en moins de 3 secondes ET
 annoncer clairement ce que le spectateur va APPRENDRE.
 
@@ -801,6 +755,13 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         self._validate_script(data, scene_count)
         return data
 
+    def _normalize_word(self, text):
+        text = str(text).lower().strip()
+        text = re.sub(r"[’']", "", text)
+        text = re.sub(r"[^a-zàâçéèêëîïôûùüÿœ\- ]", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text
+
     def _validate_script(self, data, scene_count):
         scenes = data.get("scenes")
         if not isinstance(scenes, list):
@@ -851,11 +812,14 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
                     print(f"⚠️ Scene {scene.get('id')} : formulation a risque de conformite detectee ('{phrase}').")
 
             if emphasis:
-                normalized_text = text.lower()
-                normalized_emphasis = str(emphasis).strip().lower()
-                words = re.findall(r"[\wÀ-ÿœŒ'-]+", normalized_text)
-                if normalized_emphasis not in words:
-                    print(f"⚠️ Scene {scene.get('id')} : tts_emphasis_word='{emphasis}' absent du text. Emphase ignoree.")
+                normalized_text = self._normalize_word(text)
+                normalized_emphasis = self._normalize_word(emphasis)
+                text_words = normalized_text.split()
+                if normalized_emphasis not in text_words:
+                    print(
+                        f"⚠️ Scene {scene.get('id')} : tts_emphasis_word='{emphasis}' absent du text. "
+                        f"Emphase ignoree."
+                    )
                     scene["tts_emphasis_word"] = None
 
         if "title" not in data or not str(data["title"]).strip():
@@ -875,7 +839,7 @@ if __name__ == "__main__":
     print("📚 Selection d'une notion du curriculum (auto-extensible)...")
     result = brain.get_pedagogical_topic(
         previous_stats_list=stats_historique,
-        market_signals=None,  # mettre get_market_signals() ici seulement si tu veux un exemple d'actu
+        market_signals=None,
     )
     topic = result["topic"]
     notion = result["notion"]
@@ -903,8 +867,6 @@ if __name__ == "__main__":
     with open("script_finance.json", "w", encoding="utf-8") as f:
         json.dump(script_data, f, indent=4, ensure_ascii=False)
 
-    # IMPORTANT : n'enregistrer dans l'historique qu'apres validation/publication
-    # reelle de la video, pas juste apres generation du script.
     brain.record_topic_used(state, notion, niveau, angle, pillar)
 
     print("Script finance saved to script_finance.json")
