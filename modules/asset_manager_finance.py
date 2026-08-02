@@ -1,6 +1,7 @@
 import os
 import urllib.parse
 import requests
+from modules.utils.pexels_client import get_pexels_video
 
 
 FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
@@ -53,67 +54,12 @@ class AssetManager:
             if os.path.exists(FALLBACK_VIDEO):
                 video_paths.append(FALLBACK_VIDEO)
             else:
-                print(f"   ❌ Scene {scene_id}: fallback introuvable (ajoute assets/fallback_finance.mp4) !")
-                video_paths.append(None)
+                print(f"    ⚠️ Scene {scene_id}: échec Pexels, utilisation de la vidéo de fallback")
+                if os.path.exists(FALLBACK_VIDEO):
+                    video_paths.append(FALLBACK_VIDEO)
+                else:
+                    print(
+                        f"    ❌ Scene {scene_id}: fallback introuvable (pense à ajouter assets/fallback_finance.mp4) ! Scène ignorée.")
+                    video_paths.append(None)
 
         return video_paths
-
-    def _try_pexels(self, query, output_path):
-        try:
-            from modules.utils.pexels_client import get_pexels_video
-            video_path = get_pexels_video(query, output_path)
-            if video_path and os.path.exists(video_path):
-                return video_path
-        except Exception as e:
-            print(f"   ⚠️ Pexels indisponible: {e}")
-        return None
-
-    def _try_pollinations(self, scene_id, prompt, output_path):
-        """Pollinations sans token : récupère une image puis la transforme en clip via FFmpeg.
-        Le rendu final est une vidéo courte avec zoom léger."""
-        try:
-            import ffmpeg
-        except Exception as e:
-            print(f"   ⚠️ FFmpeg indisponible pour Pollinations: {e}")
-            return None
-
-        image_path = os.path.join(self.video_dir, f"pollinations_{scene_id}.jpg")
-        encoded_prompt = urllib.parse.quote(prompt)
-        seed = scene_id * 9973
-        url = (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width=1080&height=1920&model=flux&nologo=true&safe=true&seed={seed}"
-        )
-
-        try:
-            resp = requests.get(url, timeout=35)
-            if resp.status_code != 200 or len(resp.content) < 1000:
-                return None
-            with open(image_path, "wb") as f:
-                f.write(resp.content)
-        except Exception as e:
-            print(f"   ⚠️ Pollinations erreur: {e}")
-            return None
-
-        try:
-            duration = 5.0
-            zoom_frames = int(duration * 30)
-            (
-                ffmpeg.input(image_path, loop=1, t=duration)
-                .filter("scale", 2160, 3840)
-                .filter(
-                    "zoompan",
-                    z="min(zoom+0.0008,1.15)",
-                    d=zoom_frames,
-                    x="iw/2-(iw/zoom/2)",
-                    y="ih/2-(ih/zoom/2)",
-                    s="1080x1920",
-                    fps=30,
-                )
-                .output(output_path, vcodec="libx264", pix_fmt="yuv420p", crf=18, preset="medium", t=duration)
-                .run(overwrite_output=True, quiet=True)
-            )
-            return output_path
-        except Exception as e:
-            print(f"   ⚠️ Pollinations conversion vidéo échouée: {e}")
-            return None

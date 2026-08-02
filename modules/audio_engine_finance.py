@@ -1,8 +1,5 @@
 import os
-import wave
-import base64
 import asyncio
-import requests
 from mutagen.mp3 import MP3
 
 try:
@@ -10,13 +7,6 @@ try:
     EDGE_AVAILABLE = True
 except ImportError:
     EDGE_AVAILABLE = False
-
-try:
-    from kokoro import KPipeline
-    import soundfile as sf
-    KOKORO_AVAILABLE = True
-except ImportError:
-    KOKORO_AVAILABLE = False
 
 
 class AudioEngine:
@@ -36,7 +26,6 @@ class AudioEngine:
     def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)
-
         self.min_scene_duration = 3.0
         self.use_gemini = use_gemini and bool(os.getenv("GEMINI_API_KEY"))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -56,16 +45,9 @@ class AudioEngine:
         text = text.replace("...", ". ")
         return " ".join(text.split()).strip()
 
-    def stylize_for_gemini(self, text):
-        cleaned = self.clean_text(text)
-        return f"{self.GEMINI_STYLE_PROMPT} [short pause] {cleaned}"
-
     def get_audio_duration(self, file_path):
         try:
-            if file_path.endswith(".mp3"):
-                return MP3(file_path).info.length
-            info = sf.info(file_path)
-            return float(info.duration)
+            return MP3(file_path).info.length
         except Exception:
             return 0.0
 
@@ -153,14 +135,17 @@ class AudioEngine:
 
     async def _try_edge(self, text, output_path_mp3):
         if not EDGE_AVAILABLE:
-            raise RuntimeError("edge_tts non installe")
+            raise RuntimeError("Le module edge_tts n'est pas installé.")
 
+        base_name = output_filename.rsplit(".", 1)[0]
+        mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
+        
         communicate = edge_tts.Communicate(
             text=self.clean_text(text),
-            voice=self.EDGE_FALLBACK_VOICE,
-            rate=self.EDGE_FALLBACK_RATE,
-            volume=self.EDGE_FALLBACK_VOLUME,
-            pitch=self.EDGE_FALLBACK_PITCH,
+            voice=self.EDGE_VOICE,
+            rate=self.EDGE_RATE,
+            volume=self.EDGE_VOLUME,
+            pitch=self.EDGE_PITCH,
         )
         await communicate.save(output_path_mp3)
 
@@ -189,7 +174,7 @@ class AudioEngine:
         for scene in script_data:
             scene_id = scene["id"]
             text = scene["text"]
-            output_filename = f"scene_{scene_id}.wav"
+            output_filename = f"scene_{scene_id}.mp3"
 
             audio_path, engine_used = await self.generate_audio(text, output_filename)
             scene["audio_path"] = audio_path
