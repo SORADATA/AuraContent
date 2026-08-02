@@ -28,8 +28,8 @@ class AudioEngine:
     )
 
     EDGE_VOICE = "fr-FR-HenriNeural"
-    EDGE_RATE = "+0%"
-    EDGE_PITCH = "-2Hz"
+    EDGE_RATE = "-8%"
+    EDGE_PITCH = "+0Hz"
     EDGE_VOLUME = "+0%"
 
     KOKORO_FRENCH_VOICE = "ff_siwis"
@@ -55,9 +55,14 @@ class AudioEngine:
         text = str(text)
         text = text.replace("\u2014", ", ").replace("\u2013", ", ")
         text = text.replace("...", ". ")
-        text = re.sub(r"\s+", " ", text)
+        text = text.replace(";", ", ")
+        text = text.replace("(", ", ").replace(")", "")
+        text = text.replace("[", "").replace("]", "")
         text = re.sub(r"[“”«»]", '"', text)
         text = re.sub(r"[•·]", ", ", text)
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r",\s*,+", ", ", text)
+        text = re.sub(r"\.\s*\.", ".", text)
         return text.strip()
 
     def get_audio_duration(self, file_path):
