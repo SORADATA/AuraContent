@@ -86,7 +86,7 @@ jobs:
           name: Video-TikTok-Finance-${{ github.run_id }}
           path: assets/final/final_short.mp4
           if-no-files-found: warn
-      # ---> C'est ici que doit être la sauvegarde de la légende Finance !
+
       - name: 💾 Sauvegarder la légende (Finance)
         if: always()
         uses: actions/upload-artifact@v4
@@ -140,14 +140,14 @@ jobs:
           else
             echo "Aucune vidéo finale trouvée." | tee loudness_general.txt
           fi
-      - name: 💾 Sauvegarder le rapport (Général)
+      - name: 💾 Sauvegarder le rapport (Minute Mystere)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Loudness-Report-General-${{ github.run_id }}
+          name: Loudness-Report-Minute Mystere-${{ github.run_id }}
           path: loudness_general.txt
           if-no-files-found: warn
-      - name: 💾 Sauvegarder la vidéo (Général)
+      - name: 💾 Sauvegarder la vidéo (Minute Mystere)
         if: always()
         uses: actions/upload-artifact@v4
         with:
