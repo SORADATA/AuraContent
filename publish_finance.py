@@ -11,8 +11,8 @@ def get_latest_video_url():
     Interroge l'API Hugging Face pour trouver la TOUTE DERNIÈRE vidéo générée.
     Vérifie qu'elle a bien été générée aujourd'hui pour éviter de recycler du vieux contenu.
     """
-    response = requests.get(API_URL_FINANCE)
-    
+    response = requests.get(API_URL_FINANCE, timeout=30)
+
     if response.status_code != 200:
         raise Exception(f"❌ Erreur de lecture sur HF : {response.status_code}")
 
@@ -43,9 +43,11 @@ def get_latest_video_url():
 
 def check_audio_loudness(video_url):
     """
-    Télécharge temporairement la vidéo et verifie le niveau sonore
-    avant publication via ffmpeg loudnorm.
+    Télécharge temporairement la vidéo et vérifie le niveau sonore
+    avant publication via ffmpeg loudnorm. Le fichier temporaire est
+    systématiquement supprimé (succès ou échec).
     """
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
             tmp_path = tmp_file.name
@@ -68,10 +70,14 @@ def check_audio_loudness(video_url):
             if any(key in line for key in ["Input Integrated", "Input LRA", "Output Integrated"]):
                 print(f"   {line.strip()}")
 
-        os.remove(tmp_path)
-
     except Exception as e:
         print(f"⚠️ Analyse loudness impossible (non bloquant) : {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception as e:
+                print(f"⚠️ Impossible de supprimer le fichier temporaire {tmp_path} : {e}")
 
 
 def publish_to_tiktok():
@@ -94,7 +100,7 @@ def publish_to_tiktok():
     # --- RÉCUPÉRATION DE LA LÉGENDE IA (FINANCE) ---
     # =========================================================================
     caption_path = os.path.join(os.getcwd(), "caption.txt")
-    
+
     if os.path.exists(caption_path):
         try:
             with open(caption_path, "r", encoding="utf-8") as f:
@@ -106,7 +112,7 @@ def publish_to_tiktok():
     else:
         print("⚠️ Fichier caption.txt introuvable. Utilisation de la légende de secours.")
         caption = f"{clean_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
-        
+
     print(f"📝 Légende finale utilisée pour la publication :\n{caption}")
     # =========================================================================
 
@@ -142,7 +148,10 @@ def publish_to_tiktok():
     }
 
     print("🚀 Envoi de la requête à Zernio...")
-    response = requests.post(url, headers=headers, json=payload)
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+    except requests.exceptions.Timeout:
+        raise Exception("❌ La requête vers Zernio a expiré (timeout).")
 
     if response.status_code in [200, 201]:
         print("✅ Succès ! La vidéo a été envoyée pour publication.")
