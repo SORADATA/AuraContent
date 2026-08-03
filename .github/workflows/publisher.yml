@@ -10,25 +10,43 @@ jobs:
     steps:
       - name: 📥 Récupérer le code
         uses: actions/checkout@v4
+        
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
+          
       - name: ⚙️ Installer FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        
       - name: 📦 Installer les dépendances minimales
         run: pip install requests
-      - name: 🚀 Lancer le script de publication
+        
+      - name: 🚀 Lancer les scripts de publication
         env:
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
           TIKTOK_ACCOUNT_ID: ${{ secrets.TIKTOK_ACCOUNT_ID }}
           YOUTUBE_ACCOUNT_ID: ${{ secrets.YOUTUBE_ACCOUNT_ID }}
-        run: python publish.py
-      - name: 💾 Sauvegarder le rapport de loudness
+          ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }}
+          TIKTOK_CAPITAL_SIMPLE_ID: ${{ secrets.TIKTOK_CAPITAL_SIMPLE_ID }}
+          YOUTUBE_CAPITAL_SIMPLE_ID: ${{ secrets.YOUTUBE_CAPITAL_SIMPLE_ID }}
+        run: |
+          # 1. On lance le premier script
+          python publish.py
+          # 2. On renomme le rapport pour ne pas l'écraser (le "|| true" évite une erreur si le fichier n'a pas été créé)
+          mv loudness_report.txt loudness_report_standard.txt || true
+          
+          # 3. On lance le deuxième script
+          python publish_finance.py
+          # 4. On renomme aussi son rapport par sécurité
+          mv loudness_report.txt loudness_report_finance.txt || true
+
+      - name: 💾 Sauvegarder les rapports de loudness
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Loudness-Report-Publish-${{ github.run_id }}
-          path: loudness_report.txt
+          name: Loudness-Reports-Publish-${{ github.run_id }}
+          # L'étoile (*) permet de récupérer tous les fichiers qui commencent par loudness_report_ et finissent par .txt
+          path: loudness_report_*.txt 
           if-no-files-found: ignore
