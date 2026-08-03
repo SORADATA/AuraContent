@@ -11,14 +11,12 @@ def get_latest_video_url():
     Interroge l'API Hugging Face pour trouver la TOUTE DERNIÈRE vidéo générée.
     Vérifie qu'elle a bien été générée aujourd'hui pour éviter de recycler du vieux contenu.
     """
-    api_url = API_URL
-    response = requests.get(api_url)
+    response = requests.get(API_URL, timeout=30)
 
     if response.status_code != 200:
         raise Exception(f"❌ Erreur de lecture sur HF : {response.status_code}")
 
     files = response.json()
-
     videos = [f['path'] for f in files if f['path'].endswith('.mp4')]
 
     if not videos:
@@ -32,7 +30,10 @@ def get_latest_video_url():
     today_date = datetime.utcnow().strftime("%Y%m%d")
 
     if video_date != today_date:
-        raise Exception(f"🛑 Alerte Sécurité : La dernière vidéo date du {video_date}, mais nous sommes le {today_date}. Le générateur a probablement échoué. Annulation de la publication.")
+        raise Exception(
+            f"🛑 Alerte Sécurité : La dernière vidéo date du {video_date}, mais nous sommes le {today_date}. "
+            f"Le générateur a probablement échoué. Annulation de la publication."
+        )
 
     print(f"🎯 Vidéo du jour sélectionnée : {filename}")
 
@@ -42,11 +43,11 @@ def get_latest_video_url():
 
 def check_audio_loudness(video_url):
     """
-    Télécharge temporairement la vidéo et verifie le niveau sonore
-    (voix / musique) avant publication via ffmpeg loudnorm. N'empeche
-    jamais la publication en cas d'echec, mais log un rapport lisible
-    pour reperer un probleme de mixage avant qu'il ne soit publie.
+    Télécharge temporairement la vidéo et vérifie le niveau sonore
+    avant publication via ffmpeg loudnorm. Le fichier temporaire est
+    systématiquement supprimé (succès ou échec).
     """
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
             tmp_path = tmp_file.name
@@ -69,10 +70,14 @@ def check_audio_loudness(video_url):
             if any(key in line for key in ["Input Integrated", "Input LRA", "Output Integrated"]):
                 print(f"   {line.strip()}")
 
-        os.remove(tmp_path)
-
     except Exception as e:
         print(f"⚠️ Analyse loudness impossible (non bloquant) : {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception as e:
+                print(f"⚠️ Impossible de supprimer le fichier temporaire {tmp_path} : {e}")
 
 
 def publish_to_tiktok():
@@ -143,7 +148,10 @@ def publish_to_tiktok():
     }
 
     print("🚀 Envoi de la requête à Zernio...")
-    response = requests.post(url, headers=headers, json=payload)
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+    except requests.exceptions.Timeout:
+        raise Exception("❌ La requête vers Zernio a expiré (timeout).")
 
     if response.status_code in [200, 201]:
         print("✅ Succès ! La vidéo a été envoyée pour publication.")
