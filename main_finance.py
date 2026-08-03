@@ -75,7 +75,7 @@ def clean_cache():
         cwd = os.path.abspath(os.getcwd())
 
         if not normalized.startswith(os.path.join(cwd, "assets")):
-            print(f"   SECURITY ALERT: Skipping unsafe path {folder}")
+            print(f"    SECURITY ALERT: Skipping unsafe path {folder}")
             continue
 
         for filename in os.listdir(folder):
@@ -86,7 +86,7 @@ def clean_cache():
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path)
             except Exception as e:
-                print(f"   Failed to delete {file_path}. Reason: {e}")
+                print(f"    Failed to delete {file_path}. Reason: {e}")
 
     print("✅ Workspace clean!")
 
@@ -234,6 +234,76 @@ async def main():
     if not script:
         print("❌ Script generation failed.")
         return
+
+    # =====================================================================
+    # --- GÉNÉRATION DE LA LÉGENDE TIKTOK (FINANCE) ---
+    # =====================================================================
+    print("📝 Demande de légende Finance à l'IA basée sur le script complet...")
+    full_text = " ".join([scene["text"] for scene in script])
+    
+    prompt_legende = f"""
+    Voici le texte exact de ma vidéo TikTok/Shorts de finance ({video_title}) :
+    "{full_text}"
+
+    Rédige une légende ultra-captivante orientée finance et business.
+    Règles :
+    1. 1ère ligne très accrocheuse avec un emoji (ex: 📈, 💰, 🏦).
+    2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
+    3. Termine par une question courte pour inciter aux commentaires.
+    4. Ajoute 4 hashtags pertinents dont #Finance et #Business.
+    Ne mets pas de guillemets autour de ta réponse.
+    """
+
+    legende_finale = ""
+
+    try:
+        import google.generativeai as genai
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_key:
+            raise ValueError("Clé GEMINI_API_KEY introuvable.")
+            
+        print("🧠 Tentative de génération de la légende avec Gemini...")
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        reponse_legende = model.generate_content(prompt_legende)
+        legende_finale = reponse_legende.text.strip()
+        
+    except Exception as e_gemini:
+        print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
+
+        try:
+            import requests
+            groq_key = os.getenv("GROQ_API_KEY")
+            if not groq_key:
+                raise ValueError("Clé GROQ_API_KEY introuvable.")
+                
+            print("🚀 Tentative de génération de la légende avec Groq...")
+            headers = {
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama3-70b-8192", 
+                "messages": [{"role": "user", "content": prompt_legende}]
+            }
+            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+            legende_finale = response.json()["choices"][0]["message"]["content"].strip()
+            
+        except Exception as e_groq:
+            print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
+            legende_finale = f"{video_title} 💼📈 #Finance #Business #Investissement #Pourtoi"
+
+    # --- SAUVEGARDE ABSOLUE DE LA LÉGENDE ---
+    try:
+        caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
+        with open(caption_path, "w", encoding="utf-8") as fichier:
+            fichier.write(legende_finale)
+        print(f"✅ Légende Finance sauvegardée avec succès à la racine : {caption_path}")
+        print("👀 TEXTE DE LA LÉGENDE FINANCE :\n" + "-"*30 + f"\n{legende_finale}\n" + "-"*30)
+    except Exception as e:
+        print(f"⚠️ Erreur lors de l'écriture du fichier caption.txt : {e}")
+    # =====================================================================
 
     audio_engine = AudioEngine()
 
