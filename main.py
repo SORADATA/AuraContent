@@ -266,7 +266,7 @@ async def main():
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "llama3-70b-8192", 
+                "model": "llama-3.1-70b-versatile", 
                 "messages": [{"role": "user", "content": prompt_legende}]
             }
             response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
