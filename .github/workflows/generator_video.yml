@@ -1,4 +1,4 @@
-name: Générateur de Vidéos IA
+name: Générateurs de Vidéos IA
 
 on:
   workflow_dispatch:
@@ -19,23 +19,23 @@ on:
         description: "Tester plusieurs hooks avant génération"
         required: false
         default: "true"
-
-  schedule:
-  - cron: "7 1 * * *"   # 03h07 Paris
-  - cron: "7 8 * * *"   # 10h07 Paris
+  # Ajout d'un déclencheur API personnalisé pour cron-job.org
+  repository_dispatch:
+    types: [trigger-videos]
 
 jobs:
-  build-and-generate:
+  # ==========================================
+  # JOB 1 : CHAÎNE FINANCE
+  # ==========================================
+  finance_generator:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }} # zernio
-
-
+      ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
       VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
       REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
@@ -44,16 +44,13 @@ jobs:
     steps:
       - name: 📥 Cloner le dépôt
         uses: actions/checkout@v4
-
       - name: ⚙️ Installer FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
-
       - name: 🗃️ Cache Hugging Face
         uses: actions/cache@v4
         with:
@@ -61,34 +58,89 @@ jobs:
           key: ${{ runner.os }}-huggingface-kokoro-v1
           restore-keys: |
             ${{ runner.os }}-huggingface-kokoro-
-
       - name: 📦 Installer les dépendances
         run: pip install -r requirements.txt
-
-      - name: 🎬 Générer la vidéo
-        run: python main.py
-
+      - name: 🎬 Générer la vidéo (Finance)
+        run: python main_finance.py
       - name: 🔊 Vérifier le niveau sonore
         if: always()
         run: |
           if [ -f assets/final/final_short.mp4 ]; then
-            ffmpeg -i assets/final/final_short.mp4 -af loudnorm=print_format=summary -f null - 2>&1 | tee loudness_report.txt
+            ffmpeg -i assets/final/final_short.mp4 -af loudnorm=print_format=summary -f null - 2>&1 | tee loudness_finance.txt
           else
-            echo "Aucune vidéo finale trouvée." | tee loudness_report.txt
+            echo "Aucune vidéo finale trouvée." | tee loudness_finance.txt
           fi
-
-      - name: 💾 Sauvegarder le rapport de loudness
+      - name: 💾 Sauvegarder le rapport (Finance)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Loudness-Report-${{ github.run_id }}
-          path: loudness_report.txt
+          name: Loudness-Report-Finance-${{ github.run_id }}
+          path: loudness_finance.txt
+          if-no-files-found: warn
+      - name: 💾 Sauvegarder la vidéo (Finance)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-TikTok-Finance-${{ github.run_id }}
+          path: assets/final/final_short.mp4
           if-no-files-found: warn
 
-      - name: 💾 Sauvegarder la vidéo finale
+  # ==========================================
+  # JOB 2 : CHAÎNE MINUTE MSYTERE KO
+  # ==========================================
+  general_generator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+      VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
+      VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
+      REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
+      USE_HOOK_VARIANTS: ${{ github.event.inputs.use_hook_variants || 'true' }}
+
+    steps:
+      - name: 📥 Cloner le dépôt
+        uses: actions/checkout@v4
+      - name: ⚙️ Installer FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: 🐍 Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+      - name: 🗃️ Cache Hugging Face
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-huggingface-kokoro-v1
+          restore-keys: |
+            ${{ runner.os }}-huggingface-kokoro-
+      - name: 📦 Installer les dépendances
+        run: pip install -r requirements.txt
+      - name: 🎬 Générer la vidéo (Minute Mystere)
+        run: python main.py
+      - name: 🔊 Vérifier le niveau sonore
+        if: always()
+        run: |
+          if [ -f assets/final/final_short.mp4 ]; then
+            ffmpeg -i assets/final/final_short.mp4 -af loudnorm=print_format=summary -f null - 2>&1 | tee loudness_general.txt
+          else
+            echo "Aucune vidéo finale trouvée." | tee loudness_general.txt
+          fi
+      - name: 💾 Sauvegarder le rapport (Général)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Video-TikTok-Prete-${{ github.run_id }}
+          name: Loudness-Report-General-${{ github.run_id }}
+          path: loudness_general.txt
+          if-no-files-found: warn
+      - name: 💾 Sauvegarder la vidéo (Général)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Video-TikTok-MinuteMystere-${{ github.run_id }}
           path: assets/final/final_short.mp4
           if-no-files-found: warn
