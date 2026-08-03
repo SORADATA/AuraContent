@@ -84,6 +84,14 @@ jobs:
           name: Video-TikTok-Finance-${{ github.run_id }}
           path: assets/final/final_short.mp4
           if-no-files-found: warn
+      # ---> C'est ici que doit être la sauvegarde de la légende Finance !
+      - name: 💾 Sauvegarder la légende (Finance)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Caption-Texte-Finance-${{ github.run_id }}
+          path: caption.txt
+          if-no-files-found: warn
 
   # ==========================================
   # JOB 2 : CHAÎNE MINUTE MSYTERE KO
@@ -143,4 +151,11 @@ jobs:
         with:
           name: Video-TikTok-MinuteMystere-${{ github.run_id }}
           path: assets/final/final_short.mp4
+          if-no-files-found: warn
+      - name: 💾 Sauvegarder la légende (Minute Mystere)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Caption-Texte-MinuteMystere-${{ github.run_id }}
+          path: caption.txt
           if-no-files-found: warn
