@@ -97,9 +97,22 @@ def publish_to_tiktok():
     clean_title = raw_filename.replace(".mp4", "").replace("_", " ")[16:]
 
     # =========================================================================
-    # --- RÉCUPÉRATION DE LA LÉGENDE IA (FINANCE) ---
+    # --- RÉCUPÉRATION DE LA LÉGENDE IA (FINANCE) DEPUIS HUGGING FACE ---
     # =========================================================================
     caption_path = os.path.join(os.getcwd(), "caption.txt")
+    caption_url = video_url.replace(".mp4", ".txt")
+    
+    print(f"📥 Tentative de téléchargement de la légende Finance depuis : {caption_url}")
+    try:
+        r = requests.get(caption_url, timeout=15)
+        if r.status_code == 200:
+            with open(caption_path, "w", encoding="utf-8") as f:
+                f.write(r.text)
+            print("✅ Fichier caption.txt téléchargé avec succès depuis Hugging Face !")
+        else:
+            print(f"⚠️ Fichier texte introuvable sur Hugging Face (Code {r.status_code}).")
+    except Exception as e:
+        print(f"⚠️ Impossible de télécharger la légende sur HF : {e}")
 
     if os.path.exists(caption_path):
         try:
