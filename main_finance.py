@@ -163,6 +163,95 @@ def validate_script_payload(script_payload):
     return True
 
 
+# =====================================================================
+# --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
+# =====================================================================
+
+GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
+GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1/3.3-70b-versatile (décommissionnés)
+
+
+def generate_caption_with_gemini(prompt_legende):
+    """Génère la légende via la nouvelle SDK google-genai (l'ancienne google-generativeai est dépréciée)."""
+    from google import genai
+
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        raise ValueError("Clé GEMINI_API_KEY introuvable.")
+
+    client = genai.Client(api_key=gemini_key)
+    response = client.models.generate_content(
+        model=GEMINI_CAPTION_MODEL,
+        contents=prompt_legende,
+    )
+
+    text = (response.text or "").strip()
+    if not text:
+        raise ValueError("Réponse Gemini vide.")
+    return text
+
+
+def generate_caption_with_groq(prompt_legende):
+    """Génère la légende via Groq, avec un modèle actif (llama-3.x-versatile est décommissionné)."""
+    import requests
+
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise ValueError("Clé GROQ_API_KEY introuvable.")
+
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_CAPTION_MODEL,
+        "messages": [{"role": "user", "content": prompt_legende}],
+    }
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    text = response.json()["choices"][0]["message"]["content"].strip()
+    if not text:
+        raise ValueError("Réponse Groq vide.")
+    return text
+
+
+def generate_caption(full_text, video_title):
+    prompt_legende = f"""
+    Voici le texte exact de ma vidéo TikTok/Shorts de finance ({video_title}) :
+    "{full_text}"
+
+    Rédige une légende ultra-captivante orientée finance et business.
+    Règles :
+    1. 1ère ligne très accrocheuse avec un emoji (ex: 📈, 💰, 🏦).
+    2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
+    3. Termine par une question courte pour inciter aux commentaires.
+    4. Ajoute 4 hashtags pertinents dont #Finance et #Business.
+    Ne mets pas de guillemets autour de ta réponse.
+    """
+
+    fallback = f"{video_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
+
+    try:
+        print("🧠 Tentative de génération de la légende avec Gemini...")
+        return generate_caption_with_gemini(prompt_legende)
+    except Exception as e_gemini:
+        print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
+
+    try:
+        print("🚀 Tentative de génération de la légende avec Groq...")
+        return generate_caption_with_groq(prompt_legende)
+    except Exception as e_groq:
+        print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
+        return fallback
+
+
 async def main():
     print("🚀 STARTING AUTOMATION FOR FINANCE CHANNEL...")
 
@@ -235,72 +324,17 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # =====================================================================
-    # --- GÉNÉRATION DE LA LÉGENDE TIKTOK (FINANCE) ---
-    # =====================================================================
+    # --- GÉNÉRATION + SAUVEGARDE DE LA LÉGENDE ---
     print("📝 Demande de légende Finance à l'IA basée sur le script complet...")
-    full_text = " ".join([scene["text"] for scene in script])
-    
-    prompt_legende = f"""
-    Voici le texte exact de ma vidéo TikTok/Shorts de finance ({video_title}) :
-    "{full_text}"
+    full_text = " ".join(scene["text"] for scene in script)
+    legende_finale = generate_caption(full_text, video_title)
 
-    Rédige une légende ultra-captivante orientée finance et business.
-    Règles :
-    1. 1ère ligne très accrocheuse avec un emoji (ex: 📈, 💰, 🏦).
-    2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
-    3. Termine par une question courte pour inciter aux commentaires.
-    4. Ajoute 4 hashtags pertinents dont #Finance et #Business.
-    Ne mets pas de guillemets autour de ta réponse.
-    """
-
-    legende_finale = ""
-
-    try:
-        import google.generativeai as genai
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_key:
-            raise ValueError("Clé GEMINI_API_KEY introuvable.")
-            
-        print("🧠 Tentative de génération de la légende avec Gemini...")
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        reponse_legende = model.generate_content(prompt_legende)
-        legende_finale = reponse_legende.text.strip()
-        
-    except Exception as e_gemini:
-        print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
-
-        try:
-            import requests
-            groq_key = os.getenv("GROQ_API_KEY")
-            if not groq_key:
-                raise ValueError("Clé GROQ_API_KEY introuvable.")
-                
-            print("🚀 Tentative de génération de la légende avec Groq...")
-            headers = {
-                "Authorization": f"Bearer {groq_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "llama-3.1-70b-versatile", 
-                "messages": [{"role": "user", "content": prompt_legende}]
-            }
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            response.raise_for_status()
-            legende_finale = response.json()["choices"][0]["message"]["content"].strip()
-            
-        except Exception as e_groq:
-            print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
-            legende_finale = f"{video_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
-
-    # --- SAUVEGARDE ABSOLUE DE LA LÉGENDE ---
     try:
         caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
         with open(caption_path, "w", encoding="utf-8") as fichier:
             fichier.write(legende_finale)
         print(f"✅ Légende Finance sauvegardée avec succès à la racine : {caption_path}")
-        print("👀 TEXTE DE LA LÉGENDE FINANCE :\n" + "-"*30 + f"\n{legende_finale}\n" + "-"*30)
+        print("👀 TEXTE DE LA LÉGENDE FINANCE :\n" + "-" * 30 + f"\n{legende_finale}\n" + "-" * 30)
     except Exception as e:
         print(f"⚠️ Erreur lors de l'écriture du fichier caption.txt : {e}")
     # =====================================================================
