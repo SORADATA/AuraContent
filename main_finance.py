@@ -19,6 +19,10 @@ except ImportError:
         return None
 
 
+# =====================================================================
+# --- UPLOAD HUGGING FACE (VIDÉO + LÉGENDE FINANCE) ---
+# =====================================================================
+
 def upload_to_huggingface(video_path, topic, max_retries=5):
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
@@ -35,9 +39,11 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     safe_topic = "".join(c if c.isalnum() else "_" for c in topic)[:50]
     remote_filename = f"videos/{timestamp}_{safe_topic}.mp4"
+    remote_caption_filename = f"videos/{timestamp}_{safe_topic}.txt"
 
     for attempt in range(1, max_retries + 1):
         try:
+            # 1. Upload de la vidéo finance
             api.upload_file(
                 path_or_fileobj=video_path,
                 path_in_repo=remote_filename,
@@ -46,6 +52,19 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
                 commit_message=f"Add generated finance short: {safe_topic}"
             )
             print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
+            
+            # 2. Upload de la légende associée pour le bot publisher
+            caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
+            if os.path.exists(caption_path):
+                api.upload_file(
+                    path_or_fileobj=caption_path,
+                    path_in_repo=remote_caption_filename,
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    commit_message=f"Add finance caption for: {safe_topic}"
+                )
+                print(f"✅ Légende Finance uploadee sur Hugging Face : {repo_id}/{remote_caption_filename}")
+
             return True
         except Exception as e:
             msg = str(e)
