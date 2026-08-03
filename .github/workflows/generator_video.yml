@@ -60,6 +60,8 @@ jobs:
             ${{ runner.os }}-huggingface-kokoro-
       - name: 📦 Installer les dépendances
         run: pip install -r requirements.txt
+      - name: ⏳ Pause anti-surcharge API
+        run: sleep 180
       - name: 🎬 Générer la vidéo (Finance)
         run: python main_finance.py
       - name: 🔊 Vérifier le niveau sonore
