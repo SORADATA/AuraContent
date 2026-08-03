@@ -167,7 +167,7 @@ async def main():
 
     brain = ContentBrain()
 
-    # --- NOUVEAU : Recuperation des stats Zernio pour le feedback loop ---
+    # --- Recuperation des stats Zernio pour le feedback loop ---
     print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
     try:
         stats_historique = get_latest_videos_stats()
@@ -183,14 +183,12 @@ async def main():
                 topic = brain.refine_topic_angle(topic)
                 print(f"🎯 Angle affine : {topic}")
         else:
-            # --- NOUVEAU : Injection des stats dans le choix du sujet ---
             topic = brain.get_trending_topic(previous_stats_list=stats_historique)
             print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
         chosen_hook = None
         if use_hooks_ab_test:
             try:
-                # --- NOUVEAU : Injection des stats dans la generation de hooks ---
                 hooks = brain.generate_hook_variants(topic, n=5, previous_stats_list=stats_historique)
                 chosen_hook = hooks[0]["text"]
                 print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
@@ -219,6 +217,76 @@ async def main():
     if not script:
         print("❌ Script generation failed.")
         return
+
+    # =====================================================================
+    # --- GÉNÉRATION DE LA LÉGENDE TIKTOK (AVEC FALLBACK GROQ) ---
+    # =====================================================================
+    print("📝 Demande de légende à l'IA basée sur le script complet...")
+    full_text = " ".join([scene["text"] for scene in script])
+    
+    prompt_legende = f"""
+    Voici le texte exact de ma vidéo TikTok/Shorts ({video_title}) :
+    "{full_text}"
+
+    Rédige une légende ultra-captivante.
+    Règles :
+    1. 1ère ligne très accrocheuse avec un emoji.
+    2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
+    3. Termine par une question courte pour inciter aux commentaires.
+    4. Ajoute 4 hashtags pertinents dont #MinuteMystère.
+    Ne mets pas de guillemets autour de ta réponse.
+    """
+
+    legende_finale = ""
+
+    try:
+        import google.generativeai as genai
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_key:
+            raise ValueError("Clé GEMINI_API_KEY introuvable.")
+            
+        print("🧠 Tentative de génération de la légende avec Gemini...")
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        reponse_legende = model.generate_content(prompt_legende)
+        legende_finale = reponse_legende.text.strip()
+        
+    except Exception as e_gemini:
+        print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
+
+        try:
+            import requests
+            groq_key = os.getenv("GROQ_API_KEY")
+            if not groq_key:
+                raise ValueError("Clé GROQ_API_KEY introuvable.")
+                
+            print("🚀 Tentative de génération de la légende avec Groq...")
+            headers = {
+                "Authorization": f"Bearer {groq_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": "llama3-70b-8192", 
+                "messages": [{"role": "user", "content": prompt_legende}]
+            }
+            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+            legende_finale = response.json()["choices"][0]["message"]["content"].strip()
+            
+        except Exception as e_groq:
+            print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
+            legende_finale = f"{video_title} 🧠✨ #MinuteMystère #Decouverte #Pourtoi #Secretscachés"
+
+    # --- SAUVEGARDE ABSOLUE DE LA LÉGENDE ---
+    try:
+        caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
+        with open(caption_path, "w", encoding="utf-8") as fichier:
+            fichier.write(legende_finale)
+        print(f"✅ Légende finale sauvegardée avec succès à la racine : {caption_path}")
+        print("👀 TEXTE DE LA LÉGENDE :\n" + "-"*30 + f"\n{legende_finale}\n" + "-"*30)
+    except Exception as e:
+        print(f"⚠️ Erreur lors de l'écriture du fichier caption.txt : {e}")
+    # =====================================================================
 
     audio_engine = AudioEngine()
 
