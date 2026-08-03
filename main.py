@@ -1,8 +1,9 @@
 import asyncio
 import os
 import shutil
-import math
+import time
 from datetime import datetime
+
 from huggingface_hub import HfApi
 
 from modules.brain import ContentBrain
@@ -14,10 +15,16 @@ try:
     from modules.utils.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
-    def get_latest_videos_stats(): return None
+
+    def get_latest_videos_stats():
+        return None
 
 
-def upload_to_huggingface(video_path, topic):
+# =====================================================================
+# --- UPLOAD HUGGING FACE ---
+# =====================================================================
+
+def upload_to_huggingface(video_path, topic, max_retries=5):
     hf_token = os.getenv("HF_TOKEN")
     if not hf_token:
         print("Upload HF ignore : token manquant.")
@@ -34,20 +41,31 @@ def upload_to_huggingface(video_path, topic):
     safe_topic = "".join(c if c.isalnum() else "_" for c in topic)[:50]
     remote_filename = f"videos/{timestamp}_{safe_topic}.mp4"
 
-    try:
-        api.upload_file(
-            path_or_fileobj=video_path,
-            path_in_repo=remote_filename,
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"Add generated short: {safe_topic}"
-        )
-        print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
-        return True
-    except Exception as e:
-        print(f"❌ Echec upload Hugging Face : {e}")
-        return False
+    for attempt in range(1, max_retries + 1):
+        try:
+            api.upload_file(
+                path_or_fileobj=video_path,
+                path_in_repo=remote_filename,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"Add generated short: {safe_topic}",
+            )
+            print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
+            return True
+        except Exception as e:
+            msg = str(e)
+            print(f"❌ Echec upload Hugging Face (tentative {attempt}/{max_retries}) : {e}")
+            if "429" in msg and attempt < max_retries:
+                wait_s = min(2 ** attempt, 20)
+                print(f"⏳ Attente de {wait_s}s avant retry...")
+                time.sleep(wait_s)
+                continue
+            return False
 
+
+# =====================================================================
+# --- NETTOYAGE ---
+# =====================================================================
 
 def clean_cache():
     print("🧹 Cleaning up temporary files...")
@@ -82,6 +100,10 @@ def clean_cache():
     print("✅ Workspace clean!")
 
 
+# =====================================================================
+# --- SOUS-TITRES ---
+# =====================================================================
+
 def format_srt_timestamp(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -92,16 +114,13 @@ def format_srt_timestamp(seconds):
 def chunk_words_for_subtitles(words, max_words=3):
     chunks = []
     current = []
-
     for word in words:
         current.append(word)
         if len(current) >= max_words:
             chunks.append(current)
             current = []
-
     if current:
         chunks.append(current)
-
     return chunks
 
 
@@ -138,6 +157,10 @@ def generate_grouped_srt(text, duration, output_path, max_words_per_caption=3, m
     return output_path
 
 
+# =====================================================================
+# --- HELPERS SCRIPT ---
+# =====================================================================
+
 def estimate_scene_count(duration_target):
     return max(6, min(14, round(duration_target / 5)))
 
@@ -152,78 +175,71 @@ def validate_script_payload(script_payload):
 
     for scene in scenes:
         if "id" not in scene or "text" not in scene or "image_prompt" not in scene:
-            raise ValueError(f"Scene invalide : {scene}")
+            raise ValueError(f"Scene invalide (verifie le 'image_prompt') : {scene}")
 
     return True
 
 
-async def main():
-    print("🚀 STARTING AUTOMATION...")
+# =====================================================================
+# --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
+# =====================================================================
 
-    topic_input = os.getenv("VIDEO_TOPIC", "").strip()
-    duration_target = int(os.getenv("VIDEO_DURATION", "45"))
-    refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
-    use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
+GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
+GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1-70b-versatile (décommissionné)
 
-    brain = ContentBrain()
 
-    # --- Recuperation des stats Zernio pour le feedback loop ---
-    print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
-    try:
-        stats_historique = get_latest_videos_stats()
-    except Exception as e:
-        print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
-        stats_historique = None
+def generate_caption_with_gemini(prompt_legende):
+    """Génère la légende via la nouvelle SDK google-genai (google-generativeai est dépréciée)."""
+    from google import genai
 
-    try:
-        if topic_input:
-            topic = topic_input
-            print(f"📌 Sujet fourni manuellement : {topic}")
-            if refine_angle:
-                topic = brain.refine_topic_angle(topic)
-                print(f"🎯 Angle affine : {topic}")
-        else:
-            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
-            print(f"🔥 Sujet selectionne automatiquement : {topic}")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        raise ValueError("Clé GEMINI_API_KEY introuvable.")
 
-        chosen_hook = None
-        if use_hooks_ab_test:
-            try:
-                hooks = brain.generate_hook_variants(topic, n=5, previous_stats_list=stats_historique)
-                chosen_hook = hooks[0]["text"]
-                print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
-            except Exception as e:
-                print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
+    client = genai.Client(api_key=gemini_key)
+    response = client.models.generate_content(
+        model=GEMINI_CAPTION_MODEL,
+        contents=prompt_legende,
+    )
 
-        scene_count = estimate_scene_count(duration_target)
-        print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
+    text = (response.text or "").strip()
+    if not text:
+        raise ValueError("Réponse Gemini vide.")
+    return text
 
-        script_payload = brain.generate_script_with_target(
-            topic,
-            scene_count,
-            chosen_hook=chosen_hook
-        )
 
-        validate_script_payload(script_payload)
+def generate_caption_with_groq(prompt_legende):
+    """Génère la légende via Groq, avec un modèle actif."""
+    import requests
 
-        script = script_payload["scenes"]
-        visual_identity = script_payload.get("visual_identity")
-        video_title = script_payload.get("title", topic)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise ValueError("Clé GROQ_API_KEY introuvable.")
 
-    except Exception as e:
-        print(f"❌ Brain Error: {e}")
-        return
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_CAPTION_MODEL,
+        "messages": [{"role": "user", "content": prompt_legende}],
+    }
 
-    if not script:
-        print("❌ Script generation failed.")
-        return
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
 
-    # =====================================================================
-    # --- GÉNÉRATION DE LA LÉGENDE TIKTOK (AVEC FALLBACK GROQ) ---
-    # =====================================================================
-    print("📝 Demande de légende à l'IA basée sur le script complet...")
-    full_text = " ".join([scene["text"] for scene in script])
-    
+    text = response.json()["choices"][0]["message"]["content"].strip()
+    if not text:
+        raise ValueError("Réponse Groq vide.")
+    return text
+
+
+def generate_caption(full_text, video_title):
     prompt_legende = f"""
     Voici le texte exact de ma vidéo TikTok/Shorts ({video_title}) :
     "{full_text}"
@@ -237,56 +253,105 @@ async def main():
     Ne mets pas de guillemets autour de ta réponse.
     """
 
-    legende_finale = ""
+    fallback = f"{video_title} 🧠✨ #MinuteMystère #Decouverte #Pourtoi #Secretscachés"
 
     try:
-        import google.generativeai as genai
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if not gemini_key:
-            raise ValueError("Clé GEMINI_API_KEY introuvable.")
-            
         print("🧠 Tentative de génération de la légende avec Gemini...")
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        reponse_legende = model.generate_content(prompt_legende)
-        legende_finale = reponse_legende.text.strip()
-        
+        return generate_caption_with_gemini(prompt_legende)
     except Exception as e_gemini:
         print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
 
-        try:
-            import requests
-            groq_key = os.getenv("GROQ_API_KEY")
-            if not groq_key:
-                raise ValueError("Clé GROQ_API_KEY introuvable.")
-                
-            print("🚀 Tentative de génération de la légende avec Groq...")
-            headers = {
-                "Authorization": f"Bearer {groq_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "llama-3.1-70b-versatile", 
-                "messages": [{"role": "user", "content": prompt_legende}]
-            }
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            response.raise_for_status()
-            legende_finale = response.json()["choices"][0]["message"]["content"].strip()
-            
-        except Exception as e_groq:
-            print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
-            legende_finale = f"{video_title} 🧠✨ #MinuteMystère #Decouverte #Pourtoi #Secretscachés"
+    try:
+        print("🚀 Tentative de génération de la légende avec Groq...")
+        return generate_caption_with_groq(prompt_legende)
+    except Exception as e_groq:
+        print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
+        return fallback
 
-    # --- SAUVEGARDE ABSOLUE DE LA LÉGENDE ---
+
+def save_caption(legende_finale):
     try:
         caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
         with open(caption_path, "w", encoding="utf-8") as fichier:
             fichier.write(legende_finale)
         print(f"✅ Légende finale sauvegardée avec succès à la racine : {caption_path}")
-        print("👀 TEXTE DE LA LÉGENDE :\n" + "-"*30 + f"\n{legende_finale}\n" + "-"*30)
+        print("👀 TEXTE DE LA LÉGENDE :\n" + "-" * 30 + f"\n{legende_finale}\n" + "-" * 30)
     except Exception as e:
         print(f"⚠️ Erreur lors de l'écriture du fichier caption.txt : {e}")
-    # =====================================================================
+
+
+# =====================================================================
+# --- PIPELINE PRINCIPAL ---
+# =====================================================================
+
+async def main():
+    print("🚀 STARTING AUTOMATION...")
+
+    topic_input = os.getenv("VIDEO_TOPIC", "").strip()
+    duration_target = int(os.getenv("VIDEO_DURATION", "45"))
+    refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
+    use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
+
+    brain = ContentBrain()
+
+    print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
+    try:
+        stats_historique = get_latest_videos_stats()
+    except Exception as e:
+        print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
+        stats_historique = None
+
+    try:
+        if topic_input:
+            topic = topic_input
+            print(f"📌 Sujet fourni manuellement : {topic}")
+            if refine_angle and hasattr(brain, "refine_topic_angle"):
+                topic = brain.refine_topic_angle(topic)
+                print(f"🎯 Angle affine : {topic}")
+        else:
+            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
+            print(f"🔥 Sujet selectionne automatiquement : {topic}")
+
+        chosen_hook = None
+        if use_hooks_ab_test:
+            try:
+                hooks = brain.generate_hook_variants(
+                    topic,
+                    n=5,
+                    previous_stats_list=stats_historique,
+                )
+                chosen_hook = hooks[0]["text"]
+                print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
+            except Exception as e:
+                print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
+
+        scene_count = estimate_scene_count(duration_target)
+        print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
+
+        script_payload = brain.generate_script_with_target(
+            topic,
+            scene_count,
+            chosen_hook=chosen_hook,
+        )
+
+        validate_script_payload(script_payload)
+        script = script_payload["scenes"]
+        visual_identity = script_payload.get("visual_identity")
+        video_title = script_payload.get("title", topic)
+
+    except Exception as e:
+        print(f"❌ Brain Error: {e}")
+        return
+
+    if not script:
+        print("❌ Script generation failed.")
+        return
+
+    # --- GÉNÉRATION + SAUVEGARDE DE LA LÉGENDE ---
+    print("📝 Demande de légende à l'IA basée sur le script complet...")
+    full_text = " ".join(scene["text"] for scene in script)
+    legende_finale = generate_caption(full_text, video_title)
+    save_caption(legende_finale)
 
     audio_engine = AudioEngine()
 
@@ -303,14 +368,13 @@ async def main():
     print("📝 Generation des sous-titres...")
     for scene in script:
         srt_path = os.path.join(subs_dir, f"scene_{scene['id']}.srt")
-        result = generate_grouped_srt(
+        scene["srt_path"] = generate_grouped_srt(
             text=scene["text"],
             duration=scene["duration"],
             output_path=srt_path,
             max_words_per_caption=3,
-            min_caption_dur=0.45
+            min_caption_dur=0.45,
         )
-        scene["srt_path"] = result
 
     try:
         print("🖼️ Generation des assets visuels...")
@@ -339,11 +403,11 @@ async def main():
         return
 
     if final_path:
-        print(f"✅ Video finale prete : {final_path}")
+        print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)
         clean_cache()
     else:
-        print("❌ L'assemblage final a echoue, upload annule.")
+        print("❌ L'assemblage final a échoué, upload annulé.")
 
 
 if __name__ == "__main__":
