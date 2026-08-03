@@ -13,7 +13,6 @@ def get_latest_video_url():
     """
     response = requests.get(API_URL_FINANCE)
     
-
     if response.status_code != 200:
         raise Exception(f"❌ Erreur de lecture sur HF : {response.status_code}")
 
@@ -91,8 +90,25 @@ def publish_to_tiktok():
     raw_filename = file_path.split("/")[-1]
     clean_title = raw_filename.replace(".mp4", "").replace("_", " ")[16:]
 
-    caption = f"{clean_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
-    print(f"📝 Légende générée : {caption}")
+    # =========================================================================
+    # --- RÉCUPÉRATION DE LA LÉGENDE IA (FINANCE) ---
+    # =========================================================================
+    caption_path = os.path.join(os.getcwd(), "caption.txt")
+    
+    if os.path.exists(caption_path):
+        try:
+            with open(caption_path, "r", encoding="utf-8") as f:
+                caption = f.read().strip()
+            print("✅ Légende IA Finance récupérée avec succès depuis caption.txt !")
+        except Exception as e:
+            print(f"⚠️ Erreur de lecture de caption.txt ({e}). Utilisation de la légende de secours.")
+            caption = f"{clean_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
+    else:
+        print("⚠️ Fichier caption.txt introuvable. Utilisation de la légende de secours.")
+        caption = f"{clean_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
+        
+    print(f"📝 Légende finale utilisée pour la publication :\n{caption}")
+    # =========================================================================
 
     url = "https://zernio.com/api/v1/posts"
     headers = {
