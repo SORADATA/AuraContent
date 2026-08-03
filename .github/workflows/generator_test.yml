@@ -1,4 +1,4 @@
-name: Générateur de Vidéos IA - Finance
+name: Générateur de Vidéos IA [test]
 
 on:
   workflow_dispatch:
