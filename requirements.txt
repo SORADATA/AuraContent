@@ -1,5 +1,6 @@
 edge-tts>=7.0.0
 google-generativeai
+google-genai
 openai>=1.0.0
 python-dotenv>=1.0.1
 requests>=2.31.0
@@ -10,4 +11,4 @@ streamlit>=1.38.0
 kokoro>=0.9.4
 soundfile
 gradio_client>=1.4.0
-google-generativeai
+
