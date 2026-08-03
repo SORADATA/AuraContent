@@ -283,7 +283,7 @@ async def main():
                 "Content-Type": "application/json"
             }
             payload = {
-                "model": "llama3-70b-8192", 
+                "model": "llama-3.1-70b-versatile", 
                 "messages": [{"role": "user", "content": prompt_legende}]
             }
             response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
@@ -292,7 +292,7 @@ async def main():
             
         except Exception as e_groq:
             print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
-            legende_finale = f"{video_title} 💼📈 #Finance #Business #Investissement #Pourtoi"
+            legende_finale = f"{video_title} 💼📈 #Finance #Business #Investissement #Pourtoi #Pasconseilenvinvestissement"
 
     # --- SAUVEGARDE ABSOLUE DE LA LÉGENDE ---
     try:
