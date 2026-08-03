@@ -12,6 +12,7 @@ def get_latest_video_url():
     Vérifie qu'elle a bien été générée aujourd'hui pour éviter de recycler du vieux contenu.
     """
     response = requests.get(API_URL_FINANCE)
+    
 
     if response.status_code != 200:
         raise Exception(f"❌ Erreur de lecture sur HF : {response.status_code}")
@@ -80,9 +81,9 @@ def publish_to_tiktok():
 
     check_audio_loudness(video_url)
 
-    api_key = os.environ.get("ZERNIO_API_KEY") or os.environ.get("ZERNIO_API_KEYS_FINANCE")
-    tiktok_account_id = os.environ.get("TIKTOK_ACCOUNT_ID") or os.environ.get("TIKTOK_CAPITAL_SIMPLE_ID")
-    youtube_account_id = os.environ.get("YOUTUBE_ACCOUNT_ID") or os.environ.get("YOUTUBE_CAPITAL_SIMPLE_ID")
+    api_key = os.environ.get("ZERNIO_API_KEYS_FINANCE")
+    tiktok_account_id = os.environ.get("TIKTOK_CAPITAL_SIMPLE_ID")
+    youtube_account_id = os.environ.get("YOUTUBE_CAPITAL_SIMPLE_ID")
 
     if not api_key or not tiktok_account_id or not youtube_account_id:
         raise ValueError("❌ Clés d'API ou IDs de compte manquants dans les variables d'environnement.")
