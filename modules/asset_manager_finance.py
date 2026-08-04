@@ -5,12 +5,14 @@ import urllib.parse
 import requests
 import random
 import ffmpeg
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from modules.utils.pexels_client import get_pexels_video
 
 FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
 DEFAULT_CLIP_DURATION = 4.0
 POLLINATIONS_TOKEN = os.getenv("POLLINATIONS_TOKEN")  # inscription gratuite sur auth.pollinations.ai
+MAX_PARALLEL_WORKERS = 3
 
 
 class AssetManager:
@@ -145,14 +147,17 @@ class AssetManager:
         return scene_id, fallback_path if self._safe_exists(fallback_path) else None
 
     def get_videos(self, script_data):
-        """Version séquentielle : les scènes sont traitées l'une après l'autre
-        pour respecter la limite de l'API Pollinations sur les serveurs GitHub."""
-        results = []
-        for idx, scene in enumerate(script_data):
-            scene_id, path = self._process_single_scene(scene, idx)
-            results.append(path)
-            
-            # Petite pause de courtoisie entre chaque scène pour l'API
-            time.sleep(1.5)
+        """Version parallélisée : plusieurs scènes traitées simultanément
+        pour compenser le rate limit Pollinations, sans dépasser
+        MAX_PARALLEL_WORKERS requêtes concurrentes."""
+        results = {}
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+            futures = {
+                executor.submit(self._process_single_scene, scene, idx): scene["id"]
+                for idx, scene in enumerate(script_data)
+            }
+            for future in as_completed(futures):
+                scene_id, path = future.result()
+                results[scene_id] = path
 
-        return results
+        return [results.get(scene["id"]) for scene in script_data]
