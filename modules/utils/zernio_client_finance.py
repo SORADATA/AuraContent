@@ -20,7 +20,7 @@ def get_latest_videos_stats():
     }
 
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         data = response.json()
 
