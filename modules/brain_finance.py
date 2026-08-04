@@ -27,18 +27,14 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-# Alias "latest" : pointe automatiquement vers le modele flash gratuit
-# disponible pour la cle API, meme quand les IDs figes (2.5-flash,
-# 2.5-flash-lite) sont retires pour les nouvelles cles Google.
 GEMINI_MODEL = "gemini-flash-latest"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
 ACCENT_INSTRUCTION = (
     "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
-    "(é, è, ê, à, ù, ç, ô, î etc). Exemples obligatoires : 'épargne' "
-    "(jamais 'epargne'), 'intérêt' (jamais 'interet'), 'stratégie' "
-    "(jamais 'strategie'), 'bénéfice' (jamais 'benefice'). "
+    "(accents obligatoires). Exemples : 'epargne' avec accent, 'interet' avec "
+    "accent, 'strategie' avec accent, 'benefice' avec accent. "
     "Verifie chaque mot avant de repondre."
 )
 
@@ -314,7 +310,7 @@ toujours sur l'actualite.
 def _clean_single_line_title(text):
     if not text:
         return ""
-    cleaned = text.replace('"', '').replace('“', '').replace('”', '').strip()
+    cleaned = text.replace('"', '').replace('"', '').replace('"', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
@@ -327,7 +323,7 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
         return False
     lowered = topic.lower().strip()
     invalid_markers = [
-        "mais voici", "voici le bon", "je me suis trompé", "je me suis trompe",
+        "mais voici", "voici le bon", "je me suis trompe",
         "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
         "\n", "hook", "analyse", "explication"
     ]
@@ -431,7 +427,6 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                # FIX : .choices est une LISTE, il faut l'indexer  avant .message
                 return response.choices.message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
@@ -636,7 +631,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
                 "role": "system",
                 "content": (
                     "Tu es prof de finance personnelle. Une actualite de marche vient "
-                    "de se produire. Transforme-la en LEÇON pour les debutants : "
+                    "de se produire. Transforme-la en LECON pour les debutants : "
                     "n'explique pas juste 'ce qui bouge', explique CE QUE CA APPREND "
                     "sur le fonctionnement des marches ou de l'argent en general. "
                     "Reponds UNIQUEMENT avec un titre en francais, une seule ligne, max 18 mots. "
@@ -676,7 +671,7 @@ captivants sur TikTok, sans jamais sacrifier l'exactitude pedagogique.
 {topic}
 
 OBJECTIF :
-Genere {n} hooks differents pour la meme video pedagogique, tous aligns sur
+Genere {n} hooks differents pour la meme video pedagogique, tous alignes sur
 l'angle impose. Chaque hook doit arreter le scroll en moins de 3 secondes ET
 annoncer clairement ce que le spectateur va APPRENDRE.
 
@@ -751,58 +746,253 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
         print(f"Ecriture du script pedagogique pour : {topic} ({scene_count} scenes)...")
 
-        hook_instruction = (
-            f'La scene 1 doit reprendre exactement ou reformuler tres legerement ce hook deja valide : "{chosen_hook}"'
-            if chosen_hook else
-            "Scene 1 - hook : une phrase de 12 a 18 mots qui annonce clairement ce que le spectateur va apprendre."
-        )
+        if chosen_hook:
+            hook_instruction = (
+                "La scene 1 doit reprendre exactement ou reformuler tres legerement "
+                "ce hook deja valide : " + json.dumps(chosen_hook, ensure_ascii=False)
+            )
+        else:
+            hook_instruction = (
+                "Scene 1 - hook : une phrase de 12 a 18 mots qui annonce "
+                "clairement ce que le spectateur va apprendre."
+            )
+
         notion_line = f"NOTION CENTRALE A ENSEIGNER : {notion}\n" if notion else ""
         angle_line = f"ANGLE IMPOSE : {angle.replace('_', ' ')}\n" if angle else ""
 
-        base_prompt = f"""
-Tu es prof de finance personnelle, redacteur en chef d'une chaine francophone
-d'education financiere dont la mission est d'ENSEIGNER durablement, pas
-seulement d'informer sur l'actualite.
+        skeleton_dict = {
+            "title": "Titre francais pedagogique court et accrocheur",
+            "notion_enseignee": notion or "",
+            "angle": angle or "",
+            "visual_identity": "One concise English sentence defining the FIXED recurring color palette, lighting style and overall visual mood shared by every scene of this video",
+            "audio_profile": "French premium narrator, confident, sharp, clear, pedagogical, natural pacing",
+            "compliance_note": "Contenu educatif general, ne constitue pas un conseil en investissement personnalise.",
+            "scenes": [
+                {
+                    "id": 1,
+                    "text": "Phrase francaise complete de douze a vingt-deux mots.",
+                    "voice_direction": "French premium narrator, confident, clear, engaging",
+                    "pause_after_ms": 300,
+                    "tts_emphasis_word": "mot",
+                    "stock_search": "concrete English finance education stock footage keywords",
+                    "image_prompt": "Detailed English visual prompt following the mandatory modular structure above, reusing the same color palette and lighting as visual_identity",
+                    "mood": "pedagogical",
+                    "role": "hook"
+                }
+            ]
+        }
+        json_skeleton = json.dumps(skeleton_dict, ensure_ascii=False, indent=2)
 
-{notion_line}{angle_line}TITRE :
-{topic}
+        def build_prompt(compliance_block):
+            lines = []
+            lines.append("Tu es prof de finance personnelle, redacteur en chef d'une chaine francophone")
+            lines.append("d'education financiere dont la mission est d'ENSEIGNER durablement, pas")
+            lines.append("seulement d'informer sur l'actualite.")
+            lines.append("")
+            lines.append(f"{notion_line}{angle_line}TITRE :")
+            lines.append(topic)
+            lines.append("")
+            lines.append("OBJECTIF :")
+            lines.append("Creer une video TikTok pedagogique ou, a la fin, le spectateur peut expliquer")
+            lines.append("la notion avec ses propres mots. Le divertissement sert la comprehension,")
+            lines.append("jamais l'inverse.")
+            lines.append("")
+            lines.append("CONTRAINTE ABSOLUE :")
+            lines.append(f"Genere exactement {scene_count} scenes.")
+            lines.append("")
+            lines.append("LANGUES :")
+            lines.append('- "text" : uniquement en francais naturel et oral, PARFAITEMENT ACCENTUE.')
+            lines.append('- "voice_direction" : uniquement en anglais.')
+            lines.append('- "stock_search" : uniquement en anglais, mots-cles concrets finance/bureau/argent.')
+            lines.append('- "image_prompt" : uniquement en anglais.')
+            lines.append('- "mood" et "role" : uniquement parmi les valeurs autorisees.')
+            lines.append("")
+            lines.append(ACCENT_INSTRUCTION)
+            lines.append(compliance_block)
+            lines.append(PEDAGOGY_INSTRUCTION)
+            lines.append(VISUAL_CONSISTENCY_INSTRUCTION)
+            lines.append("")
+            lines.append("STRUCTURE NARRATIVE PEDAGOGIQUE (methode : erreur -> mecanisme -> analogie -> application) :")
+            lines.append(f"- {hook_instruction}")
+            lines.append("- Scene 2 - erreur courante :")
+            lines.append("  montre le malentendu ou l'erreur que la plupart des gens font sur cette notion.")
+            lines.append("- Scene 3 - definition simple :")
+            lines.append("  donne une definition claire de la notion en une phrase, sans jargon inutile.")
+            lines.append(f"- Scenes 4 a {scene_count - 4} - mecanisme :")
+            lines.append("  explique pas a pas comment ca fonctionne reellement, une idee par scene.")
+            lines.append(f"- Scene {scene_count - 3} - analogie concrete :")
+            lines.append("  utilise une comparaison de la vie quotidienne pour ancrer la notion durablement.")
+            lines.append(f"- Scene {scene_count - 2} - exemple applique :")
+            lines.append("  donne un exemple chiffre generique et realiste (ou l'exemple de marche fourni")
+            lines.append("  si pertinent) pour montrer la notion en action.")
+            lines.append(f"- Scene {scene_count - 1} - synthese actionnable :")
+            lines.append("  resume en une phrase memorable ce qu'il faut retenir et faire concretement.")
+            lines.append(f"- Scene {scene_count} - CTA pedagogique :")
+            lines.append("  pose une question qui verifie la comprehension ou invite a partager son")
+            lines.append("  experience personnelle sur cette notion.")
+            lines.append('  Interdiction des CTA generiques comme "Abonne-toi pour plus de videos".')
+            lines.append("")
+            lines.append("REGLES D'ECRITURE (RYTHME) :")
+            lines.append('- Chaque "text" contient une phrase complete de 12 a 22 mots, une seule idee principale par scene.')
+            lines.append("- Alterne systematiquement une phrase courte percutante (moins de 14 mots) et une phrase plus longue explicative.")
+            lines.append("- Cree une transition logique explicite entre chaque scene.")
+            lines.append('- Ne commence jamais par : "Aujourd\'hui", "Savais-tu que", "Bienvenue", "Dans cette video".')
+            lines.append("- N'invente jamais de promesse d'enrichissement rapide ni de rendement garanti.")
+            lines.append("- Pas de hashtags, d'emojis, de titres, de notes ou d'explications hors JSON.")
+            lines.append("")
+            lines.append("REGLES AUDIO :")
+            lines.append('- Chaque scene doit inclure "voice_direction" en anglais.')
+            lines.append('- Chaque scene doit inclure "pause_after_ms" avec une valeur entiere entre 180 et 450.')
+            lines.append('- Chaque scene peut inclure "tts_emphasis_word".')
+            lines.append("")
+            lines.append("REGLES VISUELLES (COHERENCE STRICTE ENTRE TOUTES LES SCENES) :")
+            lines.append('- "stock_search" : 3 a 7 mots-cles anglais orientes finance/education.')
+            lines.append('- "image_prompt" : DOIT suivre EXACTEMENT cette structure modulaire en anglais,')
+            lines.append("  dans cet ordre :")
+            lines.append("  [subject + action], [location/background + atmosphere], [shot size: close-up")
+            lines.append("  OR medium shot OR wide shot], [camera angle: eye level OR slightly low angle],")
+            lines.append("  [lighting: soft natural daylight OR warm golden hour OR clean studio light],")
+            lines.append("  [color palette: consistent warm neutral tones], vertical 9:16 composition,")
+            lines.append("  clean negative space top and bottom for subtitles, photorealistic, no text,")
+            lines.append("  no logo, no watermark.")
+            lines.append("- La palette de couleur et le style de lumiere choisis DOIVENT etre identiques")
+            lines.append(f"  dans TOUTES les {scene_count} scenes (definis une seule fois et repris")
+            lines.append('  litteralement dans chaque "image_prompt").')
+            lines.append("- Varie uniquement le sujet, le cadrage et l'angle de camera d'une scene a")
+            lines.append("  l'autre, jamais la lumiere ni la palette de couleur.")
+            lines.append("")
+            lines.append("VALEURS AUTORISEES :")
+            lines.append('- "role" : "hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"')
+            lines.append('- "mood" : "confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"')
+            lines.append("")
+            lines.append("FORMAT DE SORTIE :")
+            lines.append("Retourne uniquement un objet JSON valide, sans bloc Markdown, suivant exactement ce squelette (adapte le contenu, garde la structure) :")
+            lines.append("")
+            lines.append(json_skeleton)
+            return "\n".join(lines)
 
-OBJECTIF :
-Creer une video TikTok pedagogique ou, a la fin, le spectateur peut expliquer
-la notion avec ses propres mots. Le divertissement sert la comprehension,
-jamais l'inverse.
+        def build_messages(compliance_block):
+            prompt = build_prompt(compliance_block)
+            return [
+                {
+                    "role": "system",
+                    "content": (
+                        "Tu produis uniquement du JSON valide. "
+                        f"La cle scenes contient exactement {scene_count} scenes. "
+                        "Tu respectes strictement la structure pedagogique erreur->mecanisme->analogie->application. "
+                        "Tu respectes strictement la coherence visuelle imposee (meme palette et meme lumiere partout). "
+                        "Aucun texte hors du JSON. "
+                        f"{ACCENT_INSTRUCTION} {compliance_block} {PEDAGOGY_INSTRUCTION} {VISUAL_CONSISTENCY_INSTRUCTION}"
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
 
-CONTRAINTE ABSOLUE :
-Genere exactement {scene_count} scenes.
+        skip_providers = set()
+        last_error = None
 
-LANGUES :
-- "text" : uniquement en francais naturel et oral, PARFAITEMENT ACCENTUE.
-- "voice_direction" : uniquement en anglais.
-- "stock_search" : uniquement en anglais, mots-cles concrets finance/bureau/argent.
-- "image_prompt" : uniquement en anglais.
-- "mood" et "role" : uniquement parmi les valeurs autorisees.
+        for attempt in range(2):
+            compliance_block = COMPLIANCE_INSTRUCTION if attempt == 0 else COMPLIANCE_RETRY_INSTRUCTION
+            messages = build_messages(compliance_block)
 
-{ACCENT_INSTRUCTION}
-{{compliance_block}}
-{PEDAGOGY_INSTRUCTION}
-{VISUAL_CONSISTENCY_INSTRUCTION}
+            content, provider_used = self._call_with_fallback(
+                messages, temperature=0.7, json_mode=True, skip_providers=skip_providers
+            )
+            data = _safe_json_loads(content)
 
-STRUCTURE NARRATIVE PEDAGOGIQUE (methode : erreur -> mecanisme -> analogie -> application) :
-- {hook_instruction}
-- Scene 2 - erreur courante :
-  montre le malentendu ou l'erreur que la plupart des gens font sur cette notion.
-- Scene 3 - definition simple :
-  donne une definition claire de la notion en une phrase, sans jargon inutile.
-- Scenes 4 a {scene_count - 4} - mecanisme :
-  explique pas a pas comment ca fonctionne reellement, une idee par scene.
-- Scene {scene_count - 3} - analogie concrete :
-  utilise une comparaison de la vie quotidienne pour ancrer la notion durablement.
-- Scene {scene_count - 2} - exemple applique :
-  donne un exemple chiffre generique et realiste (ou l'exemple de marche fourni
-  si pertinent) pour montrer la notion en action.
-- Scene {scene_count - 1} - synthese actionnable :
-  resume en une phrase memorable ce qu'il faut retenir et faire concretement.
-- Scene {scene_count} - CTA pedagogique :
-  pose une question qui verifie la comprehension ou invite a partager son
-  experience personnelle sur cette notion.
-  Interdiction 
+            if provider_used == "groq" and _script_missing_accents(data):
+                print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
+                content, _ = self._call_with_fallback(
+                    messages, temperature=0.7, json_mode=True, skip_providers={"groq"} | skip_providers
+                )
+                data = _safe_json_loads(content)
+
+            try:
+                self._validate_script(data, scene_count)
+                return data
+            except ComplianceViolationError as e:
+                last_error = e
+                print(f"🚫 Violation de conformite (tentative {attempt + 1}/2) : {e}")
+                continue
+
+        raise last_error
+
+    def _normalize_word(self, text):
+        text = str(text).lower().strip()
+        text = text.replace("’", "").replace("'", "")
+        text = re.sub(r"[^a-zàâçéèêëîïôûùüÿœ\- ]", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def _validate_script(self, data, scene_count):
+        scenes = data.get("scenes")
+        if not isinstance(scenes, list):
+            raise ValueError("La reponse ne contient pas de tableau scenes.")
+        if len(scenes) != scene_count:
+            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
+
+        expected_ids = list(range(1, scene_count + 1))
+        actual_ids = [scene.get("id") for scene in scenes]
+        if actual_ids != expected_ids:
+            raise ValueError(f"IDs de scenes invalides : {actual_ids}")
+
+        allowed_roles = {"hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"}
+        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"}
+
+        compliance_violations = []
+
+        for scene in scenes:
+            text = scene.get("text", "").strip()
+            voice_direction = scene.get("voice_direction", "").strip()
+            pause_after_ms = scene.get("pause_after_ms")
+            emphasis = scene.get("tts_emphasis_word")
+            role = scene.get("role")
+            mood = scene.get("mood")
+            stock_search = scene.get("stock_search", "").strip()
+            image_prompt = scene.get("image_prompt", "").strip()
+
+            if not text:
+                raise ValueError(f"Scene {scene.get('id')} : text manquant.")
+            if not voice_direction:
+                raise ValueError(f"Scene {scene.get('id')} : voice_direction manquant.")
+
+            if isinstance(pause_after_ms, float) and pause_after_ms.is_integer():
+                pause_after_ms = int(pause_after_ms)
+                scene["pause_after_ms"] = pause_after_ms
+            if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
+                raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
+
+            if role not in allowed_roles:
+                raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
+            if mood not in allowed_moods:
+                raise ValueError(f"Scene {scene.get('id')} : mood invalide ({mood}).")
+            if not stock_search:
+                raise ValueError(f"Scene {scene.get('id')} : stock_search manquant.")
+            if not image_prompt:
+                raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
+
+            text_lower = text.lower()
+            for phrase in FORBIDDEN_COMPLIANCE_PHRASES:
+                if phrase in text_lower:
+                    compliance_violations.append({"scene_id": scene.get("id"), "phrase": phrase})
+
+            if emphasis:
+                normalized_text = self._normalize_word(text)
+                normalized_emphasis = self._normalize_word(emphasis)
+                text_words = normalized_text.split()
+                if normalized_emphasis not in text_words:
+                    print(
+                        f"⚠️ Scene {scene.get('id')} : tts_emphasis_word='{emphasis}' absent du text. "
+                        f"Emphase ignoree."
+                    )
+                    scene["tts_emphasis_word"] = None
+
+        if "title" not in data or not str(data["title"]).strip():
+            raise ValueError("Titre manquant.")
+        if "visual_identity" not in data or not str(data["visual_identity"]).strip():
+            raise ValueError("visual_identity manquant.")
+        if "audio_profile" not in data or not str(data["audio_profile"]).strip():
+            raise ValueError("audio_profile manquant.")
+
+        if compliance_violations:
+            raise ComplianceViolationError(compliance_violations)
