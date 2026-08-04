@@ -27,7 +27,10 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-flash-lite"  # gemini-2.5-flash retire pour les nouvelles cles API
+# Alias "latest" : pointe automatiquement vers le modele flash gratuit
+# disponible pour la cle API, meme quand les IDs figes (2.5-flash,
+# 2.5-flash-lite) sont retires pour les nouvelles cles Google.
+GEMINI_MODEL = "gemini-flash-latest"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -311,7 +314,7 @@ toujours sur l'actualite.
 def _clean_single_line_title(text):
     if not text:
         return ""
-    cleaned = text.replace('"', '').replace('"', '').replace('"', '').strip()
+    cleaned = text.replace('"', '').replace('“', '').replace('”', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
@@ -428,7 +431,7 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                # FIX : .choices est une liste, il faut l'indexer  avant .message
+                # FIX : .choices est une LISTE, il faut l'indexer  avant .message
                 return response.choices.message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
@@ -802,235 +805,4 @@ STRUCTURE NARRATIVE PEDAGOGIQUE (methode : erreur -> mecanisme -> analogie -> ap
 - Scene {scene_count} - CTA pedagogique :
   pose une question qui verifie la comprehension ou invite a partager son
   experience personnelle sur cette notion.
-  Interdiction des CTA generiques comme "Abonne-toi pour plus de videos".
-
-REGLES D'ECRITURE (RYTHME) :
-- Chaque "text" contient une phrase complete de 12 a 22 mots, une seule idee principale par scene.
-- Alterne systematiquement une phrase courte percutante (moins de 14 mots) et une phrase plus longue explicative.
-- Cree une transition logique explicite entre chaque scene.
-- Ne commence jamais par : "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
-- N'invente jamais de promesse d'enrichissement rapide ni de rendement garanti.
-- Pas de hashtags, d'emojis, de titres, de notes ou d'explications hors JSON.
-
-REGLES AUDIO :
-- Chaque scene doit inclure "voice_direction" en anglais.
-- Chaque scene doit inclure "pause_after_ms" avec une valeur entiere entre 180 et 450.
-- Chaque scene peut inclure "tts_emphasis_word".
-
-REGLES VISUELLES (COHERENCE STRICTE ENTRE TOUTES LES SCENES) :
-- "stock_search" : 3 a 7 mots-cles anglais orientes finance/education.
-- "image_prompt" : DOIT suivre EXACTEMENT cette structure modulaire en anglais,
-  dans cet ordre :
-  [subject + action], [location/background + atmosphere], [shot size: close-up
-  OR medium shot OR wide shot], [camera angle: eye level OR slightly low angle],
-  [lighting: soft natural daylight OR warm golden hour OR clean studio light],
-  [color palette: consistent warm neutral tones], vertical 9:16 composition,
-  clean negative space top and bottom for subtitles, photorealistic, no text,
-  no logo, no watermark.
-- La palette de couleur et le style de lumiere choisis DOIVENT etre identiques
-  dans TOUTES les {scene_count} scenes (definis une seule fois et repris
-  litteralement dans chaque "image_prompt").
-- Varie uniquement le sujet, le cadrage et l'angle de camera d'une scene a
-  l'autre, jamais la lumiere ni la palette de couleur.
-
-VALEURS AUTORISEES :
-- "role" : "hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"
-- "mood" : "confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"
-
-FORMAT DE SORTIE :
-Retourne uniquement un objet JSON valide, sans bloc Markdown.
-
-{{{{
-  "title": "Titre francais pedagogique court et accrocheur",
-  "notion_enseignee": "{notion or ''}",
-  "angle": "{angle or ''}",
-  "visual_identity": "One concise English sentence defining the FIXED recurring color palette, lighting style and overall visual mood shared by every scene of this video",
-  "audio_profile": "French premium narrator, confident, sharp, clear, pedagogical, natural pacing",
-  "compliance_note": "Contenu educatif general, ne constitue pas un conseil en investissement personnalise.",
-  "scenes": [
-    {{{{
-      "id": 1,
-      "text": "Phrase francaise complete de douze a vingt-deux mots.",
-      "voice_direction": "French premium narrator, confident, clear, engaging",
-      "pause_after_ms": 300,
-      "tts_emphasis_word": "mot",
-      "stock_search": "concrete English finance education stock footage keywords",
-      "image_prompt": "Detailed English visual prompt following the mandatory modular structure above, reusing the same color palette and lighting as visual_identity",
-      "mood": "pedagogical",
-      "role": "hook"
-    }}}}
-  ]
-}}}}
-"""
-
-        def build_messages(compliance_block):
-            prompt = base_prompt.format(compliance_block=compliance_block)
-            return [
-                {
-                    "role": "system",
-                    "content": (
-                        "Tu produis uniquement du JSON valide. "
-                        f"La cle scenes contient exactement {scene_count} scenes. "
-                        "Tu respectes strictement la structure pedagogique erreur->mecanisme->analogie->application. "
-                        "Tu respectes strictement la coherence visuelle imposee (meme palette et meme lumiere partout). "
-                        "Aucun texte hors du JSON. "
-                        f"{ACCENT_INSTRUCTION} {compliance_block} {PEDAGOGY_INSTRUCTION} {VISUAL_CONSISTENCY_INSTRUCTION}"
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ]
-
-        skip_providers = set()
-        last_error = None
-
-        for attempt in range(2):
-            compliance_block = COMPLIANCE_INSTRUCTION if attempt == 0 else COMPLIANCE_RETRY_INSTRUCTION
-            messages = build_messages(compliance_block)
-
-            content, provider_used = self._call_with_fallback(
-                messages, temperature=0.7, json_mode=True, skip_providers=skip_providers
-            )
-            data = _safe_json_loads(content)
-
-            if provider_used == "groq" and _script_missing_accents(data):
-                print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
-                content, _ = self._call_with_fallback(
-                    messages, temperature=0.7, json_mode=True, skip_providers={"groq"} | skip_providers
-                )
-                data = _safe_json_loads(content)
-
-            try:
-                self._validate_script(data, scene_count)
-                return data
-            except ComplianceViolationError as e:
-                last_error = e
-                print(f"🚫 Violation de conformite (tentative {attempt + 1}/2) : {e}")
-                continue
-
-        raise last_error
-
-    def _normalize_word(self, text):
-        text = str(text).lower().strip()
-        text = re.sub(r"[’']", "", text)
-        text = re.sub(r"[^a-zàâçéèêëîïôûùüÿœ\- ]", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        return text
-
-    def _validate_script(self, data, scene_count):
-        scenes = data.get("scenes")
-        if not isinstance(scenes, list):
-            raise ValueError("La reponse ne contient pas de tableau scenes.")
-        if len(scenes) != scene_count:
-            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
-
-        expected_ids = list(range(1, scene_count + 1))
-        actual_ids = [scene.get("id") for scene in scenes]
-        if actual_ids != expected_ids:
-            raise ValueError(f"IDs de scenes invalides : {actual_ids}")
-
-        allowed_roles = {"hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"}
-        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"}
-
-        compliance_violations = []
-
-        for scene in scenes:
-            text = scene.get("text", "").strip()
-            voice_direction = scene.get("voice_direction", "").strip()
-            pause_after_ms = scene.get("pause_after_ms")
-            emphasis = scene.get("tts_emphasis_word")
-            role = scene.get("role")
-            mood = scene.get("mood")
-            stock_search = scene.get("stock_search", "").strip()
-            image_prompt = scene.get("image_prompt", "").strip()
-
-            if not text:
-                raise ValueError(f"Scene {scene.get('id')} : text manquant.")
-            if not voice_direction:
-                raise ValueError(f"Scene {scene.get('id')} : voice_direction manquant.")
-
-            if isinstance(pause_after_ms, float) and pause_after_ms.is_integer():
-                pause_after_ms = int(pause_after_ms)
-                scene["pause_after_ms"] = pause_after_ms
-            if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
-                raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
-
-            if role not in allowed_roles:
-                raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
-            if mood not in allowed_moods:
-                raise ValueError(f"Scene {scene.get('id')} : mood invalide ({mood}).")
-            if not stock_search:
-                raise ValueError(f"Scene {scene.get('id')} : stock_search manquant.")
-            if not image_prompt:
-                raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
-
-            text_lower = text.lower()
-            for phrase in FORBIDDEN_COMPLIANCE_PHRASES:
-                if phrase in text_lower:
-                    compliance_violations.append({"scene_id": scene.get("id"), "phrase": phrase})
-
-            if emphasis:
-                normalized_text = self._normalize_word(text)
-                normalized_emphasis = self._normalize_word(emphasis)
-                text_words = normalized_text.split()
-                if normalized_emphasis not in text_words:
-                    print(
-                        f"⚠️ Scene {scene.get('id')} : tts_emphasis_word='{emphasis}' absent du text. "
-                        f"Emphase ignoree."
-                    )
-                    scene["tts_emphasis_word"] = None
-
-        if "title" not in data or not str(data["title"]).strip():
-            raise ValueError("Titre manquant.")
-        if "visual_identity" not in data or not str(data["visual_identity"]).strip():
-            raise ValueError("visual_identity manquant.")
-        if "audio_profile" not in data or not str(data["audio_profile"]).strip():
-            raise ValueError("audio_profile manquant.")
-
-        if compliance_violations:
-            raise ComplianceViolationError(compliance_violations)
-
-
-if __name__ == "__main__":
-    brain = ContentBrain()
-
-    print("📡 Récupération des statistiques Zernio...")
-    stats_historique = get_latest_videos_stats()
-
-    print("📚 Selection d'une notion du curriculum (auto-extensible)...")
-    result = brain.get_pedagogical_topic(
-        previous_stats_list=stats_historique,
-        market_signals=None,
-    )
-    topic = result["topic"]
-    notion = result["notion"]
-    niveau = result["niveau"]
-    angle = result["angle"]
-    pillar = result["pillar"]
-    state = result["state"]
-
-    print(f"\nPilier : {CONTENT_PILLARS.get(pillar, {}).get('label', pillar)}")
-    print(f"Notion enseignee : {notion}")
-    print(f"Angle : {angle}")
-    print(f"Titre retenu : {topic}\n")
-
-    hooks = brain.generate_hook_variants(topic, notion=notion, angle=angle, n=5, previous_stats_list=stats_historique)
-
-    for i, h in enumerate(hooks, 1):
-        print(f"{i}. [{h['pattern']}] {h['text']}")
-
-    best_hook_data = brain.pick_best_hook(hooks, previous_stats_list=stats_historique, state=state)
-    best_hook = best_hook_data["text"]
-    print(f"\nHook choisi (pattern: {best_hook_data['pattern']}) : {best_hook}\n")
-
-    script_data = brain.generate_script(topic, notion=notion, angle=angle, chosen_hook=best_hook)
-
-    with open("script_finance.json", "w", encoding="utf-8") as f:
-        json.dump(script_data, f, indent=4, ensure_ascii=False)
-
-    brain.record_topic_used(
-        state, notion, niveau, angle, pillar,
-        topic=topic, hook_pattern=best_hook_data.get("pattern")
-    )
-
-    print("Script finance saved to script_finance.json")
-    print("✅ Script conforme (verification bloquante passee) — pret pour production.")
+  Interdiction 
