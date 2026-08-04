@@ -98,7 +98,7 @@ jobs:
   # ==========================================
   # JOB 2 : CHAÎNE MINUTE MSYTERE KO
   # ==========================================
-  general_generator:
+  mystere_generator:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
