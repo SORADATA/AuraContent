@@ -184,9 +184,6 @@ def validate_script_payload(script_payload):
 # --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
 # =====================================================================
 
-# FIX : gemini-2.5-flash-lite retire pour les nouvelles cles API (404).
-# "gemini-flash-latest" pointe automatiquement vers le modele flash gratuit
-# disponible pour la cle, meme quand les IDs figes changent.
 GEMINI_CAPTION_MODEL = "gemini-flash-latest"
 GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
@@ -289,6 +286,13 @@ async def main():
         print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
         stats_historique = None
 
+    # Variables necessaires plus loin pour enregistrer l'historique du
+    # curriculum (record_topic_used) une fois la video generee avec succes.
+    curriculum_state = None
+    curriculum_niveau = None
+    curriculum_pillar = None
+    chosen_hook_pattern = None
+
     try:
         if topic_input:
             topic = topic_input
@@ -303,6 +307,9 @@ async def main():
             topic = result["topic"]
             notion = result.get("notion", topic)
             angle = result.get("angle", "")
+            curriculum_state = result.get("state")
+            curriculum_niveau = result.get("niveau")
+            curriculum_pillar = result.get("pillar")
             print(f"🔥 Sujet sélectionné automatiquement : {topic}")
             print(f"📘 Notion : {notion}")
             print(f"🎭 Angle : {angle}")
@@ -318,23 +325,52 @@ async def main():
                     previous_stats_list=stats_historique,
                 )
                 chosen_hook = hooks[0]["text"]
+                chosen_hook_pattern = hooks[0].get("pattern")
                 print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
             except Exception as e:
                 print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
 
+        # FIX : scene_count calcule a partir de VIDEO_DURATION doit etre
+        # reellement transmis au generateur de script. L'ancienne version
+        # appelait brain.generate_script(...), qui ignore ce parametre et
+        # utilise toujours 11 scenes en dur, quelle que soit la duree
+        # demandee. On appelle desormais generate_script_with_target(...)
+        # avec le scene_count calcule.
         scene_count = estimate_scene_count(duration_target)
         print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
 
-        script_payload = brain.generate_script(
+        script_payload = brain.generate_script_with_target(
             topic,
             notion=notion,
             angle=angle,
+            scene_count=scene_count,
             chosen_hook=chosen_hook,
         )
 
         validate_script_payload(script_payload)
         script = script_payload["scenes"]
         video_title = script_payload.get("title", topic)
+
+        # FIX : sans cet appel, l'historique du curriculum (assets/state/
+        # curriculum_finance_state.json) n'est jamais mis a jour pendant
+        # le pipeline reel, et le systeme anti-repetition (fenetre de 15
+        # videos, cooldown de 21 jours) reste inoperant. On enregistre
+        # uniquement si le sujet vient du curriculum auto (pas un topic
+        # manuel), puisque curriculum_state est alors disponible.
+        if curriculum_state is not None:
+            try:
+                brain.record_topic_used(
+                    curriculum_state,
+                    notion,
+                    curriculum_niveau,
+                    angle,
+                    curriculum_pillar,
+                    topic=topic,
+                    hook_pattern=chosen_hook_pattern,
+                )
+                print("🧠 Historique du curriculum mis a jour (anti-repetition).")
+            except Exception as e:
+                print(f"⚠️ Impossible d'enregistrer l'historique du curriculum : {e}")
 
     except Exception as e:
         print(f"❌ Brain Error: {e}")
@@ -404,9 +440,6 @@ async def main():
         return
 
     try:
-        # FIX : script_data=script transmis pour activer les transitions
-        # specifiques par role narratif (hook, mechanism, cta, etc.)
-        # au lieu de retomber systematiquement sur le pool par defaut.
         final_path = composer.concatenate_with_transitions(final_scene_paths, script_data=script)
     except Exception as e:
         print(f"❌ Final assembly error: {e}")
