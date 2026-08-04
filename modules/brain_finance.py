@@ -392,7 +392,7 @@ def _score_hook(hook, enriched_stats_list):
 
 class ContentBrain:
     def _build_client(self, provider):
-        # CORRECTION URL : format brut, sans crochets Markdown
+        # CORRECTION URL : format brut, VRAIMENT sans crochets Markdown
         if provider == "groq":
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
