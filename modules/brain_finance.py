@@ -44,7 +44,7 @@ COMPLIANCE_INSTRUCTION = (
     "personnalise. N'utilise jamais des formulations imperatives du type "
     "'achete cette action', 'tu dois investir dans', 'c'est une valeur sure'. "
     "Prefere des formulations educatives : 'voici comment ca fonctionne', "
-    "'voici ce que font certains investisseurs', 'a etudier selon ton profil'. "
+    "'-voici ce que font certains investisseurs', 'a etudier selon ton profil'. "
     "Mentionne implicitement ou explicitement qu'investir comporte des "
     "risques de perte en capital. N'invente aucune promesse de gain garanti "
     "ni de rendement chiffre non verifiable."
@@ -314,9 +314,6 @@ def _clean_single_line_title(text):
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
-    # FIX : il manquait l'index  -- lines est une LISTE de lignes,[0]
-    # pas une chaine. Sans ce fix, re.sub plante avec TypeError car
-    # first_line etait toute la liste au lieu de sa premiere entree.
     first_line = lines[0]
     return re.sub(r"\s+", " ", first_line).strip()
 
@@ -396,13 +393,13 @@ class ContentBrain:
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
                 return None
-            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+            return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
         if provider == "gemini":
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
                 return None
             return OpenAI(
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                base_url="[https://generativelanguage.googleapis.com/v1beta/openai/](https://generativelanguage.googleapis.com/v1beta/openai/)",
                 api_key=gemini_key
             )
         return None
@@ -430,10 +427,7 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                # FIX : .choices est une LISTE, il faut l'indexer[0]
-                # avant .message -- c'est la cause exacte de l'erreur
-                # 'list' object has no attribute 'message'.
-                return response.choices.message.content, provider[0]
+                return response.choices[0].message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
                 last_error = e
@@ -735,10 +729,6 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         return hooks
 
     def pick_best_hook(self, hooks, previous_stats_list=None, state=None):
-        # FIX : cette fonction doit retourner UN hook (un dict), pas la
-        # liste entiere. Sans, main_finance.py plante sur[0]
-        # best_hook_data["text"] avec TypeError: list indices must be
-        # integers or slices, not str.
         if not previous_stats_list or not state:
             return hooks[0]
         enriched_stats = _enrich_stats_with_local_pattern(previous_stats_list, state)
@@ -866,7 +856,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             lines.append("  clean negative space top and bottom for subtitles, photorealistic, no text,")
             lines.append("  no logo, no watermark.")
             lines.append("- La palette de couleur et le style de lumiere choisis DOIVENT etre identiques")
-            lines.append(f"  dans TOUTES les {scene_count} scenes (definis une seule fois et repris")
+            lines.append(f"  dans toutes les {scene_count} scenes (definis une seule fois et repris")
             lines.append('  litteralement dans chaque "image_prompt").')
             lines.append("- Varie uniquement le sujet, le cadrage et l'angle de camera d'une scene a")
             lines.append("  l'autre, jamais la lumiere ni la palette de couleur.")
