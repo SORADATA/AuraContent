@@ -5,22 +5,23 @@ import urllib.parse
 import requests
 import random
 import ffmpeg
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from modules.utils.pexels_client import get_pexels_video
 
 FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
-
 DEFAULT_CLIP_DURATION = 4.0
+POLLINATIONS_TOKEN = os.getenv("POLLINATIONS_TOKEN")  # inscription gratuite sur auth.pollinations.ai
+MAX_PARALLEL_WORKERS = 3
+
 
 class AssetManager:
     def __init__(self, run_id=None):
         self.run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
-
         self.video_dir = os.path.join(os.getcwd(), "assets", "video_clips", self.run_id)
         self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
         os.makedirs(self.video_dir, exist_ok=True)
         os.makedirs(self.temp_dir, exist_ok=True)
-
         self.width = 1080
         self.height = 1920
         self.fps = 30
@@ -31,11 +32,9 @@ class AssetManager:
     def _try_pexels(self, query, output_path):
         try:
             result_path = get_pexels_video(query, output_path)
-            if self._safe_exists(result_path):
-                return result_path
-            return None
+            return result_path if self._safe_exists(result_path) else None
         except Exception as e:
-            print(f"    ❌ Erreur Pexels pour la requête '{query}': {e}")
+            print(f"    ❌ Erreur Pexels pour '{query}': {e}")
             return None
 
     def _pollinations_image_to_video(self, img_path, output_path, duration):
@@ -62,40 +61,35 @@ class AssetManager:
             return None
 
     def _try_pollinations(self, scene_id, image_prompt, output_path, duration, retries=3):
-        """Génère un visuel via Pollinations avec le système de retry robuste de ton autre script."""
         img_path = os.path.join(self.temp_dir, f"pollinations_{self.run_id}_{scene_id}.jpg")
-        
+
         for attempt in range(retries + 1):
             if attempt > 0:
-                wait_time = min(4 * (2 ** (attempt - 1)) + random.uniform(0, 1.5), 15)
+                # Rate limit tier Seed (1 req/5s) si token dispo, sinon tier Anonyme (1 req/15s)
+                base_wait = 5.0 if POLLINATIONS_TOKEN else 15.0
+                wait_time = min(base_wait * (1.5 ** (attempt - 1)) + random.uniform(0, 1.5), 20)
                 print(f"    ⏳ Tentative {attempt + 1}/{retries + 1} Pollinations (pause {wait_time:.1f}s)...")
                 time.sleep(wait_time)
 
             try:
                 encoded_prompt = urllib.parse.quote(image_prompt)
                 seed = random.randint(1, 999999)
-                # Ajout de enhance=true comme dans ton script pour de meilleurs visuels
                 url = (
                     f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-                    f"?width={self.width}&height={self.height}&nologo=true&seed={seed}&enhance=true"
+                    f"?width={self.width}&height={self.height}&nologo=true&seed={seed}"
+                    f"&enhance=true&model=flux"
                 )
+                if POLLINATIONS_TOKEN:
+                    url += f"&token={POLLINATIONS_TOKEN}"
 
-                # Timeout passé à 120s avec un User-Agent
-                response = requests.get(
-                    url, 
-                    timeout=120, 
-                    headers={"User-Agent": "FinanceGenerator/1.0"}
-                )
-
+                response = requests.get(url, timeout=120, headers={"User-Agent": "FinanceGenerator/1.0"})
                 content_type = response.headers.get("Content-Type", "")
 
                 if response.status_code == 200 and content_type.startswith("image/") and len(response.content) > 5000:
                     with open(img_path, "wb") as f:
                         f.write(response.content)
-
                     if self._safe_exists(img_path):
                         return self._pollinations_image_to_video(img_path, output_path, duration=duration)
-                
                 elif response.status_code == 429:
                     print("    ⚠️ Limite de requêtes Pollinations atteinte.")
                 else:
@@ -104,9 +98,9 @@ class AssetManager:
             except requests.exceptions.Timeout:
                 print("    ⚠️ Timeout Pollinations (serveur surchargé).")
             except Exception as e:
-                print(f"    ❌ Erreur Pollinations pour la scène {scene_id}: {e}")
-                
-        print(f"    ❌ Échec définitif de Pollinations après {retries} tentatives.")
+                print(f"    ❌ Erreur Pollinations scene {scene_id}: {e}")
+
+        print(f"    ❌ Échec définitif Pollinations après {retries} tentatives.")
         if os.path.exists(img_path):
             try:
                 os.remove(img_path)
@@ -124,45 +118,46 @@ class AssetManager:
             print(f"    ❌ Erreur fallback vidéo: {e}")
             return None
 
+    def _process_single_scene(self, scene, idx):
+        scene_id = scene["id"]
+        role = scene.get("role", "example")
+        output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
+        duration = float(scene.get("duration") or DEFAULT_CLIP_DURATION)
+
+        if self._safe_exists(output_path):
+            print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id}")
+            return scene_id, output_path
+
+        query = scene.get("stock_search", "finance")
+        image_prompt = scene.get("image_prompt", "")
+
+        if image_prompt and (idx % 2 == 0 or role in {"analogy", "misconception", "example"}):
+            print(f"🎨 Scene {scene_id} - Génération IA Pollinations (Flux)...")
+            pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path, duration=duration)
+            if self._safe_exists(pollinations_path):
+                return scene_id, pollinations_path
+
+        print(f"🎬 Scene {scene_id} - Récupération vidéo Pexels...")
+        pexels_path = self._try_pexels(query, output_path)
+        if self._safe_exists(pexels_path):
+            return scene_id, pexels_path
+
+        print(f"    ⚠️ Scene {scene_id}: échec Pexels/Pollinations, fallback")
+        fallback_path = self._copy_fallback(output_path)
+        return scene_id, fallback_path if self._safe_exists(fallback_path) else None
+
     def get_videos(self, script_data):
-        video_paths = []
+        """Version parallélisée : plusieurs scènes traitées simultanément
+        pour compenser le rate limit Pollinations, sans dépasser
+        MAX_PARALLEL_WORKERS requêtes concurrentes."""
+        results = {}
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+            futures = {
+                executor.submit(self._process_single_scene, scene, idx): scene["id"]
+                for idx, scene in enumerate(script_data)
+            }
+            for future in as_completed(futures):
+                scene_id, path = future.result()
+                results[scene_id] = path
 
-        # Utilisation de enumerate pour permettre l'alternance 1 scène sur 2
-        for idx, scene in enumerate(script_data):
-            scene_id = scene["id"]
-            role = scene.get("role", "example")
-            output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
-
-            duration = float(scene.get("duration") or DEFAULT_CLIP_DURATION)
-
-            if self._safe_exists(output_path):
-                print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id}")
-                video_paths.append(output_path)
-                continue
-
-            query = scene.get("stock_search", "finance")
-            image_prompt = scene.get("image_prompt", "")
-
-            # MODIFICATION ICI : Alternance IA (1 sur 2) ou rôles spécifiques
-            if image_prompt and (idx % 2 == 0 or role in {"analogy", "misconception", "example"}):
-                print(f"🎨 Scene {scene_id} - Génération IA Pollinations (Flux)...")
-                pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path, duration=duration)
-                if self._safe_exists(pollinations_path):
-                    video_paths.append(pollinations_path)
-                    continue
-
-            print(f"🎬 Scene {scene_id} - Récupération de la vidéo Pexels...")
-            pexels_path = self._try_pexels(query, output_path)
-            if self._safe_exists(pexels_path):
-                video_paths.append(pexels_path)
-                continue
-
-            print(f"    ⚠️ Scene {scene_id}: échec Pexels/Pollinations, utilisation de la vidéo fallback")
-            fallback_path = self._copy_fallback(output_path)
-            if self._safe_exists(fallback_path):
-                video_paths.append(fallback_path)
-            else:
-                print(f"    ❌ Scene {scene_id}: fallback introuvable !")
-                video_paths.append(None)
-
-        return video_paths
+        return [results.get(scene["id"]) for scene in script_data]
