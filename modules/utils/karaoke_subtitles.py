@@ -1,8 +1,22 @@
 import os
 import json
+import wave
 import subprocess
 
-WHISPER_CPP_BIN = os.path.join(os.getcwd(), "whisper.cpp", "main")
+
+def _resolve_whisper_bin():
+    """FIX : le binaire 'main' de whisper.cpp est deprecie depuis
+    decembre 2024, renomme 'whisper-cli'. On detecte dynamiquement
+    lequel existe reellement plutot que de supposer 'main'."""
+    base = os.path.join(os.getcwd(), "whisper.cpp")
+    for name in ("whisper-cli", "main"):
+        candidate = os.path.join(base, name)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(base, "whisper-cli")
+
+
+WHISPER_CPP_BIN = _resolve_whisper_bin()
 WHISPER_MODEL = os.path.join(os.getcwd(), "whisper.cpp", "models", "ggml-base.bin")
 
 ASS_HEADER = """[Script Info]
@@ -21,11 +35,21 @@ Format: Layer, Start, End, Style, Text
 """
 
 
+def _is_wav_16k_mono(path):
+    """FIX : verifie reellement le sample rate/canaux au lieu de se
+    fier a l'extension .wav. Gemini TTS et Kokoro produisent du WAV
+    a 24000 Hz -- whisper.cpp attend strictement du 16000 Hz mono."""
+    try:
+        with wave.open(path, "rb") as wf:
+            return wf.getframerate() == 16000 and wf.getnchannels() == 1
+    except Exception:
+        return False
+
+
 def _ensure_wav_16k(audio_path, temp_dir, scene_id):
-    """whisper.cpp attend du WAV 16kHz mono. Convertit uniquement si
-    necessaire (ex: fallback Edge-TTS qui produit du mp3). Si l'audio
-    est deja en .wav, on le passe tel quel a whisper.cpp."""
-    if audio_path.lower().endswith(".wav"):
+    """Convertit systematiquement si le fichier n'est pas deja en
+    16kHz mono exact, quel que soit le moteur TTS d'origine."""
+    if audio_path.lower().endswith(".wav") and _is_wav_16k_mono(audio_path):
         return audio_path
 
     os.makedirs(temp_dir, exist_ok=True)
@@ -123,10 +147,8 @@ def build_karaoke_ass(words, output_ass_path, words_per_line=4, highlight_color=
 
 
 def generate_karaoke_subtitles(audio_path, scene_id, temp_dir):
-    """Point d'entree unique : audio (wav ou mp3) -> fichier .ass karaoke
-    pret a etre burne avec le filtre ffmpeg 'ass'. Convertit
-    automatiquement en wav 16kHz si le TTS a produit du mp3
-    (cas du fallback Edge-TTS)."""
+    """Point d'entree unique : audio (wav ou mp3, quel que soit le
+    sample rate d'origine) -> fichier .ass karaoke."""
     wav_path = _ensure_wav_16k(audio_path, temp_dir, scene_id)
     if not wav_path:
         return None
