@@ -27,7 +27,7 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"  # gemini-2.5-flash retire pour les nouvelles cles API
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -67,8 +67,6 @@ PEDAGOGY_INSTRUCTION = (
     "Privilegie la clarte a la sophistication : une seule idee centrale par video."
 )
 
-# NOUVEAU : instruction de coherence visuelle stricte, injectee dans chaque
-# generation de script pour eviter que chaque scene ait un style different.
 VISUAL_CONSISTENCY_INSTRUCTION = (
     "COHERENCE VISUELLE OBLIGATOIRE : toutes les scenes de cette video "
     "doivent partager exactement la meme palette de couleurs, le meme style "
@@ -430,6 +428,7 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
+                # FIX : .choices est une liste, il faut l'indexer  avant .message
                 return response.choices.message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
