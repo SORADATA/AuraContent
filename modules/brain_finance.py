@@ -314,7 +314,10 @@ def _clean_single_line_title(text):
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
-    first_line = lines
+    # FIX : il manquait l'index  -- lines est une LISTE de lignes,[0]
+    # pas une chaine. Sans ce fix, re.sub plante avec TypeError car
+    # first_line etait toute la liste au lieu de sa premiere entree.
+    first_line = lines[0]
     return re.sub(r"\s+", " ", first_line).strip()
 
 
@@ -427,7 +430,10 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                return response.choices.message.content, provider
+                # FIX : .choices est une LISTE, il faut l'indexer[0]
+                # avant .message -- c'est la cause exacte de l'erreur
+                # 'list' object has no attribute 'message'.
+                return response.choices.message.content, provider[0]
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
                 last_error = e
@@ -729,13 +735,17 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         return hooks
 
     def pick_best_hook(self, hooks, previous_stats_list=None, state=None):
+        # FIX : cette fonction doit retourner UN hook (un dict), pas la
+        # liste entiere. Sans, main_finance.py plante sur[0]
+        # best_hook_data["text"] avec TypeError: list indices must be
+        # integers or slices, not str.
         if not previous_stats_list or not state:
-            return hooks
+            return hooks[0]
         enriched_stats = _enrich_stats_with_local_pattern(previous_stats_list, state)
         if not any(s.get("pattern") for s in enriched_stats):
-            return hooks
+            return hooks[0]
         scored = sorted(hooks, key=lambda h: _score_hook(h, enriched_stats), reverse=True)
-        return scored
+        return scored[0]
 
     def generate_script(self, topic, notion=None, angle=None, chosen_hook=None):
         return self.generate_script_with_target(topic, notion=notion, angle=angle, scene_count=11, chosen_hook=chosen_hook)
