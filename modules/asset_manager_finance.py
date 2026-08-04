@@ -127,7 +127,7 @@ class AssetManager:
     def get_videos(self, script_data):
         video_paths = []
 
-        # Utilisation de enumerate pour avoir l'index (idx) de la scène
+        # Utilisation de enumerate pour permettre l'alternance 1 scène sur 2
         for idx, scene in enumerate(script_data):
             scene_id = scene["id"]
             role = scene.get("role", "example")
@@ -143,7 +143,7 @@ class AssetManager:
             query = scene.get("stock_search", "finance")
             image_prompt = scene.get("image_prompt", "")
 
-            # MODIFICATION ICI : On utilise Pollinations si on a un prompt ET (1 fois sur 2 OU pour des rôles précis)
+            # MODIFICATION ICI : Alternance IA (1 sur 2) ou rôles spécifiques
             if image_prompt and (idx % 2 == 0 or role in {"analogy", "misconception", "example"}):
                 print(f"🎨 Scene {scene_id} - Génération IA Pollinations (Flux)...")
                 pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path, duration=duration)
