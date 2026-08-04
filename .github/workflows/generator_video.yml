@@ -40,6 +40,7 @@ jobs:
       VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
       REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
       USE_HOOK_VARIANTS: ${{ github.event.inputs.use_hook_variants || 'true' }}
+      POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
 
     steps:
       - name: 📥 Cloner le dépôt
