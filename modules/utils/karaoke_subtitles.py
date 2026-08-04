@@ -21,6 +21,36 @@ Format: Layer, Start, End, Style, Text
 """
 
 
+def _ensure_wav_16k(audio_path, temp_dir, scene_id):
+    """whisper.cpp attend du WAV 16kHz mono. Convertit uniquement si
+    necessaire (ex: fallback Edge-TTS qui produit du mp3). Si l'audio
+    est deja en .wav, on le passe tel quel a whisper.cpp."""
+    if audio_path.lower().endswith(".wav"):
+        return audio_path
+
+    os.makedirs(temp_dir, exist_ok=True)
+    converted_path = os.path.join(temp_dir, f"converted_{scene_id}.wav")
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", audio_path,
+                "-ar", "16000", "-ac", "1",
+                converted_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return converted_path
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
+        print(f"❌ Conversion audio->wav echouee pour scene {scene_id}: {stderr}")
+        return None
+    except Exception as e:
+        print(f"❌ Erreur inattendue conversion audio scene {scene_id}: {e}")
+        return None
+
+
 def _run_whisper_cpp(audio_wav_path, output_json_prefix):
     cmd = [
         WHISPER_CPP_BIN, "-m", WHISPER_MODEL, "-f", audio_wav_path,
@@ -92,18 +122,28 @@ def build_karaoke_ass(words, output_ass_path, words_per_line=4, highlight_color=
     return output_ass_path
 
 
-def generate_karaoke_subtitles(audio_wav_path, scene_id, temp_dir):
+def generate_karaoke_subtitles(audio_path, scene_id, temp_dir):
+    """Point d'entree unique : audio (wav ou mp3) -> fichier .ass karaoke
+    pret a etre burne avec le filtre ffmpeg 'ass'. Convertit
+    automatiquement en wav 16kHz si le TTS a produit du mp3
+    (cas du fallback Edge-TTS)."""
+    wav_path = _ensure_wav_16k(audio_path, temp_dir, scene_id)
+    if not wav_path:
+        return None
+
     json_prefix = os.path.join(temp_dir, f"whisper_{scene_id}")
     ass_path = os.path.join(temp_dir, f"karaoke_{scene_id}.ass")
+
     try:
-        json_path = _run_whisper_cpp(audio_wav_path, json_prefix)
+        json_path = _run_whisper_cpp(wav_path, json_prefix)
         words = _parse_whisper_json(json_path)
         if not words:
             print(f"⚠️ Scene {scene_id}: aucun mot transcrit, karaoke ignore.")
             return None
         return build_karaoke_ass(words, ass_path)
     except subprocess.CalledProcessError as e:
-        print(f"❌ whisper.cpp echec scene {scene_id}: {e.stderr}")
+        stderr = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
+        print(f"❌ whisper.cpp echec scene {scene_id}: {stderr}")
         return None
     except Exception as e:
         print(f"❌ Erreur karaoke scene {scene_id}: {e}")
