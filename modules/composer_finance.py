@@ -26,18 +26,18 @@ class Composer:
         self.music_fade_duration = 1.5
         self.transition_duration = 0.45
 
-        # Style de sous-titres classique propre en bas (fond noir opaque pour une lisibilité maximale)
+        # MODIFICATION ICI : Style de sous-titres dynamique type Reels/TikTok (Style Hormozi)
         self.subtitle_style = (
             "FontName=Montserrat,"
-            "FontSize=22,"
-            "PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,"
-            "BackColour=&HFF000000,"
-            "BorderStyle=3,"
-            "Outline=1.5,"
-            "Shadow=0,"
-            "Alignment=2,"
-            "MarginV=100"
+            "FontSize=26,"                 # Police plus grande
+            "PrimaryColour=&H0000FFFF,"    # Couleur Jaune vif (format ASS : BBGGRR)
+            "OutlineColour=&H00000000,"    # Contour Noir
+            "BackColour=&H80000000,"       # Ombre semi-transparente
+            "BorderStyle=1,"               # Style 1 = Contour + Ombre (plus moderne que la boîte opaque)
+            "Outline=2.5,"                 # Contour assez épais pour détacher le texte
+            "Shadow=1.5,"                  # Légère ombre portée
+            "Alignment=2,"                 # Centré en bas
+            "MarginV=150"                  # Remonté pour éviter l'UI de TikTok/Shorts en bas
         )
 
     def get_duration(self, filepath):
