@@ -18,6 +18,9 @@ except ImportError:
     print("⚠️ Module market_data_client introuvable. Aucune donnée de marché live injectée.")
     def get_market_signals(**kwargs): return None
 
+# Verrouillage best-effort de l'état du curriculum. Si le package n'est
+# pas installé, on continue sans verrou (risque résiduel en cas de deux
+# générations strictement concurrentes, mais ça ne casse rien).
 try:
     from filelock import FileLock
     FILELOCK_AVAILABLE = True
@@ -27,7 +30,7 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-1.5-flash" # CORRECTION : passage au modèle 1.5
+GEMINI_MODEL = "gemini-2.5-flash"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -65,18 +68,6 @@ PEDAGOGY_INSTRUCTION = (
     "doit pouvoir expliquer le concept a quelqu'un d'autre avec ses propres mots. "
     "Utilise une analogie simple et concrete pour la notion abordee. "
     "Privilegie la clarte a la sophistication : une seule idee centrale par video."
-)
-
-# NOUVEAU : instruction de coherence visuelle stricte, injectee dans chaque
-# generation de script pour eviter que chaque scene ait un style different.
-VISUAL_CONSISTENCY_INSTRUCTION = (
-    "COHERENCE VISUELLE OBLIGATOIRE : toutes les scenes de cette video "
-    "doivent partager exactement la meme palette de couleurs, le meme style "
-    "d'eclairage et la meme ambiance visuelle generale, definis une seule "
-    "fois dans 'visual_identity'. Chaque 'image_prompt' doit reprendre "
-    "explicitement ces memes choix de couleur et de lumiere, afin de donner "
-    "l'impression d'une seule identite de marque cohesive du debut a la fin, "
-    "et non de plans generes independamment les uns des autres."
 )
 
 CONTENT_PILLARS = {
@@ -145,6 +136,10 @@ FORBIDDEN_COMPLIANCE_PHRASES = [
 
 
 class ComplianceViolationError(Exception):
+    """Levée quand un script généré contient une formulation interdite par
+    la regle de conformite AMF, apres normalisation. Contrairement a un
+    simple warning, ceci bloque la sauvegarde du script tant qu'un
+    contenu conforme n'a pas ete obtenu."""
     def __init__(self, violations):
         self.violations = violations
         details = "; ".join(f"scene {v['scene_id']}: '{v['phrase']}'" for v in violations)
@@ -161,6 +156,9 @@ def _flatten_curriculum(pillars=None):
 
 
 def _state_lock():
+    """Context manager pour verrouiller le fichier d'état. No-op si
+    `filelock` n'est pas installe (best-effort, voir import en tete de
+    fichier)."""
     if FILELOCK_AVAILABLE:
         return FileLock(CURRICULUM_STATE_LOCK_PATH, timeout=10)
 
@@ -190,7 +188,7 @@ def _save_curriculum_state(state):
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, CURRICULUM_STATE_PATH)
+        os.replace(tmp_path, CURRICULUM_STATE_PATH)  # écriture atomique
     except OSError as e:
         print(f"⚠️ Impossible d'ecrire l'etat du curriculum : {e}")
         if os.path.exists(tmp_path):
@@ -236,6 +234,10 @@ def _script_missing_accents(script_data):
 
 
 def _safe_json_loads(content):
+    """Parse le JSON renvoye par le LLM en tolerant les erreurs de
+    formatage frequentes (fences Markdown ```json ... ```, texte parasite
+    avant/apres l'objet), plutot que de planter directement sur
+    JSONDecodeError."""
     text = content.strip()
 
     if text.startswith("```"):
@@ -252,7 +254,7 @@ def _safe_json_loads(content):
     last_brace = text.rfind("}")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         candidate = text[first_brace:last_brace + 1]
-        return json.loads(candidate)
+        return json.loads(candidate)  # laisse remonter l'erreur si toujours invalide
 
     raise json.JSONDecodeError("Impossible d'extraire un objet JSON valide", text, 0)
 
@@ -350,6 +352,9 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
 
 
 def _normalize_title_for_matching(title):
+    """Normalise un titre pour du matching approximatif entre l'historique
+    local (ou l'on connait le pattern de hook utilise) et les stats
+    externes remontees par Zernio (ou l'on ne connait que le titre)."""
     text = str(title).lower().strip()
     text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\s+", " ", text)
@@ -357,6 +362,16 @@ def _normalize_title_for_matching(title):
 
 
 def _enrich_stats_with_local_pattern(previous_stats_list, state):
+    """Les stats Zernio (previous_stats_list) contiennent title/views/likes
+    mais PAS le pattern de hook utilise pour cette video : cette info
+    n'existe que dans notre historique local (state['history']), enregistre
+    au moment de la publication via record_topic_used(). Sans ce
+    rapprochement, _score_hook ne trouve jamais de 'pattern' et retombe
+    toujours sur hooks[0] : le feedback loop est silencieusement inactif.
+
+    On associe chaque stat externe a l'entree d'historique correspondante
+    par titre normalise, pour reconstituer quel pattern a genere quelle
+    performance."""
     if not previous_stats_list:
         return []
 
@@ -392,21 +407,17 @@ def _score_hook(hook, enriched_stats_list):
 
 class ContentBrain:
     def _build_client(self, provider):
-        # CORRECTION URL : format brut, VRAIMENT sans crochets Markdown
         if provider == "groq":
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
                 return None
-            return OpenAI(
-                base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)",
-                api_key=groq_key
-            )
+            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
         if provider == "gemini":
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
                 return None
             return OpenAI(
-                base_url="[https://generativelanguage.googleapis.com/v1beta/openai/](https://generativelanguage.googleapis.com/v1beta/openai/)",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 api_key=gemini_key
             )
         return None
@@ -434,7 +445,6 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                # CORRECTION : ajout de [0] pour lire la reponse
                 return response.choices[0].message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
@@ -614,6 +624,10 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
 
     def record_topic_used(self, state, notion, niveau, angle, pillar, topic=None, hook_pattern=None):
+        """Enregistre la video publiee dans l'historique local. `topic` et
+        `hook_pattern` sont necessaires pour que le feedback loop de
+        pick_best_hook puisse un jour rapprocher les stats de performance
+        (Zernio, qui ne connait que le titre) au pattern de hook utilise."""
         with _state_lock():
             state.setdefault("history", []).append({
                 "notion": notion,
@@ -737,10 +751,16 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         return hooks
 
     def pick_best_hook(self, hooks, previous_stats_list=None, state=None):
+        """Choisit le meilleur hook selon les performances passees. Le
+        rapprochement stats-externes <-> pattern-de-hook se fait via
+        l'historique local (state) : sans state, aucun scoring n'est
+        possible et on retombe sur hooks[0]."""
         if not previous_stats_list or not state:
             return hooks[0]
         enriched_stats = _enrich_stats_with_local_pattern(previous_stats_list, state)
         if not any(s.get("pattern") for s in enriched_stats):
+            # Aucun rapprochement possible (ex: premieres videos, aucun
+            # historique local avec hook_pattern encore enregistre).
             return hooks[0]
         scored = sorted(hooks, key=lambda h: _score_hook(h, enriched_stats), reverse=True)
         return scored[0]
@@ -788,7 +808,6 @@ LANGUES :
 {ACCENT_INSTRUCTION}
 {{compliance_block}}
 {PEDAGOGY_INSTRUCTION}
-{VISUAL_CONSISTENCY_INSTRUCTION}
 
 STRUCTURE NARRATIVE PEDAGOGIQUE (methode : erreur -> mecanisme -> analogie -> application) :
 - {hook_instruction}
@@ -823,21 +842,9 @@ REGLES AUDIO :
 - Chaque scene doit inclure "pause_after_ms" avec une valeur entiere entre 180 et 450.
 - Chaque scene peut inclure "tts_emphasis_word".
 
-REGLES VISUELLES (COHERENCE STRICTE ENTRE TOUTES LES SCENES) :
-- "stock_search" : 3 a 7 mots-cles anglais orientes finance/education.
-- "image_prompt" : DOIT suivre EXACTEMENT cette structure modulaire en anglais,
-  dans cet ordre :
-  [subject + action], [location/background + atmosphere], [shot size: close-up
-  OR medium shot OR wide shot], [camera angle: eye level OR slightly low angle],
-  [lighting: soft natural daylight OR warm golden hour OR clean studio light],
-  [color palette: consistent warm neutral tones], vertical 9:16 composition,
-  clean negative space top and bottom for subtitles, photorealistic, no text,
-  no logo, no watermark.
-- La palette de couleur et le style de lumiere choisis DOIVENT etre identiques
-  dans TOUTES les {scene_count} scenes (definis une seule fois et repris
-  litteralement dans chaque "image_prompt").
-- Varie uniquement le sujet, le cadrage et l'angle de camera d'une scene a
-  l'autre, jamais la lumiere ni la palette de couleur.
+REGLES VISUELLES :
+"stock_search" : 3 a 7 mots-cles anglais orientes finance/education.
+"image_prompt" : une seule composition visuelle propre et professionnelle, verticale 9:16, espace libre en haut/bas pour sous-titres, style realiste, aucun texte ni logo.
 
 VALEURS AUTORISEES :
 - "role" : "hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"
@@ -850,7 +857,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
   "title": "Titre francais pedagogique court et accrocheur",
   "notion_enseignee": "{notion or ''}",
   "angle": "{angle or ''}",
-  "visual_identity": "One concise English sentence defining the FIXED recurring color palette, lighting style and overall visual mood shared by every scene of this video",
+  "visual_identity": "One concise English sentence defining recurring clean educational visual continuity",
   "audio_profile": "French premium narrator, confident, sharp, clear, pedagogical, natural pacing",
   "compliance_note": "Contenu educatif general, ne constitue pas un conseil en investissement personnalise.",
   "scenes": [
@@ -861,7 +868,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
       "pause_after_ms": 300,
       "tts_emphasis_word": "mot",
       "stock_search": "concrete English finance education stock footage keywords",
-      "image_prompt": "Detailed English visual prompt following the mandatory modular structure above, reusing the same color palette and lighting as visual_identity",
+      "image_prompt": "Detailed English visual prompt for one vertical cinematic educational shot",
       "mood": "pedagogical",
       "role": "hook"
     }}}}
@@ -878,9 +885,8 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
                         "Tu produis uniquement du JSON valide. "
                         f"La cle scenes contient exactement {scene_count} scenes. "
                         "Tu respectes strictement la structure pedagogique erreur->mecanisme->analogie->application. "
-                        "Tu respectes strictement la coherence visuelle imposee (meme palette et meme lumiere partout). "
                         "Aucun texte hors du JSON. "
-                        f"{ACCENT_INSTRUCTION} {compliance_block} {PEDAGOGY_INSTRUCTION} {VISUAL_CONSISTENCY_INSTRUCTION}"
+                        f"{ACCENT_INSTRUCTION} {compliance_block} {PEDAGOGY_INSTRUCTION}"
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -889,6 +895,11 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         skip_providers = set()
         last_error = None
 
+        # Jusqu'a 2 tentatives : la premiere avec l'instruction de
+        # conformite standard, la seconde (si violation detectee) avec une
+        # instruction renforcee. Si la conformite echoue encore, on
+        # n'enregistre RIEN et on remonte l'erreur — pas de sauvegarde
+        # silencieuse d'un script non conforme.
         for attempt in range(2):
             compliance_block = COMPLIANCE_INSTRUCTION if attempt == 0 else COMPLIANCE_RETRY_INSTRUCTION
             messages = build_messages(compliance_block)
@@ -954,6 +965,9 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             if not voice_direction:
                 raise ValueError(f"Scene {scene.get('id')} : voice_direction manquant.")
 
+            # Le LLM renvoie parfois 300.0 au lieu de 300 en JSON : on
+            # accepte les nombres a virgule flottante entiers plutot que
+            # de rejeter une valeur numeriquement valide.
             if isinstance(pause_after_ms, float) and pause_after_ms.is_integer():
                 pause_after_ms = int(pause_after_ms)
                 scene["pause_after_ms"] = pause_after_ms
@@ -992,6 +1006,10 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         if "audio_profile" not in data or not str(data["audio_profile"]).strip():
             raise ValueError("audio_profile manquant.")
 
+        # Bloquant : une formulation non conforme ne doit jamais aboutir a
+        # un script sauvegarde silencieusement. generate_script_with_target
+        # capture cette exception specifique pour retenter avec une
+        # instruction renforcee avant d'abandonner definitivement.
         if compliance_violations:
             raise ComplianceViolationError(compliance_violations)
 
