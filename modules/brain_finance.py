@@ -27,7 +27,7 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-1.5-flash" # CORRECTION ICI : passage au modèle 1.5
+GEMINI_MODEL = "gemini-1.5-flash" # CORRECTION : passage au modèle 1.5
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -392,11 +392,15 @@ def _score_hook(hook, enriched_stats_list):
 
 class ContentBrain:
     def _build_client(self, provider):
+        # CORRECTION URL : format brut, sans crochets Markdown
         if provider == "groq":
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
                 return None
-            return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
+            return OpenAI(
+                base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)",
+                api_key=groq_key
+            )
         if provider == "gemini":
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
@@ -430,7 +434,7 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                # CORRECTION ICI : Ajout du [0] pour eviter l'erreur list object has no attribute message
+                # CORRECTION : ajout de [0] pour lire la reponse
                 return response.choices[0].message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
