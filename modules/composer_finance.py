@@ -15,7 +15,6 @@ class Composer:
         os.makedirs(self.final_dir, exist_ok=True)
         os.makedirs(self.music_dir, exist_ok=True)
 
-        # Transitions elargies (40+ disponibles nativement dans ffmpeg xfade)
         self.transitions_by_role = {
             "hook": ["fade", "circleopen", "zoomin"],
             "misconception": ["wipeleft", "wiperight", "slideup"],
@@ -38,7 +37,6 @@ class Composer:
         self.music_fade_duration = 1.5
         self.transition_duration = 0.45
 
-        # Fallback si karaoke ASS indisponible (whisper.cpp echoue)
         self.subtitle_style = (
             "FontName=Montserrat,"
             "FontSize=26,"
@@ -59,45 +57,29 @@ class Composer:
         except Exception:
             return 0.0
 
-    def process_scene(self, scene, image_pair):
+    def process_scene(self, scene, video_clip_path):
+        """Assemble un clip video deja fini (Pexels ou Pollinations, deja
+        converti avec son propre effet de mouvement) avec l'audio de la
+        scene et les sous-titres. Recadre systematiquement en 1080x1920."""
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
 
+        if not video_clip_path or not os.path.exists(video_clip_path):
+            print(f"❌ Scene {scene_id}: clip video introuvable ({video_clip_path}).")
+            return None
+
         try:
             input_audio = ffmpeg.input(audio_path)
-            print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
+            print(f"    ⚙️ Processing Scene {scene_id}: assemblage clip + audio + sous-titres")
 
-            if isinstance(image_pair, dict):
-                path_a = image_pair.get("a")
-                path_b = image_pair.get("b", path_a)
-            elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
-                path_a, path_b = image_pair[0], image_pair[1]
-            else:
-                path_a = path_b = str(image_pair)
-
-            duration_a = max(total_duration / 2, 0.1)
-            duration_b = max((total_duration / 2) + 0.35, 0.1)
-            frames_a = max(int(duration_a * self.fps), 1)
-            frames_b = max(int(duration_b * self.fps), 1)
-
-            stream_a = (
-                ffmpeg.input(path_a, loop=1, t=duration_a)
-                .filter("scale", 2200, -1)
-                .filter("zoompan", z="min(zoom+0.0012,1.18)", d=frames_a,
-                        s=f"{self.video_width}x{self.video_height}", fps=self.fps)
-                .setpts("PTS-STARTPTS")
+            video_stream = (
+                ffmpeg.input(video_clip_path)
+                .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
+                .filter("crop", self.video_width, self.video_height)
+                .filter("setpts", "PTS-STARTPTS")
             )
-            stream_b = (
-                ffmpeg.input(path_b, loop=1, t=duration_b)
-                .filter("scale", 2200, -1)
-                .filter("zoompan", z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))", d=frames_b,
-                        s=f"{self.video_width}x{self.video_height}", fps=self.fps)
-                .setpts("PTS-STARTPTS")
-            )
-
-            video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
 
             # Sous-titres karaoke mot-par-mot via whisper.cpp (gratuit, local)
             ass_path = generate_karaoke_subtitles(audio_path, scene_id, self.temp_dir)
@@ -115,7 +97,8 @@ class Composer:
             runner = ffmpeg.output(
                 video_stream, input_audio, output_path,
                 vcodec="libx264", acodec="aac", pix_fmt="yuv420p",
-                r=self.fps, crf=18, preset="medium", shortest=None
+                r=self.fps, crf=18, preset="medium",
+                t=total_duration, shortest=None
             )
             runner.run(overwrite_output=True, quiet=True)
             return output_path
@@ -124,13 +107,14 @@ class Composer:
             print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
             return None
 
-    def render_all_scenes(self, script_data, video_pairs):
+    def render_all_scenes(self, script_data, video_paths):
         rendered_paths = []
         for i, scene in enumerate(script_data):
-            current_pair = video_pairs[i]
-            if current_pair is None:
+            current_clip = video_paths[i]
+            if current_clip is None:
+                print(f"⚠️ Scene {scene['id']}: aucun clip disponible, scene ignoree.")
                 continue
-            output_path = self.process_scene(scene, current_pair)
+            output_path = self.process_scene(scene, current_clip)
             if output_path:
                 rendered_paths.append(output_path)
         return rendered_paths
@@ -191,9 +175,9 @@ class Composer:
             )
 
             voice_split = voice_audio_base.filter_multi_output("asplit", 2)
-            voice_for_sidechain, voice_for_mix = voice_split[0], voice_split[1]
+            voice_for_sidechain, voice_for_mix = voice_split, voice_split[1]
             music_split = music_audio_base.filter_multi_output("asplit", 2)
-            music_for_sidechain, music_for_mix = music_split[0], music_split[1]
+            music_for_sidechain, music_for_mix = music_split, music_split[1]
 
             ducked_music = ffmpeg.filter([music_for_sidechain, voice_for_sidechain], "sidechaincompress",
                                           threshold=0.03, ratio=10, attack=20, release=250, makeup=1)
@@ -227,9 +211,9 @@ class Composer:
             return None
 
         if len(video_paths) == 1:
-            stitched_path = video_paths[0]
+            stitched_path = video_paths
         else:
-            courant = video_paths[0]
+            courant = video_paths
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
                 merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
