@@ -27,7 +27,7 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-1.5-flash" # CORRECTION ICI : passage au modèle 1.5
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -317,7 +317,7 @@ def _clean_single_line_title(text):
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
-    first_line = lines
+    first_line = lines[0]
     return re.sub(r"\s+", " ", first_line).strip()
 
 
@@ -396,13 +396,13 @@ class ContentBrain:
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
                 return None
-            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+            return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
         if provider == "gemini":
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
                 return None
             return OpenAI(
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                base_url="[https://generativelanguage.googleapis.com/v1beta/openai/](https://generativelanguage.googleapis.com/v1beta/openai/)",
                 api_key=gemini_key
             )
         return None
@@ -430,7 +430,8 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**kwargs)
                 print(f"Reponse obtenue via {provider}")
-                return response.choices.message.content, provider
+                # CORRECTION ICI : Ajout du [0] pour eviter l'erreur list object has no attribute message
+                return response.choices[0].message.content, provider
             except Exception as e:
                 print(f"Echec avec {provider}: {e}")
                 last_error = e
@@ -733,12 +734,12 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
     def pick_best_hook(self, hooks, previous_stats_list=None, state=None):
         if not previous_stats_list or not state:
-            return hooks
+            return hooks[0]
         enriched_stats = _enrich_stats_with_local_pattern(previous_stats_list, state)
         if not any(s.get("pattern") for s in enriched_stats):
-            return hooks
+            return hooks[0]
         scored = sorted(hooks, key=lambda h: _score_hook(h, enriched_stats), reverse=True)
-        return scored
+        return scored[0]
 
     def generate_script(self, topic, notion=None, angle=None, chosen_hook=None):
         return self.generate_script_with_target(topic, notion=notion, angle=angle, scene_count=11, chosen_hook=chosen_hook)
