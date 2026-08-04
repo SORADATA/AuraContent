@@ -24,6 +24,9 @@ on:
   #- cron: "7 1 * * *"   # 03h07 Paris
   #- cron: "7 8 * * *"   # 10h07 Paris
 
+permissions:
+  contents: write   # necessaire pour committer l'etat du curriculum en fin de run
+
 jobs:
   build-and-generate:
     runs-on: ubuntu-latest
@@ -33,7 +36,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }} # zernio finance
+      ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
 
@@ -46,8 +49,8 @@ jobs:
       - name: 📥 Cloner le dépôt
         uses: actions/checkout@v4
 
-      - name: ⚙️ Installer FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: ⚙️ Installer FFmpeg et espeak-ng (requis par kokoro TTS)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
 
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
@@ -67,7 +70,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 🎬 Générer la vidéo
-        run: python main_finance.py # NOUVEAU : On lance le script de la chaîne finance
+        run: python main_finance.py
 
       - name: 🔊 Vérifier le niveau sonore
         if: always()
@@ -93,3 +96,16 @@ jobs:
           name: Video-TikTok-Prete-${{ github.run_id }}
           path: assets/final/final_short.mp4
           if-no-files-found: warn
+
+      - name: 🧠 Committer l'état du curriculum (anti-repetition)
+        if: always()
+        run: |
+          if [ -f assets/state/curriculum_finance_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add assets/state/curriculum_finance_state.json
+            git diff --staged --quiet || git commit -m "chore: mise a jour de l'etat du curriculum [skip ci]"
+            git push
+          else
+            echo "Aucun fichier d'etat du curriculum a committer."
+          fi
