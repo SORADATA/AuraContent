@@ -43,7 +43,6 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
 
     for attempt in range(1, max_retries + 1):
         try:
-            # 1. Upload de la vidéo finance
             api.upload_file(
                 path_or_fileobj=video_path,
                 path_in_repo=remote_filename,
@@ -52,8 +51,7 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
                 commit_message=f"Add generated finance short: {safe_topic}"
             )
             print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
-            
-            # 2. Upload de la légende associée pour le bot publisher
+
             caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
             if os.path.exists(caption_path):
                 api.upload_file(
@@ -186,8 +184,11 @@ def validate_script_payload(script_payload):
 # --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
 # =====================================================================
 
-GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
-GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1/3.3-70b-versatile (décommissionnés)
+# FIX : gemini-2.5-flash-lite retire pour les nouvelles cles API (404).
+# "gemini-flash-latest" pointe automatiquement vers le modele flash gratuit
+# disponible pour la cle, meme quand les IDs figes changent.
+GEMINI_CAPTION_MODEL = "gemini-flash-latest"
+GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
 def generate_caption_with_gemini(prompt_legende):
@@ -403,7 +404,10 @@ async def main():
         return
 
     try:
-        final_path = composer.concatenate_with_transitions(final_scene_paths)
+        # FIX : script_data=script transmis pour activer les transitions
+        # specifiques par role narratif (hook, mechanism, cta, etc.)
+        # au lieu de retomber systematiquement sur le pool par defaut.
+        final_path = composer.concatenate_with_transitions(final_scene_paths, script_data=script)
     except Exception as e:
         print(f"❌ Final assembly error: {e}")
         return
