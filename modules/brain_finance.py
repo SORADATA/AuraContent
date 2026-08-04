@@ -18,9 +18,7 @@ except ImportError:
     print("⚠️ Module market_data_client introuvable. Aucune donnée de marché live injectée.")
     def get_market_signals(**kwargs): return None
 
-# Verrouillage best-effort de l'état du curriculum. Si le package n'est
-# pas installé, on continue sans verrou (risque résiduel en cas de deux
-# générations strictement concurrentes, mais ça ne casse rien).
+# Verrouillage best-effort de l'état du curriculum.
 try:
     from filelock import FileLock
     FILELOCK_AVAILABLE = True
@@ -382,6 +380,7 @@ def _score_hook(hook, enriched_stats_list):
 
 class ContentBrain:
     def _build_client(self, provider):
+        # CORRECTION URLS: Retrait des crochets Markdown [URL](URL) qui faisaient planter l'API
         if provider == "groq":
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
@@ -747,7 +746,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         notion_line = f"NOTION CENTRALE A ENSEIGNER : {notion}\n" if notion else ""
         angle_line = f"ANGLE IMPOSE : {angle.replace('_', ' ')}\n" if angle else ""
 
-        # MODIFICATION ICI (REGLES VISUELLES et TEMPLATE JSON)
+        # MODIFICATION DES REGLES VISUELLES et correction de syntaxe JSON
         base_prompt = f"""
 Tu es prof de finance personnelle, redacteur en chef d'une chaine francophone
 d'education financiere dont la mission est d'ENSEIGNER durablement, pas
@@ -819,7 +818,7 @@ VALEURS AUTORISEES :
 FORMAT DE SORTIE :
 Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
-{{{{
+{{
   "title": "Titre francais pedagogique court et accrocheur",
   "notion_enseignee": "{notion or ''}",
   "angle": "{angle or ''}",
@@ -827,7 +826,7 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
   "audio_profile": "French premium narrator, confident, sharp, clear, pedagogical, natural pacing",
   "compliance_note": "Contenu educatif general, ne constitue pas un conseil en investissement personnalise.",
   "scenes": [
-    {{{{
+    {{
       "id": 1,
       "text": "Phrase francaise complete de douze a vingt-deux mots.",
       "voice_direction": "French premium narrator, confident, clear, engaging",
@@ -837,9 +836,9 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
       "image_prompt": "Highly detailed English visual prompt (e.g., 3D futuristic chart, cinematic Wall street, minimal vector portfolio), no text, 9:16",
       "mood": "pedagogical",
       "role": "hook"
-    }}}}
+    }}
   ]
-}}}}
+}}
 """
 
         def build_messages(compliance_block):
