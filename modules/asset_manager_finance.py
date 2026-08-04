@@ -127,7 +127,8 @@ class AssetManager:
     def get_videos(self, script_data):
         video_paths = []
 
-        for scene in script_data:
+        # Utilisation de enumerate pour avoir l'index (idx) de la scène
+        for idx, scene in enumerate(script_data):
             scene_id = scene["id"]
             role = scene.get("role", "example")
             output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
@@ -142,8 +143,9 @@ class AssetManager:
             query = scene.get("stock_search", "finance")
             image_prompt = scene.get("image_prompt", "")
 
-            if role in {"analogy", "misconception"} and image_prompt:
-                print(f"🎨 Scene {scene_id} - Pollinations pour {role}...")
+            # MODIFICATION ICI : On utilise Pollinations si on a un prompt ET (1 fois sur 2 OU pour des rôles précis)
+            if image_prompt and (idx % 2 == 0 or role in {"analogy", "misconception", "example"}):
+                print(f"🎨 Scene {scene_id} - Génération IA Pollinations (Flux)...")
                 pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path, duration=duration)
                 if self._safe_exists(pollinations_path):
                     video_paths.append(pollinations_path)
