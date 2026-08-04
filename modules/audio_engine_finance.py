@@ -26,6 +26,8 @@ class AudioEngine:
         "Clear diction, slightly deep tone, controlled pacing, short pauses, "
         "cinematic but not theatrical."
     )
+    # FIX : voix Gemini TTS predefinie, requise par speechConfig.
+    GEMINI_VOICE_NAME = "Charon"
 
     EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
     EDGE_FALLBACK_RATE = "-8%"
@@ -34,7 +36,6 @@ class AudioEngine:
 
     KOKORO_FRENCH_VOICE = "ff_siwis"
 
-    # Modification ici: use_kokoro passe sur False par défaut pour éviter la seule voix (féminine) dispo sur Kokoro en français.
     def __init__(self, bark_url=None, use_kokoro=False, use_gemini=True):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)
@@ -98,18 +99,24 @@ class AudioEngine:
             f"{self.GEMINI_MODEL}:generateContent?key={self.gemini_api_key}"
         )
 
+        # FIX : speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+        # est OBLIGATOIRE pour l'API Gemini TTS. Sans lui, generateContent
+        # ne renvoie aucune partie audio exploitable : inline_data reste
+        # toujours None et _try_gemini echoue a chaque appel, sans erreur
+        # explicite -- le pipeline retombe silencieusement sur Kokoro/Edge.
         payload = {
             "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": self.stylize_for_gemini(text)
-                        }
-                    ]
-                }
+                {"parts": [{"text": self.stylize_for_gemini(text)}]}
             ],
             "generationConfig": {
-                "responseModalities": ["AUDIO"]
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": self.GEMINI_VOICE_NAME
+                        }
+                    }
+                }
             }
         }
 
