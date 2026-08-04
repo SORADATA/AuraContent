@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+import threading
 import urllib.parse
 import requests
 import random
@@ -16,6 +17,12 @@ MAX_PARALLEL_WORKERS = 3
 
 
 class AssetManager:
+    # Verrou et horodatage partages entre TOUS les threads/instances afin de
+    # respecter reellement le rate-limit Pollinations (1 req/5s tier Seed,
+    # 1 req/15s tier Anonyme), meme avec plusieurs workers en parallele.
+    _pollinations_lock = threading.Lock()
+    _last_pollinations_call = [0.0]
+
     def __init__(self, run_id=None):
         self.run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
         self.video_dir = os.path.join(os.getcwd(), "assets", "video_clips", self.run_id)
@@ -28,6 +35,15 @@ class AssetManager:
 
     def _safe_exists(self, path):
         return path and os.path.exists(path) and os.path.getsize(path) > 0
+
+    def _respect_pollinations_rate_limit(self):
+        min_interval = 5.5 if POLLINATIONS_TOKEN else 15.5
+        with self._pollinations_lock:
+            now = time.time()
+            elapsed = now - self._last_pollinations_call
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            self._last_pollinations_call = time.time()
 
     def _try_pexels(self, query, output_path):
         try:
@@ -64,8 +80,11 @@ class AssetManager:
         img_path = os.path.join(self.temp_dir, f"pollinations_{self.run_id}_{scene_id}.jpg")
 
         for attempt in range(retries + 1):
+            # Le verrou global garantit qu'un seul thread appelle Pollinations
+            # a la fois, y compris pour la toute premiere tentative.
+            self._respect_pollinations_rate_limit()
+
             if attempt > 0:
-                # Rate limit tier Seed (1 req/5s) si token dispo, sinon tier Anonyme (1 req/15s)
                 base_wait = 5.0 if POLLINATIONS_TOKEN else 15.0
                 wait_time = min(base_wait * (1.5 ** (attempt - 1)) + random.uniform(0, 1.5), 20)
                 print(f"    ⏳ Tentative {attempt + 1}/{retries + 1} Pollinations (pause {wait_time:.1f}s)...")
@@ -147,9 +166,9 @@ class AssetManager:
         return scene_id, fallback_path if self._safe_exists(fallback_path) else None
 
     def get_videos(self, script_data):
-        """Version parallélisée : plusieurs scènes traitées simultanément
-        pour compenser le rate limit Pollinations, sans dépasser
-        MAX_PARALLEL_WORKERS requêtes concurrentes."""
+        """Version parallélisée : plusieurs scènes traitées simultanément.
+        Le rate-limit Pollinations est desormais respecte globalement via
+        un verrou partage entre threads (voir _respect_pollinations_rate_limit)."""
         results = {}
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
             futures = {
