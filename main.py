@@ -199,8 +199,10 @@ def validate_script_payload(script_payload):
 # --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
 # =====================================================================
 
-GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
-GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1-70b-versatile (décommissionné)
+# GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
+# GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1-70b-versatile (décommissionné)
+GEMINI_CAPTION_MODEL = "gemini-1.5-flash"   
+GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
 def generate_caption_with_gemini(prompt_legende):

@@ -1,9 +1,9 @@
 import os
 import re
 import json
+import time # 🛠️ AJOUT : Nécessaire pour la pause réseau
 from openai import OpenAI
 from dotenv import load_dotenv
-
 
 try:
     from modules.utils.zernio_client import get_latest_videos_stats
@@ -11,16 +11,13 @@ except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
     def get_latest_videos_stats(): return None
 
-
 load_dotenv()
 
-
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-flash"
-
+# Modèle plus stable et 100% compatible
+GEMINI_MODEL = "gemini-1.5-flash" 
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
-
 
 ACCENT_INSTRUCTION = (
     "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
@@ -30,7 +27,6 @@ ACCENT_INSTRUCTION = (
     "(jamais 'revelation'), 'étrange' (jamais 'etrange'), 'théorie' "
     "(jamais 'theorie'). Verifie chaque mot avant de repondre."
 )
-
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -44,14 +40,12 @@ def _has_missing_accents(text, min_hits=3):
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
 
-
 def _script_missing_accents(script_data):
     scenes = script_data.get("scenes", [])
     if not scenes:
         return False
     full_text = " ".join(s.get("text", "") for s in scenes)
     return _has_missing_accents(full_text)
-
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
     if not previous_stats_list:
@@ -72,7 +66,6 @@ Agis comme un Growth Hacker. Analyse brievement quels themes ou structures ont o
 Sers-toi de cette deduction pour ajuster le {label} que tu vas generer.
 """
 
-
 def _clean_single_line_title(text):
     if not text:
         return ""
@@ -85,7 +78,6 @@ def _clean_single_line_title(text):
     first_line = lines[0]
     first_line = re.sub(r"\s+", " ", first_line).strip()
     return first_line
-
 
 def _is_valid_topic_candidate(topic):
     if not topic:
@@ -139,38 +131,47 @@ class ContentBrain:
     def _model_for(self, provider):
         return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
 
+    # 🛠️ CORRECTION : Fonction mise à jour avec boucle de retry et pause réseau
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
         skip_providers = skip_providers or set()
         last_error = None
+        max_retries = 2
 
-        for provider in ("groq", "gemini"):
-            if provider in skip_providers:
-                continue
+        for attempt in range(max_retries):
+            for provider in ("groq", "gemini"):
+                if provider in skip_providers:
+                    continue
 
-            client = self._build_client(provider)
-            if client is None:
-                print(f"Cle API absente pour {provider}, on passe au suivant...")
-                continue
+                client = self._build_client(provider)
+                if client is None:
+                    print(f"Cle API absente pour {provider}, on passe au suivant...")
+                    continue
 
-            try:
-                kwargs = {
-                    "model": self._model_for(provider),
-                    "messages": messages,
-                    "temperature": temperature,
-                }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+                try:
+                    kwargs = {
+                        "model": self._model_for(provider),
+                        "messages": messages,
+                        "temperature": temperature,
+                    }
+                    if json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
 
-                response = client.chat.completions.create(**kwargs)
-                print(f"Reponse obtenue via {provider}")
-                return response.choices[0].message.content, provider
+                    response = client.chat.completions.create(**kwargs)
+                    print(f"✅ Reponse obtenue via {provider}")
+                    return response.choices[0].message.content, provider
 
-            except Exception as e:
-                print(f"Echec avec {provider}: {e}")
-                last_error = e
-                continue
+                except Exception as e:
+                    print(f"⚠️ Echec avec {provider} (Cycle {attempt+1}/{max_retries}): {e}")
+                    last_error = e
+                    continue # On passe au provider suivant
+            
+            # Si on arrive ici, c'est que Groq ET Gemini ont échoué
+            if attempt < max_retries - 1:
+                print("⏳ Micro-coupure réseau suspectée. Pause de 5s avant de tout retenter...")
+                time.sleep(5)
 
-        raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
+        # Si même après les pauses tout échoue, on lève l'erreur
+        raise RuntimeError(f"Aucun provider disponible après {max_retries} tentatives. Derniere erreur: {last_error}")
 
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")

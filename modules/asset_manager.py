@@ -1,7 +1,7 @@
 import os
 from modules.ai_image import AIImageGenerator
 
-FALLBACK_IMAGE = os.path.join(os.getcwd(), "assets", "fallback.png")
+FALLBACK_DIR = os.path.join(os.getcwd(), "assets", "images")
 
 
 class AssetManager:
@@ -89,11 +89,20 @@ class AssetManager:
                 print(f"    Scene {scene_id}: visual_1 a echoue, reutilisation de visual_2")
                 pairs.append({"a": path_b, "b": path_b})
             else:
+                # 🛠️ CORRECTION : Logique de fallback intelligente sur tes fichiers .jpg
                 print(f"    Scene {scene_id}: aucune image generee, utilisation du fallback")
-                if os.path.exists(FALLBACK_IMAGE):
-                    pairs.append({"a": FALLBACK_IMAGE, "b": FALLBACK_IMAGE})
+                
+                specific_fallback = os.path.join(FALLBACK_DIR, f"fallback_{scene_id}.jpg")
+                ultimate_fallback = os.path.join(FALLBACK_DIR, "fallback_1.jpg") # Roue de secours finale
+                
+                if os.path.exists(specific_fallback):
+                    pairs.append({"a": specific_fallback, "b": specific_fallback})
+                    print(f"    ✅ Fallback spécifique fallback_{scene_id}.jpg utilisé.")
+                elif os.path.exists(ultimate_fallback):
+                    pairs.append({"a": ultimate_fallback, "b": ultimate_fallback})
+                    print(f"    ⚠️ Fallback {scene_id} absent. Utilisation de fallback_1.jpg en secours.")
                 else:
-                    print(f"    Scene {scene_id}: fallback introuvable, scene ignoree")
+                    print(f"    ❌ Scene {scene_id}: aucun fallback trouvé, scene ignoree")
                     pairs.append(None)
 
         return pairs
