@@ -25,9 +25,10 @@ on:
 
 jobs:
   # ==========================================
-  # JOB 1 : CHAÎNE FINANCE
+  # JOB 1 : CHAÎNE FINANCE (DÉSACTIVÉ TEMPORAIREMENT)
   # ==========================================
   finance_generator:
+    if: false # 🛠️ Empeche de se lancer
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -73,11 +74,16 @@ jobs:
       - name: 📦 Installer les dépendances
         run: pip install -r requirements.txt
 
-      - name: ⏳ Pause anti-surcharge API
-        run: sleep 180
-
       - name: 🎬 Générer la vidéo (Finance)
-        run: python main_finance.py
+        run: |
+          for i in 1 2 3; do
+            echo "Tentative $i..."
+            python main_finance.py && exit 0
+            echo "Échec de la tentative $i. Pause de 15 secondes avant de réessayer..."
+            sleep 15
+          done
+          echo "Les 3 tentatives ont échoué."
+          exit 1
 
       - name: 🔊 Vérifier le niveau sonore
         if: always()
@@ -113,7 +119,7 @@ jobs:
           if-no-files-found: warn
 
   # ==========================================
-  # JOB 2 : CHAÎNE MINUTE MYSTERE KO
+  # JOB 2 : CHAÎNE MINUTE MYSTERE
   # ==========================================
   mystere_generator:
     runs-on: ubuntu-latest
@@ -153,7 +159,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 🎬 Générer la vidéo (Minute Mystere)
-        run: python main.py
+        # 🛠️ Boucle de retry conservée pour encaisser les petites coupures réseau
+        run: |
+          for i in 1 2 3; do
+            echo "Tentative $i..."
+            python main.py && exit 0
+            echo "Échec de la tentative $i. Pause de 15 secondes avant de réessayer..."
+            sleep 15
+          done
+          echo "Les 3 tentatives ont échoué."
+          exit 1
 
       - name: 🔊 Vérifier le niveau sonore
         if: always()
