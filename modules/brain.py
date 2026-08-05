@@ -1,7 +1,7 @@
 import os
 import re
 import json
-import time # 🛠️ AJOUT : Nécessaire pour la pause réseau
+import time  # 🛠️ AJOUT : Nécessaire pour la pause réseau
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -228,6 +228,32 @@ class ContentBrain:
         ]
         content, _ = self._call_with_fallback(messages, temperature=0.8)
         return content.strip().replace(chr(34), "")
+
+    def generate_video_search_query(self, topic):
+        """
+        Demande à l'IA d'adapter le sujet en mots-clés de recherche vidéo 
+        optimisés pour YouTube (en anglais, format CGI / Unreal Engine / Cinematic).
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es un expert en recherche de vidéos cinématiques pour TikTok. "
+                    "À partir du sujet fourni, génère une requête de recherche YouTube en anglais "
+                    "pour trouver un fond visuel spectaculaire. "
+                    "Tu DOIS obligatoirement inclure des termes comme 'CGI', 'Unreal Engine 5', "
+                    "'dark fantasy', 'cinematic 3D render', 'vertical 9:16' ou 'mysterious atmosphere' "
+                    "pour cibler des vidéos ultra-esthétiques et immersives (style shorts mystère). "
+                    "Réponds UNIQUEMENT avec les mots-clés, sans guillemets, sans phrase."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Sujet : {topic}"
+            }
+        ]
+        content, _ = self._call_with_fallback(messages, temperature=0.7)
+        return content.strip().replace('"', '')
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         print(f"Generation de {n} hooks alternatifs pour: {topic}...")
