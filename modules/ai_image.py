@@ -75,9 +75,10 @@ class AIImageGenerator:
         api_url = self._build_url(enhanced_prompt, seed)
 
         try:
+            # 🛠️ CORRECTION : Timeout réduit à 45s (inutile d'attendre 2 minutes si l'API est plantée)
             response = requests.get(
                 api_url,
-                timeout=120,
+                timeout=45,
                 headers={"User-Agent": "TikTokMysteryGenerator/1.0"},
             )
 
@@ -109,7 +110,7 @@ class AIImageGenerator:
         prompt_text,
         output_path,
         visual_identity=None,
-        retries=4,
+        retries=1, # 🛠️ CORRECTION : 1 seul retry maximum au lieu de 4
         seed=None,
         variant=None
     ):
@@ -127,9 +128,9 @@ class AIImageGenerator:
 
         for attempt in range(retries + 1):
             if attempt > 0:
-                wait_time = min(4 * (2 ** (attempt - 1)) + random.uniform(0, 1.5), 20)
-                print(f"    Tentative {attempt + 1}/{retries + 1} (pause {wait_time:.1f}s)...")
-                time.sleep(wait_time)
+                # 🛠️ CORRECTION : Attente simple de 2 secondes au lieu des pauses de 20s
+                print(f"    Tentative {attempt + 1}/{retries + 1} (pause courte)...")
+                time.sleep(2)
 
             current_seed = base_seed + attempt
 
@@ -144,6 +145,11 @@ class AIImageGenerator:
             if success and self._file_is_valid(output_path):
                 print(f"    Image sauvegardee : {output_path} (seed={current_seed})")
                 return True
+            else:
+                # Si erreur 500, on casse la boucle immédiatement pour passer au fallback de l'asset_manager
+                if attempt == 0:
+                     print("    Panne API suspectée. On abandonne vite pour utiliser le fallback.")
+                     break 
 
         print(f"    Echec definitif pour : {output_path}")
         return False
