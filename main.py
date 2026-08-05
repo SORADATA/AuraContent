@@ -7,7 +7,7 @@ from datetime import datetime
 from huggingface_hub import HfApi
 
 from modules.brain import ContentBrain
-from modules.video_scraper import VideoScraper  # 🚀 Remplacement de l'AssetManager par yt-dlp
+from modules.video_scraper import VideoScraper
 from modules.audio import AudioEngine
 from modules.composer import Composer
 
@@ -199,7 +199,7 @@ def validate_script_payload(script_payload):
 # --- GÉNÉRATION DE LA LÉGENDE ---
 # =====================================================================
 
-GEMINI_CAPTION_MODEL = "gemini-1.5-flash" 
+GEMINI_CAPTION_MODEL = "gemini-2.0-flash" 
 GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
@@ -315,6 +315,7 @@ async def main():
         stats_historique = None
 
     try:
+        # 1. Sélection ou saisie du sujet
         if topic_input:
             topic = topic_input
             print(f"📌 Sujet fourni manuellement : {topic}")
@@ -325,6 +326,33 @@ async def main():
             topic = brain.get_trending_topic(previous_stats_list=stats_historique)
             print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
+        # 2. L'IA génère dynamiquement la requête de recherche vidéo adaptée au sujet
+        print("🔍 Génération du mot-clé de recherche visuelle par l'IA...")
+        dynamic_query = brain.generate_video_search_query(topic)
+        print(f"🎯 Requête vidéo générée : '{dynamic_query}'")
+
+    except Exception as e:
+        print(f"❌ Brain Error (Sujet/Requête): {e}")
+        return
+
+    # 3. Téléchargement du fond vidéo via yt-dlp en fonction de la requête dynamique
+    try:
+        print("📥 Téléchargement du fond vidéo immersif (yt-dlp)...")
+        scraper = VideoScraper()
+        bg_video_path, real_video_title = scraper.search_and_download(
+            query=f"{dynamic_query} vertical 9:16", 
+            output_filename="current_bg.mp4"
+        )
+        
+        if not bg_video_path or not real_video_title:
+            raise RuntimeError("Impossible de récupérer un fond vidéo valide via yt-dlp.")
+            
+        print(f"🎬 Fond vidéo validé : '{real_video_title}'")
+    except Exception as e:
+        print(f"❌ Video Scraper Error: {e}")
+        return
+
+    try:
         chosen_hook = None
         if use_hooks_ab_test:
             try:
@@ -352,7 +380,7 @@ async def main():
         video_title = script_payload.get("title", topic)
 
     except Exception as e:
-        print(f"❌ Brain Error: {e}")
+        print(f"❌ Brain Error (Script): {e}")
         return
 
     if not script:
@@ -387,19 +415,6 @@ async def main():
             max_words_per_caption=3,
             min_caption_dur=0.45,
         )
-
-    # --- TÉLÉCHARGEMENT DU FOND VIDÉO CONTINU (YT-DLP) ---
-    try:
-        print("📥 Téléchargement du fond vidéo immersif (yt-dlp)...")
-        scraper = VideoScraper()
-        search_query = f"{video_title} cinematic background footage drone vertical"
-        bg_video_path = scraper.download_background(search_query, output_filename="current_bg.mp4")
-        
-        if not bg_video_path:
-            raise RuntimeError("Impossible de récupérer le fond vidéo via yt-dlp.")
-    except Exception as e:
-        print(f"❌ Video Scraper Error: {e}")
-        return
 
     # --- COMPOSITION VIDÉO ---
     try:

@@ -1,33 +1,19 @@
 import os
 import yt_dlp
 
-
 class VideoScraper:
     def __init__(self, output_dir="assets/backgrounds"):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def download_background(self, query_or_url, output_filename="bg_loop.mp4"):
+    def search_and_download(self, query="mysterious dark cinematic drone vertical", output_filename="current_bg.mp4"):
         """
-        Télécharge une vidéo de fond soit via une URL directe, 
-        soit en faisant une recherche automatique sur YouTube (ex: 'ytsearch1:sujet').
+        Recherche une vidéo sur YouTube, la télécharge, et retourne 
+        le chemin du fichier ET le titre réel de la vidéo trouvée.
         """
         output_path = os.path.join(self.output_dir, output_filename)
-        
-        # Si le fichier existe déjà, on évite de le retélécharger inutilement
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
-            print(f"📁 Vidéo de fond déjà présente : {output_path}")
-            return output_path
+        search_target = f"ytsearch1:{query}"
 
-        # Si ce n'est pas une URL, on utilise la recherche textuelle de yt-dlp
-        target = query_or_url
-        if not query_or_url.startswith("http://") and not query_or_url.startswith("https://"):
-            target = f"ytsearch1:{query_or_url}"
-            print(f"🔍 Recherche automatique du fond vidéo : {query_or_url}")
-        else:
-            print(f"📥 Téléchargement du fond vidéo via URL : {query_or_url}")
-
-        # Configuration officielle recommandée par yt-dlp pour l'embedding Python
         ydl_opts = {
             'format': 'bv*[height<=1920][ext=mp4]+ba[ext=m4a]/b[ext=mp4] / b',
             'outtmpl': output_path.replace('.mp4', ''),
@@ -37,21 +23,28 @@ class VideoScraper:
         }
 
         try:
+            print(f"🔍 Recherche du meilleur fond vidéo dispo sur YouTube pour : {query}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([target])
-            
-            # Vérification de la présence du fichier final
-            if os.path.exists(output_path):
-                print(f"✅ Vidéo de fond prête : {output_path}")
-                return output_path
-            else:
-                # Parfois yt-dlp ajoute l'extension différemment selon le format fusionné
-                for f in os.listdir(self.output_dir):
-                    if f.startswith(output_filename.split('.')[0]):
-                        final_found = os.path.join(self.output_dir, f)
-                        return final_found
-                        
-            return None
+                info = ydl.extract_info(search_target, download=True)
+                
+                # Si c'est une liste (résultat de recherche), on prend le premier élément
+                if 'entries' in info:
+                    video_info = info['entries'][0]
+                else:
+                    video_info = info
+
+                real_title = video_info.get('title', 'Mystère insondable')
+                print(f"✅ Vidéo trouvée et validée : '{real_title}'")
+
+                # Vérification du fichier de sortie
+                if os.path.exists(output_path):
+                    return output_path, real_title
+                else:
+                    for f in os.listdir(self.output_dir):
+                        if f.startswith(output_filename.split('.')[0]):
+                            return os.path.join(self.output_dir, f), real_title
+
+            return None, None
         except Exception as e:
-            print(f"❌ Erreur lors du téléchargement yt-dlp : {e}")
-            return None
+            print(f"❌ Erreur yt-dlp : {e}")
+            return None, None
