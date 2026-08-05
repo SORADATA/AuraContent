@@ -15,7 +15,7 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -147,6 +147,48 @@ class ContentBrain:
     def _model_for(self, provider):
         return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
 
+    def _extract_content(self, response, provider):
+        if response is None:
+            raise ValueError(f"Réponse vide du provider {provider}")
+
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices")
+
+        if not choices:
+            raise ValueError(f"Réponse inattendue du provider {provider}: {response}")
+
+        choice0 = choices[0]
+
+        message = getattr(choice0, "message", None)
+        if message is None and isinstance(choice0, dict):
+            message = choice0.get("message")
+
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+
+        if content is None and isinstance(choice0, dict):
+            content = choice0.get("content")
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if "text" in item:
+                        parts.append(item["text"])
+                    elif "content" in item:
+                        parts.append(item["content"])
+                elif isinstance(item, str):
+                    parts.append(item)
+            content = "".join(parts).strip()
+
+        if not content:
+            raise ValueError(f"Contenu vide ou illisible du provider {provider}: {response}")
+
+        return content
+
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
         skip_providers = skip_providers or set()
         last_error = None
@@ -172,8 +214,9 @@ class ContentBrain:
                         kwargs["response_format"] = {"type": "json_object"}
 
                     response = client.chat.completions.create(**kwargs)
+                    content = self._extract_content(response, provider)
                     print(f"✅ Reponse obtenue via {provider}")
-                    return response.choices.message.content, provider[0]
+                    return content, provider
 
                 except Exception as e:
                     print(f"⚠️ Echec avec {provider} (Cycle {attempt+1}/{max_retries}): {e}")
@@ -272,8 +315,7 @@ class ContentBrain:
                     "À partir du sujet fourni, génère une requête de recherche YouTube en anglais "
                     "pour trouver un fond visuel spectaculaire. "
                     "Tu DOIS obligatoirement inclure des termes comme 'CGI', 'Unreal Engine 5', "
-                    "'dark fantasy', 'cinematic 3D render', 'vertical 9:16' ou 'mysterious atmosphere' "
-                    "pour cibler des vidéos ultra-esthétiques et immersives. "
+                    "'dark fantasy', 'cinematic 3D render', 'vertical 9:16' ou 'mysterious atmosphere'. "
                     "Réponds UNIQUEMENT avec les mots-clés (6 mots maximum), sans guillemets, sans phrase."
                 )
             },
@@ -302,30 +344,17 @@ SUJET :
 {topic}
 
 OBJECTIF :
-Genere {n} hooks differents pour la meme histoire. Chaque hook doit arreter le scroll
-en moins de 3 secondes et creer une promesse de resolution.
+Genere {n} hooks differents pour la meme histoire.
 
 REGLES POUR CHAQUE HOOK :
 - 12 a 18 mots, phrase complete en francais oral et naturel.
-- Combine un fait concret (chiffre, lieu, date, anomalie) AVEC une ancre sensorielle
-  ou emotionnelle.
+- Combine un fait concret avec une ancre sensorielle ou emotionnelle.
 - Varie les patterns de viralite.
 - N'utilise jamais "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
 - {ACCENT_INSTRUCTION}
 
 FORMAT DE SORTIE :
 Retourne uniquement un objet JSON valide, sans bloc Markdown.
-
-{
-  "analyse_agent": "Une phrase courte.",
-  "hooks": [
-    {
-      "text": "Phrase du hook.",
-      "pattern": "question | statistique | confession | contre-intuition | mise_en_garde",
-      "raison": "Une phrase expliquant pourquoi ce hook capte l'attention psychologiquement."
-    }
-  ]
-}
 """
         messages = [
             {
@@ -404,7 +433,6 @@ REGLES AUDIO :
 - Chaque scene doit inclure "voice_direction".
 - Chaque scene doit inclure "pause_after_ms" entre 180 et 450.
 - "tts_emphasis_word" est optionnel.
-- Si present, il doit etre un mot exact du champ "text".
 
 VALEURS AUTORISEES :
 - "role" : "hook", "tension", "context", "value", "escalation", "reveal", "cta"
@@ -412,25 +440,6 @@ VALEURS AUTORISEES :
 
 FORMAT DE SORTIE :
 Retourne uniquement un objet JSON valide.
-
-{
-  "title": "Titre francais court et intrigant",
-  "visual_identity": "One concise English sentence defining recurring visual continuity",
-  "audio_profile": "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing",
-  "scenes": [
-    {
-      "id": 1,
-      "text": "Phrase francaise complete.",
-      "voice_direction": "French premium narrator, calm, elegant, intriguing, controlled pacing",
-      "pause_after_ms": 300,
-      "tts_emphasis_word": "mot",
-      "stock_search": "concrete English stock footage keywords",
-      "image_prompt": "Detailed English visual prompt for one vertical cinematic shot",
-      "mood": "ominous",
-      "role": "hook"
-    }
-  ]
-}
 """
         messages = [
             {
