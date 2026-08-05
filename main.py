@@ -7,7 +7,7 @@ from datetime import datetime
 from huggingface_hub import HfApi
 
 from modules.brain import ContentBrain
-from modules.asset_manager import AssetManager
+from modules.video_scraper import VideoScraper  # 🚀 Remplacement de l'AssetManager par yt-dlp
 from modules.audio import AudioEngine
 from modules.composer import Composer
 
@@ -54,7 +54,7 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
             )
             print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
             
-            # 2. Upload de la légende associée (pour que publish.py puisse la récupérer)
+            # 2. Upload de la légende associée
             caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
             if os.path.exists(caption_path):
                 api.upload_file(
@@ -189,24 +189,21 @@ def validate_script_payload(script_payload):
         raise ValueError("script_payload['scenes'] est vide ou invalide.")
 
     for scene in scenes:
-        if "id" not in scene or "text" not in scene or "image_prompt" not in scene:
-            raise ValueError(f"Scene invalide (verifie le 'image_prompt') : {scene}")
+        if "id" not in scene or "text" not in scene:
+            raise ValueError(f"Scene invalide : {scene}")
 
     return True
 
 
 # =====================================================================
-# --- GÉNÉRATION DE LA LÉGENDE (Gemini -> Groq -> secours) ---
+# --- GÉNÉRATION DE LA LÉGENDE ---
 # =====================================================================
 
-# GEMINI_CAPTION_MODEL = "gemini-2.5-flash-lite"   # SDK google-genai, remplace gemini-1.5-flash (retiré)
-# GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"       # remplace llama-3.1-70b-versatile (décommissionné)
-GEMINI_CAPTION_MODEL = "gemini-1.5-flash"   
+GEMINI_CAPTION_MODEL = "gemini-1.5-flash" 
 GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
 def generate_caption_with_gemini(prompt_legende):
-    """Génère la légende via la nouvelle SDK google-genai (google-generativeai est dépréciée)."""
     from google import genai
 
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -226,7 +223,6 @@ def generate_caption_with_gemini(prompt_legende):
 
 
 def generate_caption_with_groq(prompt_legende):
-    """Génère la légende via Groq, avec un modèle actif."""
     import requests
 
     groq_key = os.getenv("GROQ_API_KEY")
@@ -353,7 +349,6 @@ async def main():
 
         validate_script_payload(script_payload)
         script = script_payload["scenes"]
-        visual_identity = script_payload.get("visual_identity")
         video_title = script_payload.get("title", topic)
 
     except Exception as e:
@@ -393,18 +388,24 @@ async def main():
             min_caption_dur=0.45,
         )
 
+    # --- TÉLÉCHARGEMENT DU FOND VIDÉO CONTINU (YT-DLP) ---
     try:
-        print("🖼️ Generation des assets visuels...")
-        asset_manager = AssetManager()
-        assets_map = asset_manager.get_videos(script, visual_identity=visual_identity)
+        print("📥 Téléchargement du fond vidéo immersif (yt-dlp)...")
+        scraper = VideoScraper()
+        search_query = f"{video_title} cinematic background footage drone vertical"
+        bg_video_path = scraper.download_background(search_query, output_filename="current_bg.mp4")
+        
+        if not bg_video_path:
+            raise RuntimeError("Impossible de récupérer le fond vidéo via yt-dlp.")
     except Exception as e:
-        print(f"❌ Asset Error: {e}")
+        print(f"❌ Video Scraper Error: {e}")
         return
 
+    # --- COMPOSITION VIDÉO ---
     try:
-        print("🎞️ Composition video...")
+        print("🎞️ Composition video avec le fond continu...")
         composer = Composer()
-        final_scene_paths = composer.render_all_scenes(script, assets_map)
+        final_scene_paths = composer.render_all_scenes(script, bg_video_path=bg_video_path)
     except Exception as e:
         print(f"❌ Render Error: {e}")
         return

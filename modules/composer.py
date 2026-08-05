@@ -45,7 +45,7 @@ class Composer:
         except Exception:
             return 0.0
 
-    def process_scene(self, scene, image_pair):
+    def process_scene(self, scene, image_pair, bg_video_path=None):
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
@@ -54,51 +54,64 @@ class Composer:
         try:
             input_audio = ffmpeg.input(audio_path)
 
-            print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
-
-            if isinstance(image_pair, dict):
-                path_a = image_pair.get("a")
-                path_b = image_pair.get("b", path_a)
-            elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
-                path_a, path_b = image_pair[0], image_pair[1]
+            if bg_video_path and os.path.exists(bg_video_path):
+                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo ytdlp + 🎨 AI Images Overlay")
+                
+                # On prend la vidéo de fond et on la boucle/ajuste à la durée de la scène
+                video_stream = (
+                    ffmpeg
+                    .input(bg_video_path, stream_loop=-1)
+                    .filter("trim", duration=total_duration)
+                    .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
+                    .filter("crop", self.video_width, self.video_height)
+                    .setpts("PTS-STARTPTS")
+                )
             else:
-                path_a = path_b = str(image_pair)
+                print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
 
-            duration_a = max(total_duration / 2, 0.1)
-            duration_b = max((total_duration / 2) + 0.35, 0.1)
+                if isinstance(image_pair, dict):
+                    path_a = image_pair.get("a")
+                    path_b = image_pair.get("b", path_a)
+                elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
+                    path_a, path_b = image_pair[0], image_pair[1]
+                else:
+                    path_a = path_b = str(image_pair)
 
-            frames_a = max(int(duration_a * self.fps), 1)
-            frames_b = max(int(duration_b * self.fps), 1)
+                duration_a = max(total_duration / 2, 0.1)
+                duration_b = max((total_duration / 2) + 0.35, 0.1)
 
-            stream_a = (
-                ffmpeg
-                .input(path_a, loop=1, t=duration_a)
-                .filter("scale", 2200, -1)
-                .filter(
-                    "zoompan",
-                    z="min(zoom+0.0012,1.18)",
-                    d=frames_a,
-                    s=f"{self.video_width}x{self.video_height}",
-                    fps=self.fps
+                frames_a = max(int(duration_a * self.fps), 1)
+                frames_b = max(int(duration_b * self.fps), 1)
+
+                stream_a = (
+                    ffmpeg
+                    .input(path_a, loop=1, t=duration_a)
+                    .filter("scale", 2200, -1)
+                    .filter(
+                        "zoompan",
+                        z="min(zoom+0.0012,1.18)",
+                        d=frames_a,
+                        s=f"{self.video_width}x{self.video_height}",
+                        fps=self.fps
+                    )
+                    .setpts("PTS-STARTPTS")
                 )
-                .setpts("PTS-STARTPTS")
-            )
 
-            stream_b = (
-                ffmpeg
-                .input(path_b, loop=1, t=duration_b)
-                .filter("scale", 2200, -1)
-                .filter(
-                    "zoompan",
-                    z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))",
-                    d=frames_b,
-                    s=f"{self.video_width}x{self.video_height}",
-                    fps=self.fps
+                stream_b = (
+                    ffmpeg
+                    .input(path_b, loop=1, t=duration_b)
+                    .filter("scale", 2200, -1)
+                    .filter(
+                        "zoompan",
+                        z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))",
+                        d=frames_b,
+                        s=f"{self.video_width}x{self.video_height}",
+                        fps=self.fps
+                    )
+                    .setpts("PTS-STARTPTS")
                 )
-                .setpts("PTS-STARTPTS")
-            )
 
-            video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+                video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
 
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
@@ -128,7 +141,7 @@ class Composer:
             print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
             return None
 
-    def render_all_scenes(self, script_data, video_pairs):
+    def render_all_scenes(self, script_data, video_pairs, bg_video_path=None):
         rendered_paths = []
 
         for i, scene in enumerate(script_data):
@@ -136,7 +149,7 @@ class Composer:
             if current_pair is None:
                 continue
 
-            output_path = self.process_scene(scene, current_pair)
+            output_path = self.process_scene(scene, current_pair, bg_video_path=bg_video_path)
             if output_path:
                 rendered_paths.append(output_path)
 
@@ -207,11 +220,6 @@ class Composer:
             return False
 
     def _mix_background_music(self, stitched_path, output_path):
-        """
-        Mixe la voix et la musique avec ducking automatique.
-        Version corrigee pour ffmpeg-python avec duplication explicite
-        des flux reutilises dans plusieurs branches.
-        """
         try:
             video_duration = self.get_duration(stitched_path)
             fade_start = max(video_duration - self.music_fade_duration, 0)
@@ -236,7 +244,6 @@ class Composer:
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
-            # Duplication explicite des flux reutilises
             voice_split = voice_audio_base.filter_multi_output("asplit", 2)
             voice_for_sidechain = voice_split[0]
             voice_for_mix = voice_split[1]
