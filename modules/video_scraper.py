@@ -2,8 +2,6 @@ import os
 import glob
 import yt_dlp
 
-
-
 class VideoScraper:
     def __init__(self, output_dir="assets/backgrounds"):
         self.output_dir = output_dir
@@ -51,7 +49,19 @@ class VideoScraper:
                     f"duration < {max_duration}"
                 ),
                 'socket_timeout': 15,
+                
+                # 🔥 AJOUTS ANTI-BOT YOUTUBE (Bypass Client Mobile) 🔥
+                'extractor_args': {'youtube': ['player_client=ios,android']},
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+                }
             }
+            
+            # 🔥 AJOUT ANTI-BOT (Méthode Cookies) 🔥
+            # Détecte automatiquement si tu as mis un fichier cookies.txt à la racine
+            if os.path.exists('cookies.txt'):
+                print("🍪 Fichier cookies.txt détecté, utilisation pour l'authentification YouTube.")
+                ydl_opts['cookiefile'] = 'cookies.txt'
 
             try:
                 print(f"🔍 Recherche sur YouTube pour : {current_query}")
