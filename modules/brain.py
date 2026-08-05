@@ -15,7 +15,7 @@ load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 # Modèle plus stable et 100% compatible
-GEMINI_MODEL = "gemini-1.5-flash" 
+GEMINI_MODEL = "gemini-1.5-flash"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -27,6 +27,7 @@ ACCENT_INSTRUCTION = (
     "(jamais 'revelation'), 'étrange' (jamais 'etrange'), 'théorie' "
     "(jamais 'theorie'). Verifie chaque mot avant de repondre."
 )
+
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -40,12 +41,14 @@ def _has_missing_accents(text, min_hits=3):
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
 
+
 def _script_missing_accents(script_data):
     scenes = script_data.get("scenes", [])
     if not scenes:
         return False
     full_text = " ".join(s.get("text", "") for s in scenes)
     return _has_missing_accents(full_text)
+
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
     if not previous_stats_list:
@@ -66,6 +69,7 @@ Agis comme un Growth Hacker. Analyse brievement quels themes ou structures ont o
 Sers-toi de cette deduction pour ajuster le {label} que tu vas generer.
 """
 
+
 def _clean_single_line_title(text):
     if not text:
         return ""
@@ -78,6 +82,22 @@ def _clean_single_line_title(text):
     first_line = lines[0]
     first_line = re.sub(r"\s+", " ", first_line).strip()
     return first_line
+
+
+def _clean_json_response(content):
+    """
+    Retire les eventuelles fences Markdown (```json ... ```) que le modele
+    ajoute parfois malgre la consigne demandant du JSON brut.
+    """
+    if not content:
+        return content
+
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    return cleaned.strip()
+
 
 def _is_valid_topic_candidate(topic):
     if not topic:
@@ -163,8 +183,8 @@ class ContentBrain:
                 except Exception as e:
                     print(f"⚠️ Echec avec {provider} (Cycle {attempt+1}/{max_retries}): {e}")
                     last_error = e
-                    continue # On passe au provider suivant
-            
+                    continue  # On passe au provider suivant
+
             # Si on arrive ici, c'est que Groq ET Gemini ont échoué
             if attempt < max_retries - 1:
                 print("⏳ Micro-coupure réseau suspectée. Pause de 5s avant de tout retenter...")
@@ -172,6 +192,33 @@ class ContentBrain:
 
         # Si même après les pauses tout échoue, on lève l'erreur
         raise RuntimeError(f"Aucun provider disponible après {max_retries} tentatives. Derniere erreur: {last_error}")
+
+    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2, skip_providers=None):
+        """
+        Appelle le LLM en mode JSON, nettoie les eventuelles fences Markdown,
+        et retente (avec un nouveau provider si possible) en cas de JSON
+        malforme, plutot que de laisser un JSONDecodeError remonter brut.
+        Retourne (data, provider_used).
+        """
+        skip_providers = set(skip_providers or set())
+        last_error = None
+
+        for attempt in range(max_json_retries):
+            content, provider_used = self._call_with_fallback(
+                messages,
+                temperature=temperature,
+                json_mode=True,
+                skip_providers=skip_providers
+            )
+            try:
+                data = json.loads(_clean_json_response(content))
+                return data, provider_used
+            except json.JSONDecodeError as e:
+                last_error = e
+                print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), nouvelle tentative...")
+                continue
+
+        raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
@@ -227,11 +274,13 @@ class ContentBrain:
             }
         ]
         content, _ = self._call_with_fallback(messages, temperature=0.8)
-        return content.strip().replace(chr(34), "")
+        # 🛠️ On reutilise le meme nettoyage que get_trending_topic pour eviter
+        # de recuperer un bloc multi-lignes (justification + titre) au lieu du titre seul.
+        return _clean_single_line_title(content)
 
     def generate_video_search_query(self, topic):
         """
-        Demande à l'IA d'adapter le sujet en mots-clés de recherche vidéo 
+        Demande à l'IA d'adapter le sujet en mots-clés de recherche vidéo
         optimisés pour YouTube (en anglais, format CGI / Unreal Engine / Cinematic).
         """
         messages = [
@@ -244,7 +293,7 @@ class ContentBrain:
                     "Tu DOIS obligatoirement inclure des termes comme 'CGI', 'Unreal Engine 5', "
                     "'dark fantasy', 'cinematic 3D render', 'vertical 9:16' ou 'mysterious atmosphere' "
                     "pour cibler des vidéos ultra-esthétiques et immersives (style shorts mystère). "
-                    "Réponds UNIQUEMENT avec les mots-clés, sans guillemets, sans phrase."
+                    "Réponds UNIQUEMENT avec les mots-clés (6 mots maximum), sans guillemets, sans phrase."
                 )
             },
             {
@@ -253,7 +302,7 @@ class ContentBrain:
             }
         ]
         content, _ = self._call_with_fallback(messages, temperature=0.7)
-        return content.strip().replace('"', '')
+        return _clean_single_line_title(content).replace('"', '')
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         print(f"Generation de {n} hooks alternatifs pour: {topic}...")
@@ -308,24 +357,17 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             },
         ]
 
-        content, provider_used = self._call_with_fallback(
-            messages,
-            temperature=1.1,
-            json_mode=True
-        )
-        data = json.loads(content)
+        data, provider_used = self._call_json_with_retry(messages, temperature=1.1)
 
         if provider_used == "groq" and _script_missing_accents({
             "scenes": [{"text": h.get("text", "")} for h in data.get("hooks", [])]
         }):
             print("⚠️ Accents manquants detectes (Groq), nouvelle tentative via Gemini...")
-            content, _ = self._call_with_fallback(
+            data, _ = self._call_json_with_retry(
                 messages,
                 temperature=1.1,
-                json_mode=True,
                 skip_providers={"groq"}
             )
-            data = json.loads(content)
 
         analyse = data.get("analyse_agent", "")
         if analyse:
@@ -490,22 +532,15 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
             },
         ]
 
-        content, provider_used = self._call_with_fallback(
-            messages,
-            temperature=0.75,
-            json_mode=True
-        )
-        data = json.loads(content)
+        data, provider_used = self._call_json_with_retry(messages, temperature=0.75)
 
         if provider_used == "groq" and _script_missing_accents(data):
             print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
-            content, _ = self._call_with_fallback(
+            data, _ = self._call_json_with_retry(
                 messages,
                 temperature=0.75,
-                json_mode=True,
                 skip_providers={"groq"}
             )
-            data = json.loads(content)
 
         self._validate_script(data, scene_count)
         return data
@@ -591,6 +626,12 @@ if __name__ == "__main__":
     print(f"\nHook choisi : {best_hook}\n")
 
     script_data = brain.generate_script(topic, chosen_hook=best_hook)
+
+    # 🛠️ AJOUT : generation de la requete video, jusqu'ici jamais appelee
+    # dans le pipeline malgre son role cle pour VideoScraper.
+    video_query = brain.generate_video_search_query(topic)
+    print(f"\n🎥 Requête vidéo générée : {video_query}\n")
+    script_data["video_search_query"] = video_query
 
     with open("script.json", "w", encoding="utf-8") as f:
         json.dump(script_data, f, indent=4, ensure_ascii=False)

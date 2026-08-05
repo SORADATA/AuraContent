@@ -1,5 +1,6 @@
 import os
 import random
+import shutil
 import ffmpeg
 
 
@@ -45,7 +46,17 @@ class Composer:
         except Exception:
             return 0.0
 
-    def process_scene(self, scene, image_pair, bg_video_path=None):
+    def _escape_path_for_filter(self, path):
+        """
+        Échappe un chemin pour qu'il soit utilisable dans un filtre ffmpeg
+        (ex: subtitles=filename=...). Nécessaire notamment sous Windows
+        où le ':' du lecteur (C:\\...) casse la syntaxe du filtre.
+        """
+        escaped = path.replace("\\", "/")
+        escaped = escaped.replace(":", "\\:")
+        return escaped
+
+    def process_scene(self, scene, image_pair, bg_video_path=None, bg_offset=0.0):
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
@@ -56,11 +67,18 @@ class Composer:
 
             if bg_video_path and os.path.exists(bg_video_path):
                 print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo ytdlp + 🎨 AI Images Overlay")
-                
-                # On prend la vidéo de fond et on la boucle/ajuste à la durée de la scène
+
+                source_duration = self.get_duration(bg_video_path)
+                # On avance dans le clip source à chaque scène pour éviter
+                # de repartir de 0s systématiquement (sinon effet "replay" visible)
+                if source_duration > 0:
+                    start_offset = bg_offset % source_duration
+                else:
+                    start_offset = 0.0
+
                 video_stream = (
                     ffmpeg
-                    .input(bg_video_path, stream_loop=-1)
+                    .input(bg_video_path, stream_loop=-1, ss=start_offset)
                     .filter("trim", duration=total_duration)
                     .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
                     .filter("crop", self.video_width, self.video_height)
@@ -115,9 +133,10 @@ class Composer:
 
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
+                escaped_srt_path = self._escape_path_for_filter(srt_path)
                 video_stream = video_stream.filter(
                     "subtitles",
-                    filename=srt_path,
+                    filename=escaped_srt_path,
                     force_style=self.subtitle_style
                 )
 
@@ -143,13 +162,22 @@ class Composer:
 
     def render_all_scenes(self, script_data, video_pairs, bg_video_path=None):
         rendered_paths = []
+        bg_cursor = 0.0  # curseur de lecture dans la vidéo de fond, avance à chaque scène
 
         for i, scene in enumerate(script_data):
             current_pair = video_pairs[i]
             if current_pair is None:
                 continue
 
-            output_path = self.process_scene(scene, current_pair, bg_video_path=bg_video_path)
+            output_path = self.process_scene(
+                scene,
+                current_pair,
+                bg_video_path=bg_video_path,
+                bg_offset=bg_cursor
+            )
+
+            bg_cursor += float(scene["duration"])
+
             if output_path:
                 rendered_paths.append(output_path)
 
@@ -286,7 +314,7 @@ class Composer:
                 movflags="faststart",
                 preset="medium"
             )
-            final_runner.run(overwrite_output=True, quiet=False)
+            final_runner.run(overwrite_output=True, quiet=True)
             print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
             return True
 
@@ -308,6 +336,8 @@ class Composer:
         if not video_paths:
             return None
 
+        merge_step_files = []  # pour nettoyage final
+
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
         else:
@@ -323,13 +353,11 @@ class Composer:
                 except ffmpeg.Error as e:
                     error_log = e.stderr.decode("utf8") if e.stderr else str(e)
                     print(f"❌ Stitching Error at step {i}: {error_log}")
+                    self._cleanup_temp_files(merge_step_files)
                     return None
 
-                if i > 1 and courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
-                    try:
-                        os.remove(courant)
-                    except Exception:
-                        pass
+                if courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
+                    merge_step_files.append(courant)
 
                 courant = merge_output
 
@@ -347,7 +375,9 @@ class Composer:
                 if ok and os.path.exists(normalized_fallback):
                     os.replace(normalized_fallback, output_path)
                 else:
-                    os.replace(stitched_path, output_path)
+                    shutil.copy2(stitched_path, output_path)
+
+                print(f"✅ FINAL VIDEO SAVED: {output_path}")
         else:
             print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
@@ -356,14 +386,24 @@ class Composer:
             if ok and os.path.exists(normalized_fallback):
                 os.replace(normalized_fallback, output_path)
             else:
-                os.replace(stitched_path, output_path)
+                shutil.copy2(stitched_path, output_path)
 
             print(f"✅ FINAL VIDEO SAVED: {output_path}")
 
-        if stitched_path != output_path and os.path.exists(stitched_path):
-            try:
-                os.remove(stitched_path)
-            except Exception:
-                pass
+        # Nettoyage des fichiers temporaires (scènes intermédiaires + merges)
+        self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
+        if stitched_path not in video_paths and stitched_path != output_path:
+            self._cleanup_temp_files([stitched_path], keep=output_path)
 
         return output_path
+
+    def _cleanup_temp_files(self, filepaths, keep=None):
+        """Supprime les fichiers temporaires listés, sauf celui à conserver."""
+        for f in filepaths:
+            if not f or f == keep:
+                continue
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
