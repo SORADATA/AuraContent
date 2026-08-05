@@ -47,14 +47,20 @@ class Composer:
             return 0.0
 
     def _escape_path_for_filter(self, path):
-        """
-        Échappe un chemin pour qu'il soit utilisable dans un filtre ffmpeg
-        (ex: subtitles=filename=...). Nécessaire notamment sous Windows
-        où le ':' du lecteur (C:\\...) casse la syntaxe du filtre.
-        """
         escaped = path.replace("\\", "/")
         escaped = escaped.replace(":", "\\:")
         return escaped
+
+    def _ensure_pair(self, image_pair):
+        if isinstance(image_pair, dict):
+            path_a = image_pair.get("a")
+            path_b = image_pair.get("b", path_a)
+            return path_a, path_b
+        if isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
+            return image_pair[0], image_pair[1]
+        if image_pair:
+            return str(image_pair), str(image_pair)
+        return None, None
 
     def process_scene(self, scene, image_pair, bg_video_path=None, bg_offset=0.0):
         scene_id = scene["id"]
@@ -66,19 +72,13 @@ class Composer:
             input_audio = ffmpeg.input(audio_path)
 
             if bg_video_path and os.path.exists(bg_video_path):
-                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo ytdlp + 🎨 AI Images Overlay")
+                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo + 🎨 Overlay possible")
 
                 source_duration = self.get_duration(bg_video_path)
-                # On avance dans le clip source à chaque scène pour éviter
-                # de repartir de 0s systématiquement (sinon effet "replay" visible)
-                if source_duration > 0:
-                    start_offset = bg_offset % source_duration
-                else:
-                    start_offset = 0.0
+                start_offset = bg_offset % source_duration if source_duration > 0 else 0.0
 
                 video_stream = (
-                    ffmpeg
-                    .input(bg_video_path, stream_loop=-1, ss=start_offset)
+                    ffmpeg.input(bg_video_path, stream_loop=-1, ss=start_offset)
                     .filter("trim", duration=total_duration)
                     .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
                     .filter("crop", self.video_width, self.video_height)
@@ -87,13 +87,11 @@ class Composer:
             else:
                 print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
 
-                if isinstance(image_pair, dict):
-                    path_a = image_pair.get("a")
-                    path_b = image_pair.get("b", path_a)
-                elif isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
-                    path_a, path_b = image_pair[0], image_pair[1]
-                else:
-                    path_a = path_b = str(image_pair)
+                path_a, path_b = self._ensure_pair(image_pair)
+                if not path_a:
+                    raise ValueError(f"Scene {scene_id}: aucune image disponible.")
+
+                path_b = path_b or path_a
 
                 duration_a = max(total_duration / 2, 0.1)
                 duration_b = max((total_duration / 2) + 0.35, 0.1)
@@ -102,8 +100,7 @@ class Composer:
                 frames_b = max(int(duration_b * self.fps), 1)
 
                 stream_a = (
-                    ffmpeg
-                    .input(path_a, loop=1, t=duration_a)
+                    ffmpeg.input(path_a, loop=1, t=duration_a)
                     .filter("scale", 2200, -1)
                     .filter(
                         "zoompan",
@@ -116,8 +113,7 @@ class Composer:
                 )
 
                 stream_b = (
-                    ffmpeg
-                    .input(path_b, loop=1, t=duration_b)
+                    ffmpeg.input(path_b, loop=1, t=duration_b)
                     .filter("scale", 2200, -1)
                     .filter(
                         "zoompan",
@@ -159,15 +155,16 @@ class Composer:
         except ffmpeg.Error as e:
             print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8') if e.stderr else str(e)}")
             return None
+        except Exception as e:
+            print(f"❌ Render Fail Scene {scene_id}: {e}")
+            return None
 
     def render_all_scenes(self, script_data, video_pairs, bg_video_path=None):
         rendered_paths = []
-        bg_cursor = 0.0  # curseur de lecture dans la vidéo de fond, avance à chaque scène
+        bg_cursor = 0.0
 
         for i, scene in enumerate(script_data):
-            current_pair = video_pairs[i]
-            if current_pair is None:
-                continue
+            current_pair = video_pairs[i] if i < len(video_pairs) else None
 
             output_path = self.process_scene(
                 scene,
@@ -291,8 +288,7 @@ class Composer:
             )
 
             mixed_audio = (
-                ffmpeg
-                .filter(
+                ffmpeg.filter(
                     [voice_for_mix, ducked_music],
                     "amix",
                     inputs=2,
@@ -336,7 +332,7 @@ class Composer:
         if not video_paths:
             return None
 
-        merge_step_files = []  # pour nettoyage final
+        merge_step_files = []
 
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
@@ -390,7 +386,6 @@ class Composer:
 
             print(f"✅ FINAL VIDEO SAVED: {output_path}")
 
-        # Nettoyage des fichiers temporaires (scènes intermédiaires + merges)
         self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
         if stitched_path not in video_paths and stitched_path != output_path:
             self._cleanup_temp_files([stitched_path], keep=output_path)
@@ -398,7 +393,6 @@ class Composer:
         return output_path
 
     def _cleanup_temp_files(self, filepaths, keep=None):
-        """Supprime les fichiers temporaires listés, sauf celui à conserver."""
         for f in filepaths:
             if not f or f == keep:
                 continue

@@ -1,108 +1,89 @@
 import os
-from modules.ai_image import AIImageGenerator
+import time
+import requests
+from PIL import Image, ImageDraw, ImageFont
 
-FALLBACK_DIR = os.path.join(os.getcwd(), "assets", "images")
 
 
-class AssetManager:
+class AIImageGenerator:
     def __init__(self):
-        self.image_dir = os.path.join(os.getcwd(), "assets", "video_clips")
-        os.makedirs(self.image_dir, exist_ok=True)
-        self.generator = AIImageGenerator()
+        self.pollinations_url = "https://image.pollinations.ai/prompt/"
+        self.hf_token = os.getenv("HF_TOKEN")
+        self.hf_model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 
-        self.global_visual_rules = (
-            "Vertical 9:16 cinematic documentary frame, realistic lighting, strong central subject, "
-            "clean composition, realistic textures, natural anatomy, no text, no logo, no watermark, "
-            "no interface, no subtitles, space preserved at top and bottom for captions."
+    def _save_text_fallback(self, prompt, output_path):
+        img = Image.new("RGB", (1080, 1920), (15, 15, 18))
+        draw = ImageDraw.Draw(img)
+        text = "Fallback image\n\n" + prompt[:180]
+
+        try:
+            font = ImageFont.truetype("arial.ttf", 42)
+        except Exception:
+            font = ImageFont.load_default()
+
+        draw.multiline_text((80, 120), text, fill="white", font=font, spacing=14)
+        img.save(output_path)
+        return True
+
+    def _pollinations(self, prompt, output_path):
+        url = self.pollinations_url + requests.utils.quote(prompt)
+        r = requests.get(url, timeout=90)
+        if r.status_code == 429:
+            raise RuntimeError("429 Too Many Requests")
+        r.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+        return True
+
+    def _huggingface(self, prompt, output_path):
+        if not self.hf_token:
+            return False
+
+        headers = {
+            "Authorization": f"Bearer {self.hf_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"inputs": prompt}
+
+        r = requests.post(
+            self.hf_model_url,
+            headers=headers,
+            json=payload,
+            timeout=120,
         )
 
-    def _compose_prompt(self, base_prompt, visual_identity=None, variant="a"):
-        identity_block = f"{visual_identity}. " if visual_identity else ""
+        if r.status_code == 503:
+            raise RuntimeError("HF model loading")
+        r.raise_for_status()
 
-        if variant == "a":
-            shot_block = (
-                "Establishing shot, wider composition, clear environment context, "
-                "subject readable instantly, stable framing."
-            )
-        else:
-            shot_block = (
-                "Closer cinematic shot, tighter framing, more emotional or investigative detail, "
-                "same subject and same scene continuity."
-            )
+        if "application/json" in r.headers.get("Content-Type", ""):
+            data = r.json()
+            if isinstance(data, dict) and data.get("error"):
+                raise RuntimeError(data["error"])
+            return False
 
-        return f"{identity_block}{base_prompt}. {shot_block} {self.global_visual_rules}"
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+        return True
 
-    def _file_ready(self, path):
-        return os.path.exists(path) and os.path.getsize(path) > 0
+    def generate_image(self, prompt, output_path, visual_identity=None):
+        full_prompt = f"{visual_identity}. {prompt}" if visual_identity else prompt
 
-    def _generate_with_retry(self, prompt, output_path, visual_identity=None, retries=2):
-        for attempt in range(1, retries + 1):
+        for attempt in range(1, 4):
             try:
-                ok = self.generator.generate_image(
-                    prompt,
-                    output_path,
-                    visual_identity=visual_identity
-                )
-                if ok and self._file_ready(output_path):
+                if self._pollinations(full_prompt, output_path):
                     return True
-                print(f"      Tentative {attempt}/{retries} echouee pour {os.path.basename(output_path)}")
             except Exception as e:
-                print(f"      Erreur tentative {attempt}/{retries} : {e}")
+                print(f"⚠️ Pollinations échec tentative {attempt}/3: {e}")
+                time.sleep(min(2 ** attempt, 10))
 
-        return False
+                try:
+                    if self._huggingface(full_prompt, output_path):
+                        print("✅ Hugging Face Inference API utilisée")
+                        return True
+                except Exception as hf_e:
+                    print(f"⚠️ Hugging Face échec: {hf_e}")
+                    time.sleep(2)
 
-    def get_videos(self, script_data, visual_identity=None):
-        """
-        Genere 2 images IA coherentes (a/b) par scene.
-        - image A : plan plus large / etablissant
-        - image B : plan plus serre / detail narratif
-        Si echec, fallback intelligent sur l'autre image ou sur une image locale.
-        Retourne une liste de dicts {"a": path, "b": path} alignee avec script_data.
-        """
-        pairs = []
-
-        for scene in script_data:
-            scene_id = scene["id"]
-
-            path_a = os.path.join(self.image_dir, f"scene_{scene_id}_a.png")
-            path_b = os.path.join(self.image_dir, f"scene_{scene_id}_b.png")
-
-            print(f"Scene {scene_id} - generation des visuels IA...")
-
-            base_prompt = scene["image_prompt"].strip()
-            prompt_a = self._compose_prompt(base_prompt, visual_identity=visual_identity, variant="a")
-            prompt_b = self._compose_prompt(base_prompt, visual_identity=visual_identity, variant="b")
-
-            ok_a = self._file_ready(path_a) or self._generate_with_retry(
-                prompt_a, path_a, visual_identity=visual_identity, retries=2
-            )
-            ok_b = self._file_ready(path_b) or self._generate_with_retry(
-                prompt_b, path_b, visual_identity=visual_identity, retries=2
-            )
-
-            if ok_a and ok_b:
-                pairs.append({"a": path_a, "b": path_b})
-            elif ok_a:
-                print(f"    Scene {scene_id}: visual_2 a echoue, reutilisation de visual_1")
-                pairs.append({"a": path_a, "b": path_a})
-            elif ok_b:
-                print(f"    Scene {scene_id}: visual_1 a echoue, reutilisation de visual_2")
-                pairs.append({"a": path_b, "b": path_b})
-            else:
-                # 🛠️ CORRECTION : Logique de fallback intelligente sur tes fichiers .jpg
-                print(f"    Scene {scene_id}: aucune image generee, utilisation du fallback")
-                
-                specific_fallback = os.path.join(FALLBACK_DIR, f"fallback_{scene_id}.jpg")
-                ultimate_fallback = os.path.join(FALLBACK_DIR, "fallback_1.jpg") # Roue de secours finale
-                
-                if os.path.exists(specific_fallback):
-                    pairs.append({"a": specific_fallback, "b": specific_fallback})
-                    print(f"    ✅ Fallback spécifique fallback_{scene_id}.jpg utilisé.")
-                elif os.path.exists(ultimate_fallback):
-                    pairs.append({"a": ultimate_fallback, "b": ultimate_fallback})
-                    print(f"    ⚠️ Fallback {scene_id} absent. Utilisation de fallback_1.jpg en secours.")
-                else:
-                    print(f"    ❌ Scene {scene_id}: aucun fallback trouvé, scene ignoree")
-                    pairs.append(None)
-
-        return pairs
+        print("⚠️ Fallback texte utilisé")
+        return self._save_text_fallback(full_prompt, output_path)

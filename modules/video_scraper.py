@@ -31,6 +31,12 @@ class VideoScraper:
         except Exception:
             return None, None
 
+    def _find_downloaded_file(self, base_name):
+        downloaded = glob.glob(os.path.join(self.output_dir, base_name + ".*"))
+        if not downloaded:
+            return None
+        return downloaded[0]
+
     def _download_search(self, query, base_name, max_duration):
         search_target = f"ytsearch1:{query}"
         outtmpl = os.path.join(self.output_dir, base_name + ".%(ext)s")
@@ -57,7 +63,6 @@ class VideoScraper:
         if os.path.exists("cookies.txt"):
             ydl_opts["cookiefile"] = "cookies.txt"
 
-        # Essai sans args exotiques d'abord
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(search_target, download=True)
@@ -71,12 +76,6 @@ class VideoScraper:
             return self._find_downloaded_file(base_name), title
         except Exception:
             return None, None
-
-    def _find_downloaded_file(self, base_name):
-        downloaded = glob.glob(os.path.join(self.output_dir, base_name + ".*"))
-        if not downloaded:
-            return None
-        return downloaded[0]
 
     def search_and_download(
         self,

@@ -44,7 +44,6 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
 
     for attempt in range(1, max_retries + 1):
         try:
-            # 1. Upload de la vidéo
             api.upload_file(
                 path_or_fileobj=video_path,
                 path_in_repo=remote_filename,
@@ -53,9 +52,8 @@ def upload_to_huggingface(video_path, topic, max_retries=5):
                 commit_message=f"Add generated short: {safe_topic}",
             )
             print(f"✅ Video uploadee sur Hugging Face : {repo_id}/{remote_filename}")
-            
-            # 2. Upload de la légende associée
-            caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
+
+            caption_path = os.path.abspath("caption.txt")
             if os.path.exists(caption_path):
                 api.upload_file(
                     path_or_fileobj=caption_path,
@@ -199,7 +197,7 @@ def validate_script_payload(script_payload):
 # --- GÉNÉRATION DE LA LÉGENDE ---
 # =====================================================================
 
-GEMINI_CAPTION_MODEL = "gemini-2.0-flash" 
+GEMINI_CAPTION_MODEL = "gemini-2.0-flash"
 GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
@@ -254,17 +252,17 @@ def generate_caption_with_groq(prompt_legende):
 
 def generate_caption(full_text, video_title):
     prompt_legende = f"""
-    Voici le texte exact de ma vidéo TikTok/Shorts ({video_title}) :
-    "{full_text}"
+Voici le texte exact de ma vidéo TikTok/Shorts ({video_title}) :
+"{full_text}"
 
-    Rédige une légende ultra-captivante.
-    Règles :
-    1. 1ère ligne très accrocheuse avec un emoji.
-    2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
-    3. Termine par une question courte pour inciter aux commentaires.
-    4. Ajoute 4 hashtags pertinents dont #MinuteMystère.
-    Ne mets pas de guillemets autour de ta réponse.
-    """
+Rédige une légende ultra-captivante.
+Règles :
+1. 1ère ligne très accrocheuse avec un emoji.
+2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
+3. Termine par une question courte pour inciter aux commentaires.
+4. Ajoute 4 hashtags pertinents dont #MinuteMystère.
+Ne mets pas de guillemets autour de ta réponse.
+"""
 
     fallback = f"{video_title} 🧠✨ #MinuteMystère #Decouverte #Pourtoi #Secretscachés"
 
@@ -284,7 +282,7 @@ def generate_caption(full_text, video_title):
 
 def save_caption(legende_finale):
     try:
-        caption_path = os.path.abspath(os.path.join(os.getcwd(), "caption.txt"))
+        caption_path = os.path.abspath("caption.txt")
         with open(caption_path, "w", encoding="utf-8") as fichier:
             fichier.write(legende_finale)
         print(f"✅ Légende finale sauvegardée avec succès à la racine : {caption_path}")
@@ -315,7 +313,6 @@ async def main():
         stats_historique = None
 
     try:
-        # 1. Sélection ou saisie du sujet
         if topic_input:
             topic = topic_input
             print(f"📌 Sujet fourni manuellement : {topic}")
@@ -326,7 +323,6 @@ async def main():
             topic = brain.get_trending_topic(previous_stats_list=stats_historique)
             print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
-        # 2. L'IA génère dynamiquement la requête de recherche vidéo adaptée au sujet
         print("🔍 Génération du mot-clé de recherche visuelle par l'IA...")
         dynamic_query = brain.generate_video_search_query(topic)
         print(f"🎯 Requête vidéo générée : '{dynamic_query}'")
@@ -335,22 +331,24 @@ async def main():
         print(f"❌ Brain Error (Sujet/Requête): {e}")
         return
 
-    # 3. Téléchargement du fond vidéo via yt-dlp en fonction de la requête dynamique
     try:
         print("📥 Téléchargement du fond vidéo immersif (yt-dlp)...")
         scraper = VideoScraper()
         bg_video_path, real_video_title = scraper.search_and_download(
-            query=f"{dynamic_query} vertical 9:16", 
+            query=f"{dynamic_query} vertical 9:16",
             output_filename="current_bg.mp4"
         )
-        
-        if not bg_video_path or not real_video_title:
-            raise RuntimeError("Impossible de récupérer un fond vidéo valide via yt-dlp.")
-            
-        print(f"🎬 Fond vidéo validé : '{real_video_title}'")
+
+        if bg_video_path and real_video_title:
+            print(f"🎬 Fond vidéo validé : '{real_video_title}'")
+        else:
+            print("⚠️ Aucun fond vidéo trouvé, passage en mode fallback images.")
+            bg_video_path = None
+            real_video_title = topic
     except Exception as e:
-        print(f"❌ Video Scraper Error: {e}")
-        return
+        print(f"⚠️ Video Scraper Error: {e}")
+        bg_video_path = None
+        real_video_title = topic
 
     try:
         chosen_hook = None
@@ -387,7 +385,6 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # --- GÉNÉRATION + SAUVEGARDE DE LA LÉGENDE ---
     print("📝 Demande de légende à l'IA basée sur le script complet...")
     full_text = " ".join(scene["text"] for scene in script)
     legende_finale = generate_caption(full_text, video_title)
@@ -416,11 +413,15 @@ async def main():
             min_caption_dur=0.45,
         )
 
-    # --- COMPOSITION VIDÉO ---
     try:
         print("🎞️ Composition video avec le fond continu...")
         composer = Composer()
-        final_scene_paths = composer.render_all_scenes(script, bg_video_path=bg_video_path)
+        video_pairs = [None] * len(script)
+        final_scene_paths = composer.render_all_scenes(
+            script_data=script,
+            video_pairs=video_pairs,
+            bg_video_path=bg_video_path
+        )
     except Exception as e:
         print(f"❌ Render Error: {e}")
         return

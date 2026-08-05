@@ -1,7 +1,6 @@
 import os
 import time
 import hashlib
-import random
 import requests
 
 
@@ -21,7 +20,9 @@ class AIImageGenerator:
     DEFAULT_MODEL = "flux"
 
     def __init__(self):
-        print("Utilisation du generateur d'images Pollinations.ai (sans token requis)")
+        self.hf_token = os.getenv("HF_TOKEN")
+        self.hf_model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+        print("Utilisation du generateur d'images Pollinations.ai avec fallback Hugging Face")
 
     def _stable_seed(self, prompt_text, visual_identity=None, variant="base"):
         raw = f"{prompt_text}|{visual_identity or ''}|{variant}|{self.DEFAULT_MODEL}"
@@ -62,12 +63,8 @@ class AIImageGenerator:
             f"&nologo=true&enhance=true"
         )
 
-    def _try_generate(self, prompt_text, output_path, visual_identity=None, seed=None, variant=None):
-        enhanced_prompt = self._build_prompt(
-            prompt_text,
-            visual_identity=visual_identity,
-            variant=variant
-        )
+    def _try_pollinations(self, prompt_text, output_path, visual_identity=None, seed=None, variant=None):
+        enhanced_prompt = self._build_prompt(prompt_text, visual_identity=visual_identity, variant=variant)
 
         if seed is None:
             seed = self._stable_seed(prompt_text, visual_identity=visual_identity, variant=variant or "base")
@@ -75,7 +72,6 @@ class AIImageGenerator:
         api_url = self._build_url(enhanced_prompt, seed)
 
         try:
-            # 🛠️ CORRECTION : Timeout réduit à 45s (inutile d'attendre 2 minutes si l'API est plantée)
             response = requests.get(
                 api_url,
                 timeout=45,
@@ -95,14 +91,61 @@ class AIImageGenerator:
                 return True
 
             if response.status_code == 429:
-                print("    Limite de requetes atteinte.")
+                print("    Limite de requetes atteinte sur Pollinations.")
             else:
                 print(f"    Erreur Pollinations : {response.status_code}, type={content_type}")
 
             return False
 
         except requests.RequestException as error:
-            print(f"    Erreur reseau : {error}")
+            print(f"    Erreur reseau Pollinations : {error}")
+            return False
+
+    def _try_huggingface(self, prompt_text, output_path, visual_identity=None, variant=None):
+        if not self.hf_token:
+            print("    HF_TOKEN absent, fallback HF ignore.")
+            return False
+
+        enhanced_prompt = self._build_prompt(prompt_text, visual_identity=visual_identity, variant=variant)
+
+        headers = {
+            "Authorization": f"Bearer {self.hf_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"inputs": enhanced_prompt}
+
+        try:
+            response = requests.post(
+                self.hf_model_url,
+                headers=headers,
+                json=payload,
+                timeout=120,
+            )
+
+            if response.status_code == 503:
+                print("    Hugging Face model loading.")
+                return False
+
+            if not response.ok:
+                print(f"    Erreur Hugging Face : {response.status_code}")
+                return False
+
+            content_type = response.headers.get("Content-Type", "")
+
+            if "application/json" in content_type:
+                data = response.json()
+                if isinstance(data, dict) and data.get("error"):
+                    print(f"    Erreur Hugging Face : {data['error']}")
+                return False
+
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            with open(output_path, "wb") as file:
+                file.write(response.content)
+
+            return self._file_is_valid(output_path)
+
+        except requests.RequestException as error:
+            print(f"    Erreur reseau Hugging Face : {error}")
             return False
 
     def generate_image(
@@ -110,7 +153,7 @@ class AIImageGenerator:
         prompt_text,
         output_path,
         visual_identity=None,
-        retries=1, # 🛠️ CORRECTION : 1 seul retry maximum au lieu de 4
+        retries=1,
         seed=None,
         variant=None
     ):
@@ -128,13 +171,12 @@ class AIImageGenerator:
 
         for attempt in range(retries + 1):
             if attempt > 0:
-                # 🛠️ CORRECTION : Attente simple de 2 secondes au lieu des pauses de 20s
                 print(f"    Tentative {attempt + 1}/{retries + 1} (pause courte)...")
                 time.sleep(2)
 
             current_seed = base_seed + attempt
 
-            success = self._try_generate(
+            success = self._try_pollinations(
                 prompt_text=prompt_text,
                 output_path=output_path,
                 visual_identity=visual_identity,
@@ -145,11 +187,20 @@ class AIImageGenerator:
             if success and self._file_is_valid(output_path):
                 print(f"    Image sauvegardee : {output_path} (seed={current_seed})")
                 return True
-            else:
-                # Si erreur 500, on casse la boucle immédiatement pour passer au fallback de l'asset_manager
-                if attempt == 0:
-                     print("    Panne API suspectée. On abandonne vite pour utiliser le fallback.")
-                     break 
+
+            print("    Pollinations a echoue, tentative Hugging Face...")
+            if self._try_huggingface(
+                prompt_text=prompt_text,
+                output_path=output_path,
+                visual_identity=visual_identity,
+                variant=variant,
+            ) and self._file_is_valid(output_path):
+                print(f"    Image sauvegardee via Hugging Face : {output_path}")
+                return True
+
+            if attempt == 0:
+                print("    Panne API suspectée. On abandonne vite pour utiliser le fallback.")
+                break
 
         print(f"    Echec definitif pour : {output_path}")
         return False
