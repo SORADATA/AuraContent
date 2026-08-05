@@ -21,11 +21,7 @@ ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
 ACCENT_INSTRUCTION = (
     "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
-    "(é, è, ê, à, ù, ç, ô, î etc). Exemples obligatoires : 'découvert' "
-    "(jamais 'decouvert'), 'secrètes' (jamais 'secretes'), 'exploré' "
-    "(jamais 'explore'), 'phénomène' (jamais 'phenomene'), 'révélation' "
-    "(jamais 'revelation'), 'étrange' (jamais 'etrange'), 'théorie' "
-    "(jamais 'theorie'). Verifie chaque mot avant de repondre."
+    "(é, è, ê, à, ù, ç, ô, î etc)."
 )
 
 
@@ -46,7 +42,7 @@ def _script_missing_accents(script_data):
     scenes = script_data.get("scenes", [])
     if not scenes:
         return False
-    full_text = " ".join(s.get("text", "") for s in scenes)
+    full_text = " ".join(s.get("text", "") for s in scenes if isinstance(s, dict))
     return _has_missing_accents(full_text)
 
 
@@ -57,69 +53,37 @@ def _format_stats_instruction(previous_stats_list, label="hooks"):
     stats_text = "\n".join([
         f'- Titre : "{s["title"]}" | Vues : {s["views"]} | Likes : {s["likes"]}'
         for s in previous_stats_list
+        if isinstance(s, dict) and "title" in s
     ])
 
     return f"""
-ANALYSE DES PERFORMANCES RECENTES (FEEDBACK LOOP) :
+ANALYSE DES PERFORMANCES RECENTES :
 Voici les resultats de nos dernieres videos publiees :
 {stats_text}
 
-INSTRUCTION D'APPRENTISSAGE (AGENT IA) :
-Agis comme un Growth Hacker. Analyse brievement quels themes ou structures ont obtenu le plus ou le moins de vues.
-Sers-toi de cette deduction pour ajuster le {label} que tu vas generer.
+INSTRUCTION :
+Adapte le {label} selon les performances sans citer les stats explicitement.
 """
 
 
 def _clean_single_line_title(text):
     if not text:
         return ""
-
     cleaned = text.replace('"', '').replace('“', '').replace('”', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
-
-    first_line = lines[0]
-    first_line = re.sub(r"\s+", " ", first_line).strip()
-    return first_line
+    return re.sub(r"\s+", " ", lines[0]).strip()
 
 
 def _clean_json_response(content):
     if not content:
         return content
-
     cleaned = content.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
     return cleaned.strip()
-
-
-def _is_valid_topic_candidate(topic):
-    if not topic:
-        return False
-
-    lowered = topic.lower().strip()
-    invalid_markers = [
-        "mais voici", "voici le bon", "je me suis trompé", "je me suis trompe",
-        "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
-        "\n", "hook", "analyse", "explication"
-    ]
-
-    if any(marker in lowered for marker in invalid_markers):
-        return False
-
-    word_count = len(topic.split())
-    if word_count < 4 or word_count > 18:
-        return False
-
-    if lowered.endswith(":"):
-        return False
-
-    if topic.count('.') > 1:
-        return False
-
-    return True
 
 
 class ContentBrain:
@@ -128,19 +92,13 @@ class ContentBrain:
             groq_key = os.getenv("GROQ_API_KEY")
             if not groq_key:
                 return None
-            return OpenAI(
-                base_url="https://api.groq.com/openai/v1",
-                api_key=groq_key
-            )
+            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
         if provider == "gemini":
             gemini_key = os.getenv("GEMINI_API_KEY")
             if not gemini_key:
                 return None
-            return OpenAI(
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                api_key=gemini_key
-            )
+            return OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key)
 
         return None
 
@@ -148,18 +106,13 @@ class ContentBrain:
         return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
 
     def _extract_content(self, response, provider):
-        if response is None:
-            raise ValueError(f"Réponse vide du provider {provider}")
-
         choices = getattr(response, "choices", None)
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
-
         if not choices:
             raise ValueError(f"Réponse inattendue du provider {provider}: {response}")
 
         choice0 = choices[0]
-
         message = getattr(choice0, "message", None)
         if message is None and isinstance(choice0, dict):
             message = choice0.get("message")
@@ -176,32 +129,27 @@ class ContentBrain:
             parts = []
             for item in content:
                 if isinstance(item, dict):
-                    if "text" in item:
-                        parts.append(item["text"])
-                    elif "content" in item:
-                        parts.append(item["content"])
+                    parts.append(item.get("text") or item.get("content") or "")
                 elif isinstance(item, str):
                     parts.append(item)
             content = "".join(parts).strip()
 
         if not content:
-            raise ValueError(f"Contenu vide ou illisible du provider {provider}: {response}")
+            raise ValueError(f"Contenu vide du provider {provider}: {response}")
 
         return content
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
         skip_providers = skip_providers or set()
         last_error = None
-        max_retries = 2
 
-        for attempt in range(max_retries):
+        for attempt in range(2):
             for provider in ("groq", "gemini"):
                 if provider in skip_providers:
                     continue
 
                 client = self._build_client(provider)
                 if client is None:
-                    print(f"Cle API absente pour {provider}, on passe au suivant...")
                     continue
 
                 try:
@@ -219,15 +167,14 @@ class ContentBrain:
                     return content, provider
 
                 except Exception as e:
-                    print(f"⚠️ Echec avec {provider} (Cycle {attempt+1}/{max_retries}): {e}")
+                    print(f"⚠️ Echec avec {provider} (Cycle {attempt + 1}/2): {e}")
                     last_error = e
-                    continue
 
-            if attempt < max_retries - 1:
+            if attempt == 0:
                 print("⏳ Micro-coupure réseau suspectée. Pause de 5s avant de tout retenter...")
                 time.sleep(5)
 
-        raise RuntimeError(f"Aucun provider disponible après {max_retries} tentatives. Derniere erreur: {last_error}")
+        raise RuntimeError(f"Aucun provider disponible après 2 tentatives. Derniere erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2, skip_providers=None):
         skip_providers = set(skip_providers or set())
@@ -246,32 +193,14 @@ class ContentBrain:
             except json.JSONDecodeError as e:
                 last_error = e
                 print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), nouvelle tentative...")
-                continue
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
-
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Tu es un strategiste de contenu viral. "
-                    "Trouve un sujet de mini-documentaire court, captivant et inattendu. "
-                    "Reponds UNIQUEMENT avec un seul titre en francais, sur UNE seule ligne, "
-                    "sans guillemets, sans liste, sans justification, sans deuxieme proposition. "
-                    "Maximum 18 mots. "
-                    f"{ACCENT_INSTRUCTION}"
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Donne un sujet viral totalement inédit et surprenant pour TikTok en français."
-                    + stats_instruction
-                )
-            }
+            {"role": "system", "content": f"Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre en francais, une seule ligne, sans guillemets, maximum 18 mots. {ACCENT_INSTRUCTION}"},
+            {"role": "user", "content": "Donne un sujet viral totalement inédit et surprenant pour TikTok en français." + stats_instruction},
         ]
 
         last_topic = ""
@@ -279,192 +208,125 @@ class ContentBrain:
             content, _ = self._call_with_fallback(messages, temperature=0.9)
             topic = _clean_single_line_title(content)
             last_topic = topic
-
-            if _is_valid_topic_candidate(topic):
+            if topic and 4 <= len(topic.split()) <= 18:
                 return topic
-
             print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
 
         raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Tu es un strategiste de contenu viral. "
-                    "Reformule le sujet en un titre accrocheur, sans changer le theme. "
-                    "Reponds UNIQUEMENT avec le titre reformule. "
-                    f"{ACCENT_INSTRUCTION}"
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Sujet brut / trend repere: {raw_topic}"
-            }
+            {"role": "system", "content": f"Tu reformules le sujet en un titre accrocheur, sans changer le theme. Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION}"},
+            {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
         content, _ = self._call_with_fallback(messages, temperature=0.8)
         return _clean_single_line_title(content)
 
     def generate_video_search_query(self, topic):
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Tu es un expert en recherche de vidéos cinématiques pour TikTok. "
-                    "À partir du sujet fourni, génère une requête de recherche YouTube en anglais "
-                    "pour trouver un fond visuel spectaculaire. "
-                    "Tu DOIS obligatoirement inclure des termes comme 'CGI', 'Unreal Engine 5', "
-                    "'dark fantasy', 'cinematic 3D render', 'vertical 9:16' ou 'mysterious atmosphere'. "
-                    "Réponds UNIQUEMENT avec les mots-clés (6 mots maximum), sans guillemets, sans phrase."
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Sujet : {topic}"
-            }
+            {"role": "system", "content": "Tu génères une requête YouTube en anglais, 6 mots max, sans phrase. Inclure CGI, Unreal Engine 5, dark fantasy, cinematic 3D render ou mysterious atmosphere."},
+            {"role": "user", "content": f"Sujet : {topic}"},
         ]
         content, _ = self._call_with_fallback(messages, temperature=0.7)
         return _clean_single_line_title(content).replace('"', '')
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
-        print(f"Generation de {n} hooks alternatifs pour: {topic}...")
-
-        stats_instruction = _format_stats_instruction(
-            previous_stats_list,
-            label="niveau de mystere, le vocabulaire ou la structure des nouveaux hooks"
-        )
-
+        stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
         prompt = f"""
-Tu es un expert en hooks viraux pour TikTok, specialise dans le mystere et l'inexplique.
-
-{stats_instruction}
-
-SUJET :
+SUJET:
 {topic}
 
-OBJECTIF :
-Genere {n} hooks differents pour la meme histoire.
+GENERE {n} hooks viraux en francais.
 
-REGLES POUR CHAQUE HOOK :
-- 12 a 18 mots, phrase complete en francais oral et naturel.
-- Combine un fait concret avec une ancre sensorielle ou emotionnelle.
-- Varie les patterns de viralite.
-- N'utilise jamais "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
-- {ACCENT_INSTRUCTION}
+RETURNS JSON:
+{{
+  "hooks": [
+    {{
+      "text": "hook",
+      "pattern": "question",
+      "raison": "..."
+    }}
+  ]
+}}
 
-FORMAT DE SORTIE :
-Retourne uniquement un objet JSON valide, sans bloc Markdown.
+{stats_instruction}
 """
         messages = [
-            {
-                "role": "system",
-                "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks. {ACCENT_INSTRUCTION}"
-            },
-            {
-                "role": "user",
-                "content": prompt
-            },
+            {"role": "system", "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks. {ACCENT_INSTRUCTION}"},
+            {"role": "user", "content": prompt},
         ]
 
         data, provider_used = self._call_json_with_retry(messages, temperature=1.1)
 
-        if provider_used == "groq" and _script_missing_accents({
-            "scenes": [{"text": h.get("text", "")} for h in data.get("hooks", [])]
-        }):
-            print("⚠️ Accents manquants detectes (Groq), nouvelle tentative via Gemini...")
-            data, _ = self._call_json_with_retry(
-                messages,
-                temperature=1.1,
-                skip_providers={"groq"}
-            )
-
         hooks = data.get("hooks")
-        if not isinstance(hooks, list) or len(hooks) != n:
-            raise ValueError(f"Nombre de hooks invalide: {len(hooks) if isinstance(hooks, list) else 0} au lieu de {n}.")
+        if not isinstance(hooks, list):
+            raise ValueError("Champ hooks invalide.")
 
-        return hooks
+        normalized_hooks = []
+        for h in hooks:
+            if isinstance(h, str):
+                text = h.strip()
+                if text:
+                    normalized_hooks.append({"text": text, "pattern": "question", "raison": ""})
+            elif isinstance(h, dict):
+                text = str(h.get("text", "")).strip()
+                if text:
+                    normalized_hooks.append({
+                        "text": text,
+                        "pattern": str(h.get("pattern", "question")).strip(),
+                        "raison": str(h.get("raison", "")).strip()
+                    })
+
+        if len(normalized_hooks) < n:
+            raise ValueError(f"Nombre de hooks invalide: {len(normalized_hooks)} au lieu de {n}.")
+
+        return normalized_hooks[:n]
 
     def generate_script(self, topic, chosen_hook=None):
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None):
-        if scene_count < 6:
-            raise ValueError("scene_count doit etre superieur ou egal a 6.")
-
-        print(f"Ecriture du script en francais pour : {topic} ({scene_count} scenes)...")
-
-        hook_instruction = (
-            f'La scene 1 doit reprendre exactement ou reformuler tres legerement ce hook deja valide : "{chosen_hook}"'
-            if chosen_hook else
-            "Scene 1 - hook : une phrase de 12 a 18 mots combinant un fait concret ET une ancre sensorielle."
-        )
-
+        hook_instruction = f'La scene 1 doit reprendre légèrement ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1 hook."
         prompt = f"""
-Tu es scenariste en chef d'une chaine francophone de mini-documentaires.
-
-SUJET :
+SUJET:
 {topic}
 
-OBJECTIF :
-Creer une video TikTok, Reels ou Shorts captivante, credible, facile a illustrer.
+GENERE EXACTEMENT {scene_count} scenes.
 
-CONTRAINTE ABSOLUE :
-Genere exactement {scene_count} scenes.
-
-LANGUES :
-- "text" : uniquement en francais naturel et oral, parfaitement accentue.
-- "voice_direction" : uniquement en anglais.
-- "stock_search" : uniquement en anglais.
-- "image_prompt" : uniquement en anglais.
-
-{ACCENT_INSTRUCTION}
-
-STRUCTURE NARRATIVE :
-- {hook_instruction}
-- Scene 2 - tension.
-- Scene 3 - contexte.
-- Scenes 4 a {scene_count - 3} - enquete.
-- Scene {scene_count - 2} - escalade.
-- Scene {scene_count - 1} - revelation.
-- Scene {scene_count} - CTA polarisant.
-
-REGLES AUDIO :
-- Chaque scene doit inclure "voice_direction".
-- Chaque scene doit inclure "pause_after_ms" entre 180 et 450.
-- "tts_emphasis_word" est optionnel.
-
-VALEURS AUTORISEES :
-- "role" : "hook", "tension", "context", "value", "escalation", "reveal", "cta"
-- "mood" : "ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"
-
-FORMAT DE SORTIE :
-Retourne uniquement un objet JSON valide.
+Retourne JSON avec:
+title, visual_identity, audio_profile, scenes.
+Chaque scene doit contenir:
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, role.
 """
+
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Tu produis uniquement du JSON valide. "
-                    f"La cle scenes contient exactement {scene_count} scenes. "
-                    f"{ACCENT_INSTRUCTION}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompt
-            },
+            {"role": "system", "content": f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. {ACCENT_INSTRUCTION}"},
+            {"role": "user", "content": prompt},
         ]
 
         data, provider_used = self._call_json_with_retry(messages, temperature=0.75)
 
+        scenes = data.get("scenes", [])
+        if not isinstance(scenes, list):
+            raise ValueError("La reponse ne contient pas de tableau scenes.")
+
+        for idx, scene in enumerate(scenes, start=1):
+            if isinstance(scene, dict):
+                scene.setdefault("id", idx)
+                scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
+                scene.setdefault("pause_after_ms", 300)
+                scene.setdefault("stock_search", "cinematic vertical background")
+                scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
+                scene.setdefault("mood", "intriguing")
+                scene.setdefault("role", "value")
+
         if provider_used == "groq" and _script_missing_accents(data):
             print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
-            data, _ = self._call_json_with_retry(
-                messages,
-                temperature=0.75,
-                skip_providers={"groq"}
-            )
+            data, _ = self._call_json_with_retry(messages, temperature=0.75, skip_providers={"groq"})
+            scenes = data.get("scenes", [])
+            for idx, scene in enumerate(scenes, start=1):
+                if isinstance(scene, dict):
+                    scene.setdefault("id", idx)
 
         self._validate_script(data, scene_count)
         return data
@@ -476,53 +338,34 @@ Retourne uniquement un objet JSON valide.
         if len(scenes) != scene_count:
             raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
 
-        expected_ids = list(range(1, scene_count + 1))
-        actual_ids = [scene.get("id") for scene in scenes]
-        if actual_ids != expected_ids:
-            raise ValueError(f"IDs de scenes invalides : {actual_ids}")
+        for idx, scene in enumerate(scenes, start=1):
+            if not isinstance(scene, dict):
+                raise ValueError(f"Scene {idx} invalide.")
+            scene.setdefault("id", idx)
 
         allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
         allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"}
 
         for scene in scenes:
-            text = scene.get("text", "").strip()
-            voice_direction = scene.get("voice_direction", "").strip()
-            pause_after_ms = scene.get("pause_after_ms")
-            emphasis = scene.get("tts_emphasis_word")
-            role = scene.get("role")
-            mood = scene.get("mood")
-            stock_search = scene.get("stock_search", "").strip()
-            image_prompt = scene.get("image_prompt", "").strip()
-
-            if not text:
+            if not scene.get("text"):
                 raise ValueError(f"Scene {scene.get('id')} : text manquant.")
-            if not voice_direction:
-                raise ValueError(f"Scene {scene.get('id')} : voice_direction manquant.")
-            if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
-                raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
-            if role not in allowed_roles:
-                raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
-            if mood not in allowed_moods:
-                raise ValueError(f"Scene {scene.get('id')} : mood invalide ({mood}).")
-            if not stock_search:
-                raise ValueError(f"Scene {scene.get('id')} : stock_search manquant.")
-            if not image_prompt:
-                raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
+            if not scene.get("voice_direction"):
+                scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
+            pause_after_ms = scene.get("pause_after_ms")
+            if not isinstance(pause_after_ms, int):
+                scene["pause_after_ms"] = 300
+            if scene.get("role") not in allowed_roles:
+                scene["role"] = "value"
+            if scene.get("mood") not in allowed_moods:
+                scene["mood"] = "intriguing"
+            if not scene.get("stock_search"):
+                scene["stock_search"] = "cinematic vertical background"
+            if not scene.get("image_prompt"):
+                scene["image_prompt"] = "Vertical 9:16 cinematic scene"
 
-            if emphasis:
-                normalized_text = text.lower()
-                normalized_emphasis = str(emphasis).strip().lower()
-                words = re.findall(r"[\wÀ-ÿœŒ'-]+", normalized_text)
-                if normalized_emphasis not in words:
-                    print(
-                        f"⚠️ Scene {scene.get('id')} : "
-                        f"tts_emphasis_word='{emphasis}' absent du text. Emphase ignoree."
-                    )
-                    scene["tts_emphasis_word"] = None
-
-        if "title" not in data or not str(data["title"]).strip():
-            raise ValueError("Titre manquant.")
-        if "visual_identity" not in data or not str(data["visual_identity"]).strip():
-            raise ValueError("visual_identity manquant.")
-        if "audio_profile" not in data or not str(data["audio_profile"]).strip():
-            raise ValueError("audio_profile manquant.")
+        if not str(data.get("title", "")).strip():
+            data["title"] = topic
+        if not str(data.get("visual_identity", "")).strip():
+            data["visual_identity"] = "Consistent cinematic vertical documentary world."
+        if not str(data.get("audio_profile", "")).strip():
+            data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
