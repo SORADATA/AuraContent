@@ -1,94 +1,127 @@
 import os
 import glob
+import random
+import shutil
 import yt_dlp
 
-class VideoScraper:
-    def __init__(self, output_dir="assets/backgrounds"):
-        self.output_dir = output_dir
-        os.makedirs(self.output_dir, exist_ok=True)
 
-    def search_and_download(self, query="mysterious dark cinematic drone vertical",
-                             output_filename="current_bg.mp4",
-                             max_duration=120):
+class VideoScraper:
+    def __init__(self, output_dir="assets/backgrounds", fallback_dir="assets/fallback_backgrounds"):
+        self.output_dir = output_dir
+        self.fallback_dir = fallback_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.fallback_dir, exist_ok=True)
+
+    def _cleanup_previous(self, base_name):
+        for f in glob.glob(os.path.join(self.output_dir, base_name + ".*")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    def _get_local_fallback(self, output_filename="current_bg.mp4"):
+        candidates = glob.glob(os.path.join(self.fallback_dir, "*.mp4"))
+        if not candidates:
+            return None, None
+        chosen = random.choice(candidates)
+        final_path = os.path.join(self.output_dir, output_filename)
+        try:
+            shutil.copy2(chosen, final_path)
+            return final_path, os.path.basename(chosen)
+        except Exception:
+            return None, None
+
+    def _download_search(self, query, base_name, max_duration):
+        search_target = f"ytsearch1:{query}"
+        outtmpl = os.path.join(self.output_dir, base_name + ".%(ext)s")
+
+        ydl_opts = {
+            "format": "best[ext=mp4][height<=1080]/best[height<=1080]/best",
+            "outtmpl": outtmpl,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 20,
+            "retries": 3,
+            "extract_flat": False,
+            "match_filter": yt_dlp.utils.match_filter_func(f"duration < {max_duration}"),
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                )
+            },
+        }
+
+        if os.path.exists("cookies.txt"):
+            ydl_opts["cookiefile"] = "cookies.txt"
+
+        # Essai sans args exotiques d'abord
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(search_target, download=True)
+
+            entries = info.get("entries") if info else None
+            if not entries:
+                return None, None
+
+            video_info = entries[0]
+            title = video_info.get("title", "Titre inconnu")
+            return self._find_downloaded_file(base_name), title
+        except Exception:
+            return None, None
+
+    def _find_downloaded_file(self, base_name):
+        downloaded = glob.glob(os.path.join(self.output_dir, base_name + ".*"))
+        if not downloaded:
+            return None
+        return downloaded[0]
+
+    def search_and_download(
+        self,
+        query="mysterious dark cinematic drone vertical",
+        output_filename="current_bg.mp4",
+        max_duration=120
+    ):
         base_name = os.path.splitext(output_filename)[0]
         final_path = os.path.join(self.output_dir, output_filename)
 
-        raw_query = query.strip().replace('"', '') if query else ""
+        raw_query = query.strip().replace('"', "") if query else ""
         clean_query = " ".join(raw_query.split()[:6]) if raw_query else "mysterious dark cinematic vertical"
 
         queries_to_try = [
             clean_query,
-            "mysterious dark cinematic vertical background 9:16",
-            "abandoned spooky place drone shot vertical",
-            "dark fantasy atmosphere Unreal Engine 5 vertical",
-            "deep underground cave exploration cinematic 9:16",
-            "scifi abstract mysterious dark background vertical",
+            "mysterious dark cinematic vertical background",
+            "abandoned spooky place drone shot",
+            "dark fantasy atmosphere vertical",
+            "deep underground cave exploration",
+            "scifi abstract mysterious dark background",
         ]
 
         for current_query in queries_to_try:
             if not current_query.strip():
                 continue
 
-            # Nettoyage des résidus des tentatives précédentes
-            for f in glob.glob(os.path.join(self.output_dir, base_name + ".*")):
+            self._cleanup_previous(base_name)
+
+            print(f"🔍 Recherche YouTube pour : {current_query}")
+            downloaded_path, title = self._download_search(current_query, base_name, max_duration)
+
+            if downloaded_path and os.path.exists(downloaded_path):
                 try:
-                    os.remove(f)
-                except OSError:
+                    if downloaded_path != final_path:
+                        os.replace(downloaded_path, final_path)
+                    print(f"✅ Vidéo de fond trouvée : '{title}'")
+                    return final_path, title
+                except Exception:
                     pass
 
-            search_target = f"ytsearch1:{current_query}"
-            outtmpl = os.path.join(self.output_dir, base_name + ".%(ext)s")
+        print("⚠️ yt-dlp a échoué, tentative fallback local...")
+        fallback_path, fallback_name = self._get_local_fallback(output_filename)
+        if fallback_path and os.path.exists(fallback_path):
+            print(f"✅ Fallback local utilisé : '{fallback_name}'")
+            return fallback_path, fallback_name
 
-            ydl_opts = {
-                'format': 'best[ext=mp4][height<=1920]/best[height<=1920]/best',
-                'outtmpl': outtmpl,
-                'noplaylist': True,
-                'quiet': True,
-                'no_warnings': True,
-                'match_filter': yt_dlp.utils.match_filter_func(
-                    f"duration < {max_duration}"
-                ),
-                'socket_timeout': 15,
-                
-                # 🔥 AJOUTS ANTI-BOT YOUTUBE (Bypass Client Mobile) 🔥
-                'extractor_args': {'youtube': ['player_client=ios,android']},
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
-                }
-            }
-            
-            # 🔥 AJOUT ANTI-BOT (Méthode Cookies) 🔥
-            # Détecte automatiquement si tu as mis un fichier cookies.txt à la racine
-            if os.path.exists('cookies.txt'):
-                print("🍪 Fichier cookies.txt détecté, utilisation pour l'authentification YouTube.")
-                ydl_opts['cookiefile'] = 'cookies.txt'
-
-            try:
-                print(f"🔍 Recherche sur YouTube pour : {current_query}")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(search_target, download=True)
-
-                entries = info.get('entries') if info else None
-                if not entries:
-                    continue
-
-                video_info = entries[0]
-                real_title = video_info.get('title', 'Titre inconnu')
-
-                downloaded = glob.glob(os.path.join(self.output_dir, base_name + ".*"))
-                if not downloaded:
-                    continue
-
-                actual_path = downloaded[0]
-                if actual_path != final_path:
-                    os.replace(actual_path, final_path)
-
-                print(f"✅ Vidéo de fond trouvée et validée : '{real_title}'")
-                return final_path, real_title
-
-            except Exception as e:
-                print(f"⚠️ Échec avec '{current_query}' ({e}), tentative suivante...")
-                continue
-
-        print("❌ Erreur critique : Impossible de récupérer un fond vidéo valide.")
+        print("❌ Impossible de récupérer un fond vidéo valide.")
         return None, None
