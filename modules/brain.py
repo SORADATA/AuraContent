@@ -137,14 +137,16 @@ class ContentBrain:
                 response = client.chat.completions.create(**kwargs)
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
-                # 🛑 Petite pause pour laisser souffler l'API et éviter de saturer les TPM (Tokens Per Minute)
-                time.sleep(3)
+                
+                # 🛑 Pause de sécurité pour réguler les TPM (Tokens Per Minute) et éviter le Rate Limit
+                time.sleep(4)
                 return content
 
             except Exception as e:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                time.sleep(3)
+                # Pause prolongée en cas d'erreur de connexion / surcharge
+                time.sleep(8)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
