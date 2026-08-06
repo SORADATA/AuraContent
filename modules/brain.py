@@ -6,7 +6,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 try:
-    from modules.utils.zernio_client import get_latest_videos_stats
+    from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
 
