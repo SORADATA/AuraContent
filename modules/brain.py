@@ -137,6 +137,8 @@ class ContentBrain:
                 response = client.chat.completions.create(**kwargs)
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
+                # 🛑 Petite pause pour laisser souffler l'API et éviter de saturer les TPM (Tokens Per Minute)
+                time.sleep(3)
                 return content
 
             except Exception as e:
