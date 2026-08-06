@@ -15,8 +15,8 @@ except ImportError:
 
 load_dotenv()
 
+# On utilise uniquement Groq car Gemini pose des problèmes de quota
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.0-flash"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -37,14 +37,6 @@ def _has_missing_accents(text, min_hits=3):
     hits = sum(1 for p in suspicious_patterns if re.search(p, text_lower))
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
-
-
-def _script_missing_accents(script_data):
-    scenes = script_data.get("scenes", [])
-    if not scenes:
-        return False
-    full_text = " ".join(s.get("text", "") for s in scenes if isinstance(s, dict))
-    return _has_missing_accents(full_text)
 
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
@@ -88,30 +80,18 @@ def _clean_json_response(content):
 
 
 class ContentBrain:
-    def _build_client(self, provider):
-        if provider == "groq":
-            groq_key = os.getenv("GROQ_API_KEY")
-            if not groq_key:
-                return None
-            return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+    def _build_client(self):
+        groq_key = os.getenv("GROQ_API_KEY")
+        if not groq_key:
+            raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
+        return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
 
-        if provider == "gemini":
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_key:
-                return None
-            return OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=gemini_key)
-
-        return None
-
-    def _model_for(self, provider):
-        return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
-
-    def _extract_content(self, response, provider):
+    def _extract_content(self, response):
         choices = getattr(response, "choices", None)
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
         if not choices:
-            raise ValueError(f"Réponse inattendue du provider {provider}: {response}")
+            raise ValueError(f"Réponse inattendue de Groq: {response}")
 
         choice0 = choices[0]
         message = getattr(choice0, "message", None)
@@ -136,61 +116,48 @@ class ContentBrain:
             content = "".join(parts).strip()
 
         if not content:
-            raise ValueError(f"Contenu vide du provider {provider}: {response}")
+            raise ValueError(f"Contenu vide de Groq: {response}")
 
         return content
 
-    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
-        skip_providers = skip_providers or set()
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
+        client = self._build_client()
         last_error = None
 
-        for attempt in range(2):
-            for provider in ("groq", "gemini"):
-                if provider in skip_providers:
-                    continue
+        for attempt in range(3):
+            try:
+                kwargs = {
+                    "model": GROQ_MODEL,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
 
-                client = self._build_client(provider)
-                if client is None:
-                    continue
+                response = client.chat.completions.create(**kwargs)
+                content = self._extract_content(response)
+                print("✅ Reponse obtenue via Groq")
+                return content
 
-                try:
-                    kwargs = {
-                        "model": self._model_for(provider),
-                        "messages": messages,
-                        "temperature": temperature,
-                    }
-                    if json_mode:
-                        kwargs["response_format"] = {"type": "json_object"}
+            except Exception as e:
+                print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
+                last_error = e
+                time.sleep(3)
 
-                    response = client.chat.completions.create(**kwargs)
-                    content = self._extract_content(response, provider)
-                    print(f"✅ Reponse obtenue via {provider}")
-                    return content, provider
+        raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
-                except Exception as e:
-                    print(f"⚠️ Echec avec {provider} (Cycle {attempt + 1}/2): {e}")
-                    last_error = e
-
-            if attempt == 0:
-                print("⏳ Micro-coupure réseau suspectée. Pause de 5s avant de tout retenter...")
-                time.sleep(5)
-
-        raise RuntimeError(f"Aucun provider disponible après 2 tentatives. Derniere erreur: {last_error}")
-
-    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2, skip_providers=None):
-        skip_providers = set(skip_providers or set())
+    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2):
         last_error = None
 
         for attempt in range(max_json_retries):
-            content, provider_used = self._call_with_fallback(
+            content = self._call_with_fallback(
                 messages,
                 temperature=temperature,
-                json_mode=True,
-                skip_providers=skip_providers
+                json_mode=True
             )
             try:
                 data = json.loads(_clean_json_response(content))
-                return data, provider_used
+                return data
             except json.JSONDecodeError as e:
                 last_error = e
                 print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), nouvelle tentative...")
@@ -206,7 +173,7 @@ class ContentBrain:
 
         last_topic = ""
         for attempt in range(2):
-            content, _ = self._call_with_fallback(messages, temperature=0.9)
+            content = self._call_with_fallback(messages, temperature=0.9)
             topic = _clean_single_line_title(content)
             last_topic = topic
             if topic and 4 <= len(topic.split()) <= 18:
@@ -220,7 +187,7 @@ class ContentBrain:
             {"role": "system", "content": f"Tu reformules le sujet en un titre accrocheur, sans changer le theme. Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION}"},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
-        content, _ = self._call_with_fallback(messages, temperature=0.8)
+        content = self._call_with_fallback(messages, temperature=0.8)
         return _clean_single_line_title(content)
 
     def generate_video_search_query(self, topic):
@@ -228,7 +195,7 @@ class ContentBrain:
             {"role": "system", "content": "Tu génères une requête YouTube en anglais, 6 mots max, sans phrase. Inclure CGI, Unreal Engine 5, dark fantasy, cinematic 3D render ou mysterious atmosphere."},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
-        content, _ = self._call_with_fallback(messages, temperature=0.7)
+        content = self._call_with_fallback(messages, temperature=0.7)
         return _clean_single_line_title(content).replace('"', '')
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
@@ -242,11 +209,11 @@ GENERE {n} hooks viraux en francais.
 RETURNS JSON:
 {{
   "hooks": [
-    {{
+    {
       "text": "hook",
       "pattern": "question",
       "raison": "..."
-    }}
+    }
   ]
 }}
 
@@ -257,7 +224,7 @@ RETURNS JSON:
             {"role": "user", "content": prompt},
         ]
 
-        data, provider_used = self._call_json_with_retry(messages, temperature=1.1)
+        data = self._call_json_with_retry(messages, temperature=1.1)
 
         hooks = data.get("hooks")
         if not isinstance(hooks, list):
@@ -281,24 +248,34 @@ RETURNS JSON:
         if len(normalized_hooks) < n:
             raise ValueError(f"Nombre de hooks invalide: {len(normalized_hooks)} au lieu de {n}.")
 
-        return normalized_hooks[:n]
+        normalized_hooks = normalized_hooks[:n]
+        if not normalized_hooks:
+            normalized_hooks = [{"text": topic, "pattern": "default", "raison": ""}]
+        return normalized_hooks
 
     def generate_script(self, topic, chosen_hook=None):
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None):
-        hook_instruction = f'La scene 1 doit reprendre légèrement ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1 hook."
+        hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
+        
         prompt = f"""
 SUJET:
 {topic}
 
 {hook_instruction}
 
+REGLES STRICTES DE NARRATION (POUR ÉVITER LES INTROS VIDES) :
+1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
+2. Dès la scène 2, entre DIRECTEMENT dans le vif du sujet en racontant de vrais faits historiques, des détails précis ou une anecdote concrète et surprenante.
+3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
+4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
+
 GENERE EXACTEMENT {scene_count} scenes.
 
-Retourne JSON avec:
+Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
-Chaque scene doit contenir:
+Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, role.
 """
 
@@ -307,7 +284,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
             {"role": "user", "content": prompt},
         ]
 
-        data, provider_used = self._call_json_with_retry(messages, temperature=0.75)
+        data = self._call_json_with_retry(messages, temperature=0.7)
 
         scenes = data.get("scenes", [])
         if not isinstance(scenes, list):
@@ -323,14 +300,6 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
                 scene.setdefault("mood", "intriguing")
                 scene.setdefault("role", "value")
 
-        if provider_used == "groq" and _script_missing_accents(data):
-            print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
-            data, _ = self._call_json_with_retry(messages, temperature=0.75, skip_providers={"groq"})
-            scenes = data.get("scenes", [])
-            for idx, scene in enumerate(scenes, start=1):
-                if isinstance(scene, dict):
-                    scene.setdefault("id", idx)
-
         self._validate_script(data, scene_count, topic)
         return data
 
@@ -341,15 +310,12 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
         if len(scenes) != scene_count:
             raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
 
-        for idx, scene in enumerate(scenes, start=1):
-            if not isinstance(scene, dict):
-                raise ValueError(f"Scene {idx} invalide.")
-            scene.setdefault("id", idx)
-
         allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
         allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"}
 
         for scene in scenes:
+            if not isinstance(scene, dict):
+                raise ValueError("Une scène n'est pas un dictionnaire valide.")
             if not scene.get("text"):
                 raise ValueError(f"Scene {scene.get('id')} : text manquant.")
             if not scene.get("voice_direction"):
@@ -372,4 +338,3 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
-
