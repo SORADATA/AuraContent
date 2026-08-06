@@ -122,11 +122,12 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
       VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
       REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
       USE_HOOK_VARIANTS: ${{ github.event.inputs.use_hook_variants || 'true' }}
-      YOUTUBE_COOKIES_TXT: ${{ secrets.YOUTUBE_COOKIES_TXT }}
 
     steps:
       - name: 📥 Cloner le dépôt
@@ -134,12 +135,6 @@ jobs:
 
       - name: ⚙️ Installer FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: 🍪 Écrire les cookies YouTube
-        run: |
-          printf '%s' "$YOUTUBE_COOKIES_TXT" > cookies.txt
-        env:
-          YOUTUBE_COOKIES_TXT: ${{ secrets.YOUTUBE_COOKIES_TXT }}
 
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5

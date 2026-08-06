@@ -7,7 +7,7 @@ from datetime import datetime
 from huggingface_hub import HfApi
 
 from modules.brain import ContentBrain
-from modules.video_scraper import VideoScraper
+from modules.asset_manager import AssetManager  # <-- Remplacement de VideoScraper
 from modules.audio import AudioEngine
 from modules.composer import Composer
 
@@ -304,6 +304,7 @@ async def main():
     use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
 
     brain = ContentBrain()
+    asset_manager = AssetManager() # Initialisation du nouveau gestionnaire d'assets
 
     print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
     try:
@@ -312,6 +313,7 @@ async def main():
         print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
         stats_historique = None
 
+    # --- 1. GÉNÉRATION DU SUJET ET DE LA REQUÊTE ---
     try:
         if topic_input:
             topic = topic_input
@@ -331,25 +333,24 @@ async def main():
         print(f"❌ Brain Error (Sujet/Requête): {e}")
         return
 
+    # --- 2. RECHERCHE DU FOND VIDÉO ---
+    temp_dir = os.path.join(os.getcwd(), "assets", "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    bg_video_path = os.path.join(temp_dir, "current_bg.mp4")
+    is_video_found = False
+
     try:
-        print("📥 Téléchargement du fond vidéo immersif (yt-dlp)...")
-        scraper = VideoScraper()
-        bg_video_path, real_video_title = scraper.search_and_download(
-            query=f"{dynamic_query} vertical 9:16",
-            output_filename="current_bg.mp4"
-        )
-
-        if bg_video_path and real_video_title:
-            print(f"🎬 Fond vidéo validé : '{real_video_title}'")
+        is_video_found = asset_manager.fetch_background_video(dynamic_query, bg_video_path)
+        if is_video_found:
+            print("🎬 Fond vidéo validé et prêt pour le montage.")
         else:
-            print("⚠️ Aucun fond vidéo trouvé, passage en mode fallback images.")
+            print("⚠️ Aucun fond vidéo trouvé. Le mode fallback images IA s'activera après la génération du script.")
             bg_video_path = None
-            real_video_title = topic
     except Exception as e:
-        print(f"⚠️ Video Scraper Error: {e}")
+        print(f"⚠️ AssetManager Error: {e}")
         bg_video_path = None
-        real_video_title = topic
 
+    # --- 3. GÉNÉRATION DU SCRIPT ET HOOKS ---
     try:
         chosen_hook = None
         if use_hooks_ab_test:
@@ -385,6 +386,18 @@ async def main():
         print("❌ Script generation failed.")
         return
 
+    # --- 4. FALLBACK IMAGES (SI PAS DE VIDÉO) ---
+    video_pairs = [None] * len(script)
+    if not is_video_found:
+        print("🎨 Mode fallback : Génération des visuels IA (Pollinations) en cours...")
+        visual_id = script_payload.get("visual_identity", "Cinematic documentary")
+        video_pairs = []
+        for scene in script:
+            img_path = os.path.join(temp_dir, f"scene_{scene['id']}.jpg")
+            asset_manager.generate_image(scene["image_prompt"], img_path, visual_id)
+            video_pairs.append(img_path)
+
+    # --- 5. LÉGENDE, AUDIO ET SOUS-TITRES ---
     print("📝 Demande de légende à l'IA basée sur le script complet...")
     full_text = " ".join(scene["text"] for scene in script)
     legende_finale = generate_caption(full_text, video_title)
@@ -413,10 +426,10 @@ async def main():
             min_caption_dur=0.45,
         )
 
+    # --- 6. ASSEMBLAGE ET MONTAGE ---
     try:
-        print("🎞️ Composition video avec le fond continu...")
+        print("🎞️ Composition video...")
         composer = Composer()
-        video_pairs = [None] * len(script)
         final_scene_paths = composer.render_all_scenes(
             script_data=script,
             video_pairs=video_pairs,
@@ -436,6 +449,7 @@ async def main():
         print(f"❌ Final assembly error: {e}")
         return
 
+    # --- 7. UPLOAD ---
     if final_path:
         print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)

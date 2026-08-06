@@ -9,6 +9,7 @@ try:
     from modules.utils.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
+
     def get_latest_videos_stats():
         return None
 
@@ -51,7 +52,7 @@ def _format_stats_instruction(previous_stats_list, label="hooks"):
         return ""
 
     stats_text = "\n".join([
-        f'- Titre : "{s["title"]}" | Vues : {s["views"]} | Likes : {s["likes"]}'
+        f'- Titre : "{s.get("title", "?")}" | Vues : {s.get("views", "?")} | Likes : {s.get("likes", "?")}'
         for s in previous_stats_list
         if isinstance(s, dict) and "title" in s
     ])
@@ -291,6 +292,8 @@ RETURNS JSON:
 SUJET:
 {topic}
 
+{hook_instruction}
+
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne JSON avec:
@@ -328,10 +331,10 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
                 if isinstance(scene, dict):
                     scene.setdefault("id", idx)
 
-        self._validate_script(data, scene_count)
+        self._validate_script(data, scene_count, topic)
         return data
 
-    def _validate_script(self, data, scene_count):
+    def _validate_script(self, data, scene_count, topic):
         scenes = data.get("scenes")
         if not isinstance(scenes, list):
             raise ValueError("La reponse ne contient pas de tableau scenes.")
@@ -369,3 +372,4 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
+
