@@ -7,6 +7,8 @@ jobs:
   publier_video:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      ACTIVER_FINANCE: "false"
     steps:
       - name: 📥 Récupérer le code
         uses: actions/checkout@v4
@@ -32,21 +34,23 @@ jobs:
           TIKTOK_CAPITAL_SIMPLE_ID: ${{ secrets.TIKTOK_CAPITAL_SIMPLE_ID }}
           YOUTUBE_CAPITAL_SIMPLE_ID: ${{ secrets.YOUTUBE_CAPITAL_SIMPLE_ID }}
         run: |
-          # 1. On lance le premier script
+          # 1. On lance toujours le premier script
           python publish.py
-          # 2. On renomme le rapport pour ne pas l'écraser (le "|| true" évite une erreur si le fichier n'a pas été créé)
           mv loudness_report.txt loudness_report_standard.txt || true
           
-          # 3. On lance le deuxième script
-          python publish_finance.py
-          # 4. On renomme aussi son rapport par sécurité
-          mv loudness_report.txt loudness_report_finance.txt || true
+          # 2. On lance publish_finance.py uniquement si la variable d'environnement est à "true"
+          if [ "$ACTIVER_FINANCE" = "true" ]; then
+            echo "Lancement de publish_finance.py..."
+            python publish_finance.py
+            mv loudness_report.txt loudness_report_finance.txt || true
+          else
+            echo "publish_finance.py ignoré (désactivé par configuration)."
+          fi
 
       - name: 💾 Sauvegarder les rapports de loudness
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Loudness-Reports-Publish-${{ github.run_id }}
-          # L'étoile (*) permet de récupérer tous les fichiers qui commencent par loudness_report_ et finissent par .txt
           path: loudness_report_*.txt 
           if-no-files-found: ignore
