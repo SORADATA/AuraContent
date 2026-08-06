@@ -84,7 +84,7 @@ class ContentBrain:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
+        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
     def _extract_content(self, response):
         choices = getattr(response, "choices", None)
@@ -137,7 +137,7 @@ class ContentBrain:
                 response = client.chat.completions.create(**kwargs)
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
-                
+
                 # 🛑 Pause de sécurité pour réguler les TPM (Tokens Per Minute) et éviter le Rate Limit
                 time.sleep(4)
                 return content
@@ -213,11 +213,11 @@ GENERE {n} hooks viraux en francais.
 RETURNS JSON:
 {{
   "hooks": [
-    {
+    {{
       "text": "hook",
       "pattern": "question",
       "raison": "..."
-    }
+    }}
   ]
 }}
 
@@ -262,7 +262,7 @@ RETURNS JSON:
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None):
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
-        
+
         prompt = f"""
 SUJET:
 {topic}
@@ -342,3 +342,4 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
+
