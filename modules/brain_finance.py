@@ -842,7 +842,7 @@ FORMAT DE SORTIE (JSON) :
             if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
                 raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
 
-            # --- CORRECTION AUTOMATIQUE DES RÔLES ---
+            # Sécurité rôles
             if role:
                 role = str(role).strip().lower().replace("l'", "").replace("la ", "").replace("le ", "")
                 if role not in allowed_roles:
@@ -851,7 +851,7 @@ FORMAT DE SORTIE (JSON) :
             else:
                 scene["role"] = "mechanism"
 
-            # --- CORRECTION AUTOMATIQUE DES MOODS (ANTI-PLANTAGE) ---
+            # Sécurité moods (anti-plantage)
             if mood:
                 mood = str(mood).strip().lower()
                 if mood not in allowed_moods:
