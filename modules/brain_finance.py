@@ -535,7 +535,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
 
             print("📚 Curriculum recent epuise, expansion automatique du pilier le moins couvert...")
             pillar_key = _pillar_with_least_coverage(state)
-            existing_in_pillar = [n["notion"] for n in all_notions if n.get("pillar") == pillar_key]
+            existing_in_pillar = [n["notion"] for n in all_notions if n.get("pillar"] == pillar_key]
             new_notions = self.expand_curriculum_with_llm(pillar_key, existing_in_pillar, n=8)
 
             if new_notions:
@@ -838,9 +838,11 @@ FORMAT DE SORTIE (JSON) :
 
             if isinstance(pause_after_ms, float) and pause_after_ms.is_integer():
                 pause_after_ms = int(pause_after_ms)
-                scene["pause_after_ms"] = pause_after_ms
-            if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
-                raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
+            
+            # --- CORRECTION AUTOMATIQUE DES PAUSES (Anti-plantage 500ms) ---
+            if not isinstance(pause_after_ms, int) or not (150 <= pause_after_ms <= 600):
+                pause_after_ms = 300
+            scene["pause_after_ms"] = pause_after_ms
 
             # Sécurité rôles
             if role:
@@ -851,7 +853,7 @@ FORMAT DE SORTIE (JSON) :
             else:
                 scene["role"] = "mechanism"
 
-            # Sécurité moods (anti-plantage)
+            # Sécurité moods
             if mood:
                 mood = str(mood).strip().lower()
                 if mood not in allowed_moods:
