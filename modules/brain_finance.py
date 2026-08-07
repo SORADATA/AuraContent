@@ -90,7 +90,7 @@ CONTENT_PILLARS = {
         "label": "Crédit et dette",
         "seed_notions": [
             {"notion": "Comment fonctionne le crédit immobilier et le taux d'endettement", "niveau": "intermediaire"},
-            {"notion": "Pourquoi la dette n'est pas toujours mauvaise (effet de levier)", "niveau": "intermediaire"},
+            {"notion": "Pourquoi la debt n'est pas toujours mauvaise (effet de levier)", "niveau": "intermediaire"},
         ],
     },
     "fiscalite": {
@@ -300,8 +300,10 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
     if not topic:
         return False
     lowered = topic.lower().strip()
+    
+    # Retrait de "mais voici" des marqueurs invalides pour autoriser ce type d'accroche
     invalid_markers = [
-        "mais voici", "voici le bon", "je me suis trompe",
+        "voici le bon", "je me suis trompe",
         "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
         "\n", "hook", "analyse", "explication"
     ]
@@ -309,8 +311,8 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
         return False
         
     word_count = len(topic.split())
-    # ✅ Limite ajustée à 25 mots pour tolérer le format "ARGENT #XX :"
-    if word_count < 4 or word_count > 25:
+    # Tolérance élargie à 30 mots côté script pour éviter les erreurs bloquantes
+    if word_count < 4 or word_count > 30:
         return False
         
     if lowered.endswith(":"):
@@ -569,7 +571,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
                     "Tu dois créer une véritable IDENTITÉ de série (comme une mini-série Netflix sur l'argent). "
                     "Le but n'est pas de faire un titre scolaire, mais de créer une dissonance cognitive, de révéler un secret d'initié ou de poser une situation hyper concrète pour donner envie de voir le prochain épisode.\n\n"
                     "FORMAT EXIGÉ : Commence TOUJOURS par 'ARGENT #XX :' (invente un numéro aléatoire entre 01 et 99). "
-                    "Réponds UNIQUEMENT avec un seul titre en français, sur UNE seule ligne.\n\n"
+                    "Réponds UNIQUEMENT avec un seul titre en français, sur UNE seule ligne. MAXIMUM 18 MOTS STRICTEMENT.\n\n"
                     "ANALYSE CES EXEMPLES POUR COMPRENDRE L'ADN DE LA CHAÎNE (applique cette même psychologie à la notion demandée) :\n"
                     "- Paradoxe/Dissonance : 'ARGENT #01 : Pourquoi ton salaire augmente mais tu as l'impression de t'appauvrir ?'\n"
                     "- Comportement d'initié : 'ARGENT #02 : Pourquoi les riches ne gardent presque jamais tout leur argent sur leur compte ?'\n"
@@ -583,7 +585,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
                 "content": (
                     f"Notion financière à enseigner (niveau {niveau}) : {notion}\n"
                     f"Angle de révélation imposé : {angle.replace('_', ' ')}\n"
-                    "Applique l'ADN de la chaîne (dissonance, secret, mise en garde ou chiffre choc) pour créer LE titre percutant de cet épisode."
+                    "Applique l'ADN de la chaîne pour créer LE titre percutant de cet épisode. Reste très court (18 mots max)."
                     + stats_instruction
                     + market_instruction
                 )
