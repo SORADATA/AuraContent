@@ -368,7 +368,7 @@ class ContentBrain:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
+        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
     def _extract_content(self, response):
         choices = getattr(response, "choices", None)
