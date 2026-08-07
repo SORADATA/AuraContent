@@ -134,7 +134,12 @@ async def main():
             label = "Génération" if force_ai_image else "Fallback"
             print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
             img_path = os.path.join(temp_dir, f"scene_{scene_id}.jpg")
-            asset_manager.generate_image(scene["image_prompt"], img_path, visual_id)
+            
+            # Sécurisation du prompt IA pour forcer un rendu réaliste/documentaire
+            base_prompt = scene.get("image_prompt", dynamic_query)
+            safe_thematic_prompt = f"{base_prompt}, photorealistic historical documentary style, dark cinematic lighting, mysterious, highly detailed, real photography, 8k, no 3d render, no abstract patterns"
+            
+            asset_manager.generate_image(safe_thematic_prompt, img_path, visual_id)
             asset_path = img_path
 
         video_pairs.append(asset_path)
