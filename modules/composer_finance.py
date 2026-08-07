@@ -1,5 +1,6 @@
 import os
 import random
+import shutil
 import ffmpeg
 
 from modules.utils.karaoke_subtitles import generate_karaoke_subtitles
@@ -56,6 +57,39 @@ class Composer:
             return float(probe["format"]["duration"])
         except Exception:
             return 0.0
+
+    def add_watermark_text(self, input_video_path, output_video_path, channel_name="@CapitalSecret"):
+        """Incruste un filigrane texte semi-transparent en bas de la vidéo finale."""
+        try:
+            stream = ffmpeg.input(input_video_path)
+            v_stream = stream.video.filter(
+                "drawtext",
+                text=channel_name,
+                fontcolor="white",
+                fontsize=36,
+                box=1,
+                boxcolor="black@0.5",
+                boxborderw=10,
+                x="(w-text_w)/2",
+                y="h-150"
+            )
+            a_stream = stream.audio
+
+            runner = ffmpeg.output(
+                v_stream,
+                a_stream,
+                output_video_path,
+                vcodec="libx264",
+                acodec="copy",
+                pix_fmt="yuv420p",
+                movflags="faststart"
+            )
+            runner.run(overwrite_output=True, quiet=True)
+            return True
+        except ffmpeg.Error as e:
+            error_log = e.stderr.decode("utf8") if e.stderr else str(e)
+            print(f"⚠️ Watermark failed: {error_log}")
+            return False
 
     def process_scene(self, scene, video_clip_path):
         """Assemble un clip video deja fini (Pexels ou Pollinations, deja
@@ -175,9 +209,9 @@ class Composer:
             )
 
             voice_split = voice_audio_base.filter_multi_output("asplit", 2)
-            voice_for_sidechain, voice_for_mix = voice_split, voice_split[1]
+            voice_for_sidechain, voice_for_mix = voice_split[0], voice_split[1]
             music_split = music_audio_base.filter_multi_output("asplit", 2)
-            music_for_sidechain, music_for_mix = music_split, music_split[1]
+            music_for_sidechain, music_for_mix = music_split[0], music_split[1]
 
             ducked_music = ffmpeg.filter([music_for_sidechain, voice_for_sidechain], "sidechaincompress",
                                           threshold=0.03, ratio=10, attack=20, release=250, makeup=1)
@@ -199,6 +233,9 @@ class Composer:
 
     def concatenate_with_transitions(self, video_paths, script_data=None, output_filename="final_short.mp4"):
         print("🎬 Stitching final video (cascade mode)...")
+        
+        # 1. Définition des chemins
+        raw_final_output_path = os.path.join(self.temp_dir, "raw_final_stitched.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
 
         if os.path.exists(output_path):
@@ -210,10 +247,11 @@ class Composer:
         if not video_paths:
             return None
 
+        # 2. Assemblage des scènes
         if len(video_paths) == 1:
-            stitched_path = video_paths
+            stitched_path = video_paths[0]
         else:
-            courant = video_paths
+            courant = video_paths[0]
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
                 merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
@@ -235,19 +273,36 @@ class Composer:
 
             stitched_path = courant
 
+        # 3. Mixage Audio (Musique + Normalisation) vers le fichier RAW
         if os.path.exists(self.bg_music_path):
             print("🎵 Mixing background music with ducking...")
-            success = self._mix_background_music(stitched_path, output_path)
+            success = self._mix_background_music(stitched_path, raw_final_output_path)
             if not success:
                 normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-                os.replace(normalized_fallback if ok and os.path.exists(normalized_fallback) else stitched_path, output_path)
+                os.replace(normalized_fallback if ok and os.path.exists(normalized_fallback) else stitched_path, raw_final_output_path)
         else:
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
-            os.replace(normalized_fallback if ok and os.path.exists(normalized_fallback) else stitched_path, output_path)
-            print(f"✅ FINAL VIDEO SAVED: {output_path}")
+            os.replace(normalized_fallback if ok and os.path.exists(normalized_fallback) else stitched_path, raw_final_output_path)
 
+        # 4. Application du filigrane (Watermark)
+        print("💧 Adding watermark text...")
+        watermark_success = self.add_watermark_text(raw_final_output_path, output_path, channel_name="@CapitalSecret")
+        
+        if not watermark_success:
+            print("⚠️ Watermark failed, copying raw final video instead.")
+            shutil.copy2(raw_final_output_path, output_path)
+
+        print(f"✅ FINAL VIDEO SAVED (Watermarked): {output_path}")
+
+        # 5. Nettoyage
+        if os.path.exists(raw_final_output_path):
+            try:
+                os.remove(raw_final_output_path)
+            except Exception:
+                pass
+                
         if stitched_path != output_path and os.path.exists(stitched_path):
             try:
                 os.remove(stitched_path)
