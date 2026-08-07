@@ -811,7 +811,8 @@ FORMAT DE SORTIE (JSON) :
         if actual_ids != expected_ids:
             raise ValueError(f"IDs de scenes invalides : {actual_ids}")
 
-        allowed_roles = {"hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"}
+       
+        allowed_roles = {"hook", "misconception", "illusion", "faille", "definition", "mechanism", "analogy", "example", "summary", "cta", "regle"}
         allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory", "intriguing"}
 
         compliance_violations = []
