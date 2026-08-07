@@ -307,9 +307,12 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
     ]
     if any(marker in lowered for marker in invalid_markers):
         return False
+        
     word_count = len(topic.split())
-    if word_count < 4 or word_count > 18:
+    # ✅ Limite ajustée à 25 mots pour tolérer le format "ARGENT #XX :"
+    if word_count < 4 or word_count > 25:
         return False
+        
     if lowered.endswith(":"):
         return False
     if topic.count('.') > 1:
@@ -562,21 +565,25 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
             {
                 "role": "system",
                 "content": (
-                    f"{PERSONA_INSTRUCTION} "
-                    "Transforme la notion financière ennuyeuse fournie en un titre accrocheur, "
-                    "qui ressemble à une révélation choquante ou un secret. "
-                    "FORMAT EXIGÉ : Commence toujours par 'ARGENT #XX :' (invente un numéro aléatoire entre 01 et 99). "
-                    "Exemple : 'ARGENT #04 : Pourquoi ton salaire augmente mais tu t'appauvris.' "
-                    "Réponds UNIQUEMENT avec un seul titre en français, sur UNE seule ligne. "
+                    f"{PERSONA_INSTRUCTION}\n"
+                    "Tu dois créer une véritable IDENTITÉ de série (comme une mini-série Netflix sur l'argent). "
+                    "Le but n'est pas de faire un titre scolaire, mais de créer une dissonance cognitive, de révéler un secret d'initié ou de poser une situation hyper concrète pour donner envie de voir le prochain épisode.\n\n"
+                    "FORMAT EXIGÉ : Commence TOUJOURS par 'ARGENT #XX :' (invente un numéro aléatoire entre 01 et 99). "
+                    "Réponds UNIQUEMENT avec un seul titre en français, sur UNE seule ligne.\n\n"
+                    "ANALYSE CES EXEMPLES POUR COMPRENDRE L'ADN DE LA CHAÎNE (applique cette même psychologie à la notion demandée) :\n"
+                    "- Paradoxe/Dissonance : 'ARGENT #01 : Pourquoi ton salaire augmente mais tu as l'impression de t'appauvrir ?'\n"
+                    "- Comportement d'initié : 'ARGENT #02 : Pourquoi les riches ne gardent presque jamais tout leur argent sur leur compte ?'\n"
+                    "- Cas hyper concret + Mise en garde : 'ARGENT #03 : Si tu gagnes 2 000 €, voici l'erreur que tu ne dois surtout pas faire.'\n"
+                    "- Projection mathématique choc : 'ARGENT #04 : 100 € par mois pendant 20 ans : voici ce que ça peut réellement devenir.'\n\n"
                     f"{ACCENT_INSTRUCTION} {COMPLIANCE_INSTRUCTION}"
                 )
             },
             {
                 "role": "user",
                 "content": (
-                    f"Notion à enseigner (niveau {niveau}) : {notion}\n"
+                    f"Notion financière à enseigner (niveau {niveau}) : {notion}\n"
                     f"Angle de révélation imposé : {angle.replace('_', ' ')}\n"
-                    "Transforme cela en titre mystérieux et percutant."
+                    "Applique l'ADN de la chaîne (dissonance, secret, mise en garde ou chiffre choc) pour créer LE titre percutant de cet épisode."
                     + stats_instruction
                     + market_instruction
                 )
