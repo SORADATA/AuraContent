@@ -535,7 +535,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
 
             print("📚 Curriculum recent epuise, expansion automatique du pilier le moins couvert...")
             pillar_key = _pillar_with_least_coverage(state)
-            existing_in_pillar = [n["notion"] for n in all_notions if n.get("pillar"] == pillar_key]
+            existing_in_pillar = [n["notion"] for n in all_notions if n.get("pillar") == pillar_key]
             new_notions = self.expand_curriculum_with_llm(pillar_key, existing_in_pillar, n=8)
 
             if new_notions:
