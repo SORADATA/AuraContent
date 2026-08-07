@@ -27,6 +27,15 @@
       "topic": "ARGENT #14 : Les riches gagnent-ils vraiment leur argent ou font-ils travailler leur argent pour eux ?",
       "hook_pattern": "secret",
       "date": "2026-08-07T17:45:12.928926"
+    },
+    {
+      "notion": "Comment fonctionne le crédit immobilier et le taux d'endettement",
+      "niveau": "intermediaire",
+      "angle": "illusion_du_systeme",
+      "pillar": "credit_dette",
+      "topic": "ARGENT #14 : L'illusion du crédit immobilier : pourquoi ton rêve de maison peut être un piège ?",
+      "hook_pattern": "choc",
+      "date": "2026-08-07T17:58:53.204409"
     }
   ]
 }
