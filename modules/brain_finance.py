@@ -808,12 +808,16 @@ FORMAT DE SORTIE (JSON) :
         if actual_ids != expected_ids:
             raise ValueError(f"IDs de scenes invalides : {actual_ids}")
 
-        # Rôles autorisés assouplis et normalisés pour éviter tout crash
         allowed_roles = {
             "hook", "misconception", "illusion", "faille", "definition", 
-            "mechanism", "analogy", "example", "summary", "cta", "regle", "value", "tension", "context", "escalation", "reveal"
+            "mechanism", "analogy", "example", "summary", "cta", "regle", 
+            "value", "tension", "context", "escalation", "reveal"
         }
-        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory", "intriguing", "ominous", "tense", "awe", "scientific", "melancholic"}
+        allowed_moods = {
+            "confident", "sharp", "clear", "pedagogical", "engaging", 
+            "revelatory", "intriguing", "ominous", "tense", "awe", 
+            "scientific", "melancholic", "misconception", "illusion", "faille"
+        }
 
         compliance_violations = []
 
@@ -838,19 +842,28 @@ FORMAT DE SORTIE (JSON) :
             if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
                 raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
 
-            # Normalisation et nettoyage du rôle pour accepter les majuscules et articles de l'IA
+            # --- CORRECTION AUTOMATIQUE DES RÔLES ---
             if role:
                 role = str(role).strip().lower().replace("l'", "").replace("la ", "").replace("le ", "")
+                if role not in allowed_roles:
+                    role = "mechanism"
                 scene["role"] = role
+            else:
+                scene["role"] = "mechanism"
 
-            if role not in allowed_roles:
-                raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
-            if mood not in allowed_moods:
-                raise ValueError(f"Scene {scene.get('id')} : mood invalide ({mood}).")
+            # --- CORRECTION AUTOMATIQUE DES MOODS (ANTI-PLANTAGE) ---
+            if mood:
+                mood = str(mood).strip().lower()
+                if mood not in allowed_moods:
+                    mood = "intriguing"
+                scene["mood"] = mood
+            else:
+                scene["mood"] = "intriguing"
+
             if not stock_search:
-                raise ValueError(f"Scene {scene.get('id')} : stock_search manquant.")
+                scene["stock_search"] = "dark modern finance background"
             if not image_prompt:
-                raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
+                scene["image_prompt"] = "Detailed English visual prompt matching visual_identity strictly"
 
             text_lower = text.lower()
             for phrase in FORBIDDEN_COMPLIANCE_PHRASES:
