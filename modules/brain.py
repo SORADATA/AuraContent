@@ -84,7 +84,7 @@ class ContentBrain:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
 
     def _extract_content(self, response):
         choices = getattr(response, "choices", None)
@@ -196,7 +196,7 @@ class ContentBrain:
 
     def generate_video_search_query(self, topic):
         messages = [
-            {"role": "system", "content": "Tu génères une requête YouTube en anglais, 6 mots max, sans phrase. Inclure CGI, Unreal Engine 5, dark fantasy, cinematic 3D render ou mysterious atmosphere."},
+            {"role": "system", "content": "Tu génères une requête de recherche visuelle en anglais, 6 mots max, sans phrase. Inclure des termes comme photorealistic, historical documentary, real photography, dark mysterious atmosphere. INTERDICTION ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
         content = self._call_with_fallback(messages, temperature=0.7)
@@ -269,11 +269,12 @@ SUJET:
 
 {hook_instruction}
 
-REGLES STRICTES DE NARRATION (POUR ÉVITER LES INTROS VIDES) :
+REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
 1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
 2. Dès la scène 2, entre DIRECTEMENT dans le vif du sujet en racontant de vrais faits historiques, des détails précis ou une anecdote concrète et surprenante.
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
+5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
 
 GENERE EXACTEMENT {scene_count} scenes.
 
@@ -342,4 +343,3 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
-
