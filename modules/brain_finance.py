@@ -90,7 +90,7 @@ CONTENT_PILLARS = {
         "label": "Crédit et dette",
         "seed_notions": [
             {"notion": "Comment fonctionne le crédit immobilier et le taux d'endettement", "niveau": "intermediaire"},
-            {"notion": "Pourquoi la debt n'est pas toujours mauvaise (effet de levier)", "niveau": "intermediaire"},
+            {"notion": "Pourquoi la dette n'est pas toujours mauvaise (effet de levier)", "niveau": "intermediaire"},
         ],
     },
     "fiscalite": {
@@ -300,8 +300,6 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
     if not topic:
         return False
     lowered = topic.lower().strip()
-    
-    # Retrait de "mais voici" des marqueurs invalides pour autoriser ce type d'accroche
     invalid_markers = [
         "voici le bon", "je me suis trompe",
         "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
@@ -311,7 +309,6 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
         return False
         
     word_count = len(topic.split())
-    # Tolérance élargie à 30 mots côté script pour éviter les erreurs bloquantes
     if word_count < 4 or word_count > 30:
         return False
         
@@ -811,9 +808,12 @@ FORMAT DE SORTIE (JSON) :
         if actual_ids != expected_ids:
             raise ValueError(f"IDs de scenes invalides : {actual_ids}")
 
-       
-        allowed_roles = {"hook", "misconception", "illusion", "faille", "definition", "mechanism", "analogy", "example", "summary", "cta", "regle"}
-        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory", "intriguing"}
+        # Rôles autorisés assouplis et normalisés pour éviter tout crash
+        allowed_roles = {
+            "hook", "misconception", "illusion", "faille", "definition", 
+            "mechanism", "analogy", "example", "summary", "cta", "regle", "value", "tension", "context", "escalation", "reveal"
+        }
+        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory", "intriguing", "ominous", "tense", "awe", "scientific", "melancholic"}
 
         compliance_violations = []
 
@@ -837,6 +837,11 @@ FORMAT DE SORTIE (JSON) :
                 scene["pause_after_ms"] = pause_after_ms
             if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
                 raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
+
+            # Normalisation et nettoyage du rôle pour accepter les majuscules et articles de l'IA
+            if role:
+                role = str(role).strip().lower().replace("l'", "").replace("la ", "").replace("le ", "")
+                scene["role"] = role
 
             if role not in allowed_roles:
                 raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
