@@ -1,4 +1,4 @@
-# 🎬 AutoShorts AI — Générateur & Publisher Automatisé de Vidéos "Faceless"
+# 🎬 AuraContent — Générateur & Publisher Automatisé de Vidéos "Faceless"
 
 ![Views](https://komarev.com/ghpvc/?username=SaarD00-AI-Youtube-Shorts-Generator&style=for-the-badge&color=blue)
 
