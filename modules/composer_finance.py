@@ -137,10 +137,10 @@ class Composer:
             scene_id = scene["id"]
             audio_path = scene.get("audio_path")
 
-            # --- SÉCURITÉ ANTI-CRASH : Vérification de la durée de l'audio ---
+            # --- SÉCURITÉ ANTI-CRASH : Rejette les audios < 0.5s (ex: bug 0.03s) ---
             if audio_path and os.path.exists(audio_path):
                 audio_dur = self.get_duration(audio_path)
-                if audio_dur < 0.5: # On rejette tout ce qui est < 0.5s
+                if audio_dur < 0.5:
                     print(f"❌ Scene {scene_id} ignorée : audio trop court ({audio_dur:.2f}s), risque de crash FFmpeg.")
                     continue
             
@@ -235,27 +235,74 @@ class Composer:
         raw_final_output_path = os.path.join(self.temp_dir, "raw_final_stitched.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
 
-        if not video_paths: return None
+        if not video_paths: 
+            return None
 
-        if len(video_paths) == 1:
-            stitched_path = video_paths[0]
-        else:
-            courant = video_paths[0]
-            for i in range(1, len(video_paths)):
-                suivant = video_paths[i]
-                merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
-                scene_role = script_data[i]["role"] if script_data and i < len(script_data) else None
-                try:
+        stitched_path = None
+
+        # 1. Tentative de fusion avec transitions complexes (xfade)
+        try:
+            if len(video_paths) == 1:
+                stitched_path = video_paths[0]
+            else:
+                courant = video_paths[0]
+                for i in range(1, len(video_paths)):
+                    suivant = video_paths[i]
+                    merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
+                    scene_role = script_data[i]["role"] if script_data and i < len(script_data) else None
+                    
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output, scene_role=scene_role)
-                except ffmpeg.Error:
-                    return None
-                courant = merge_output
-            stitched_path = courant
+                    print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
+                    courant = merge_output
+                stitched_path = courant
+        except Exception as e:
+            print(f"⚠️ Erreur lors des transitions complexes xfade : {e}")
+            stitched_path = None
 
+        # 2. SECOURS (Fallback) : Concaténation simple si xfade a échoué
+        if not stitched_path or not os.path.exists(stitched_path):
+            print("🔄 Basculement vers la concaténation simple de secours...")
+            fallback_output = os.path.join(self.temp_dir, "fallback_stitched.mp4")
+            list_file_path = os.path.join(self.temp_dir, "file_list.txt")
+            
+            with open(list_file_path, "w", encoding="utf-8") as f:
+                for vp in video_paths:
+                    f.write(f"file '{vp}'\n")
+            
+            try:
+                (
+                    ffmpeg
+                    .input(list_file_path, format='concat', safe=0)
+                    .output(fallback_output, c='copy')
+                    .run(overwrite_output=True, quiet=True)
+                )
+                stitched_path = fallback_output
+            except Exception as ex:
+                print(f"❌ Échec critique de la concaténation de secours : {ex}")
+                return None
+
+        # 3. Mixage Audio (Musique + Normalisation)
         if os.path.exists(self.bg_music_path):
-            self._mix_background_music(stitched_path, raw_final_output_path)
+            print("🎵 Mixing background music with ducking...")
+            success = self._mix_background_music(stitched_path, raw_final_output_path)
+            if not success:
+                shutil.copy2(stitched_path, raw_final_output_path)
         else:
             shutil.copy2(stitched_path, raw_final_output_path)
 
-        self.add_watermark_text(raw_final_output_path, output_path, channel_name="@CapitalSecret")
+        # 4. Ajout du filigrane
+        print("💧 Adding watermark text...")
+        watermark_success = self.add_watermark_text(raw_final_output_path, output_path, channel_name="@CapitalSecret")
+        if not watermark_success:
+            shutil.copy2(raw_final_output_path, output_path)
+
+        print(f"✅ FINAL VIDEO SAVED: {output_path}")
+
+        # 5. Nettoyage des fichiers temporaires de fusion
+        if os.path.exists(raw_final_output_path):
+            try:
+                os.remove(raw_final_output_path)
+            except Exception:
+                pass
+
         return output_path
