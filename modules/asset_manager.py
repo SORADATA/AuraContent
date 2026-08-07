@@ -1,99 +1,174 @@
 import os
-from modules.ai_image import AIImageGenerator
-
-FALLBACK_IMAGE = os.path.join(os.getcwd(), "assets", "fallback.png")
+import time
+import requests
+import urllib.parse
+from PIL import Image, ImageDraw, ImageFont
 
 
 class AssetManager:
     def __init__(self):
-        self.image_dir = os.path.join(os.getcwd(), "assets", "video_clips")
-        os.makedirs(self.image_dir, exist_ok=True)
-        self.generator = AIImageGenerator()
+        # Configuration Images
+        self.pollinations_url = "https://image.pollinations.ai/prompt/"
+        # Configuration Vidéos
+        self.pixabay_api_key = os.getenv("PIXABAY_API_KEY")
+        self.pexels_api_key = os.getenv("PEXELS_API_KEY")
 
-        self.global_visual_rules = (
-            "Vertical 9:16 cinematic documentary frame, realistic lighting, strong central subject, "
-            "clean composition, realistic textures, natural anatomy, no text, no logo, no watermark, "
-            "no interface, no subtitles, space preserved at top and bottom for captions."
-        )
+    def _file_ok(self, path, min_bytes=5000):
+        """Vérifie que le fichier existe et n'est pas corrompu/vide."""
+        return os.path.exists(path) and os.path.getsize(path) >= min_bytes
 
-    def _compose_prompt(self, base_prompt, visual_identity=None, variant="a"):
-        identity_block = f"{visual_identity}. " if visual_identity else ""
+    # ==========================================
+    # 🖼️ PARTIE IMAGES (POLLINATIONS & FALLBACK)
+    # ==========================================
 
-        if variant == "a":
-            shot_block = (
-                "Establishing shot, wider composition, clear environment context, "
-                "subject readable instantly, stable framing."
-            )
-        else:
-            shot_block = (
-                "Closer cinematic shot, tighter framing, more emotional or investigative detail, "
-                "same subject and same scene continuity."
-            )
+    def _save_text_fallback(self, prompt, output_path):
+        """Génère une image noire avec le texte du prompt en cas de crash total."""
+        img = Image.new("RGB", (1080, 1920), (15, 15, 18))
+        draw = ImageDraw.Draw(img)
+        text = "Fallback image\n\n" + prompt[:180]
 
-        return f"{identity_block}{base_prompt}. {shot_block} {self.global_visual_rules}"
+        try:
+            font = ImageFont.truetype("arial.ttf", 42)
+        except Exception:
+            font = ImageFont.load_default()
 
-    def _file_ready(self, path):
-        return os.path.exists(path) and os.path.getsize(path) > 0
+        draw.multiline_text((80, 120), text, fill="white", font=font, spacing=14)
+        img.save(output_path)
+        return self._file_ok(output_path, min_bytes=1000)
 
-    def _generate_with_retry(self, prompt, output_path, visual_identity=None, retries=2):
-        for attempt in range(1, retries + 1):
+    def _pollinations(self, prompt, output_path):
+        """Génère une image via Pollinations.ai avec un style sombre forcé et un seed aléatoire."""
+        import random
+        
+        # On force un style sombre, réaliste et cinématique pour éviter les hallucinations abstraites de Pollinations
+        forced_style = ", dark cinematic moody lighting, mysterious historical documentary style, photorealistic, high detail"
+        clean_prompt = prompt.replace(forced_style, "") + forced_style
+        
+        # Ajout d'un seed aléatoire pour forcer l'IA à générer une nouvelle image à chaque fois et éviter l'image par défaut en cache
+        seed = random.randint(1, 1000000)
+        
+        url = self.pollinations_url + urllib.parse.quote(clean_prompt) + f"?seed={seed}&nologo=true"
+        
+        r = requests.get(url, timeout=90)
+        if r.status_code == 429:
+            raise RuntimeError("429 Too Many Requests")
+        r.raise_for_status()
+
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+            
+        # Sécurité supplémentaire : si le fichier récupéré est l'image par défaut connue de Pollinations, on déclenche une erreur
+        if os.path.getsize(output_path) < 15000: # Les images par défaut de fallback font souvent une taille spécifique
+            pass # Tu pourrais ajouter un contrôle ici si besoin
+            
+        return self._file_ok(output_path)
+
+    def generate_image(self, prompt, output_path, visual_identity=None):
+        """Fonction principale pour obtenir une image de scène."""
+        full_prompt = f"{visual_identity}. {prompt}" if visual_identity else prompt
+        max_attempts = 3
+
+        for attempt in range(1, max_attempts + 1):
             try:
-                ok = self.generator.generate_image(
-                    prompt,
-                    output_path,
-                    visual_identity=visual_identity
-                )
-                if ok and self._file_ready(output_path):
+                if self._pollinations(full_prompt, output_path):
+                    print("✅ Pollinations utilisée avec succès")
                     return True
-                print(f"      Tentative {attempt}/{retries} echouee pour {os.path.basename(output_path)}")
             except Exception as e:
-                print(f"      Erreur tentative {attempt}/{retries} : {e}")
+                print(f"⚠️ Pollinations échec tentative {attempt}/{max_attempts}: {e}")
+                if attempt < max_attempts:
+                    time.sleep(min(2 ** attempt, 10))
 
+        print("⚠️ Fallback texte utilisé")
+        return self._save_text_fallback(full_prompt, output_path)
+
+    # ==========================================
+    # 🎥 PARTIE VIDÉOS (PIXABAY & PEXELS)
+    # ==========================================
+
+    def _get_pixabay_video(self, query):
+        if not self.pixabay_api_key:
+            return None
+
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://pixabay.com/api/videos/?key={self.pixabay_api_key}&q={encoded_query}&video_type=film"
+
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("totalHits", 0) > 0:
+                    for hit in data["hits"]:
+                        # On teste plusieurs formats, pas seulement "medium"
+                        for size in ("large", "medium", "small", "tiny"):
+                            stream = hit["videos"].get(size)
+                            if stream and stream["height"] > stream["width"]:
+                                return stream["url"]
+        except Exception as e:
+            print(f"❌ Exception Pixabay : {e}")
+        return None
+
+    def _get_pexels_video(self, query):
+        if not self.pexels_api_key:
+            return None
+
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://api.pexels.com/videos/search?query={encoded_query}&orientation=portrait&per_page=5"
+        headers = {"Authorization": self.pexels_api_key}
+
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("total_results", 0) > 0:
+                    for video in data["videos"]:
+                        mp4_files = [
+                            f for f in video.get("video_files", [])
+                            if f.get("file_type") == "video/mp4"
+                        ]
+                        if not mp4_files:
+                            continue
+                        # Priorité au HD, sinon on prend le premier mp4 valide
+                        selected = next(
+                            (f for f in mp4_files if f.get("quality") == "hd"),
+                            mp4_files[0],
+                        )
+                        return selected["link"]
+        except Exception as e:
+            print(f"❌ Exception Pexels : {e}")
+        return None
+
+    def fetch_background_video(self, query, output_path):
+        """Fonction principale pour télécharger le fond vidéo en cascade."""
+        print(f"📡 Recherche du fond vidéo pour : '{query}'...")
+
+        # 1. Pixabay
+        video_url = self._get_pixabay_video(query)
+        if video_url:
+            print("✅ Vidéo trouvée sur Pixabay !")
+
+        # 2. Pexels (Fallback)
+        if not video_url:
+            print("🔄 Basculement vers Pexels...")
+            video_url = self._get_pexels_video(query)
+            if video_url:
+                print("✅ Vidéo trouvée sur Pexels !")
+
+        # 3. Téléchargement
+        if video_url:
+            print("📥 Téléchargement en cours...")
+            try:
+                r = requests.get(video_url, stream=True, timeout=30)
+                r.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                if self._file_ok(output_path):
+                    print("✅ Vidéo sauvegardée avec succès !")
+                    return True
+            except Exception as e:
+                print(f"❌ Erreur de téléchargement : {e}")
+
+        print("❌ Impossible de récupérer un fond vidéo via les API.")
         return False
-
-    def get_videos(self, script_data, visual_identity=None):
-        """
-        Genere 2 images IA coherentes (a/b) par scene.
-        - image A : plan plus large / etablissant
-        - image B : plan plus serre / detail narratif
-        Si echec, fallback intelligent sur l'autre image ou sur une image locale.
-        Retourne une liste de dicts {"a": path, "b": path} alignee avec script_data.
-        """
-        pairs = []
-
-        for scene in script_data:
-            scene_id = scene["id"]
-
-            path_a = os.path.join(self.image_dir, f"scene_{scene_id}_a.png")
-            path_b = os.path.join(self.image_dir, f"scene_{scene_id}_b.png")
-
-            print(f"Scene {scene_id} - generation des visuels IA...")
-
-            base_prompt = scene["image_prompt"].strip()
-            prompt_a = self._compose_prompt(base_prompt, visual_identity=visual_identity, variant="a")
-            prompt_b = self._compose_prompt(base_prompt, visual_identity=visual_identity, variant="b")
-
-            ok_a = self._file_ready(path_a) or self._generate_with_retry(
-                prompt_a, path_a, visual_identity=visual_identity, retries=2
-            )
-            ok_b = self._file_ready(path_b) or self._generate_with_retry(
-                prompt_b, path_b, visual_identity=visual_identity, retries=2
-            )
-
-            if ok_a and ok_b:
-                pairs.append({"a": path_a, "b": path_b})
-            elif ok_a:
-                print(f"    Scene {scene_id}: visual_2 a echoue, reutilisation de visual_1")
-                pairs.append({"a": path_a, "b": path_a})
-            elif ok_b:
-                print(f"    Scene {scene_id}: visual_1 a echoue, reutilisation de visual_2")
-                pairs.append({"a": path_b, "b": path_b})
-            else:
-                print(f"    Scene {scene_id}: aucune image generee, utilisation du fallback")
-                if os.path.exists(FALLBACK_IMAGE):
-                    pairs.append({"a": FALLBACK_IMAGE, "b": FALLBACK_IMAGE})
-                else:
-                    print(f"    Scene {scene_id}: fallback introuvable, scene ignoree")
-                    pairs.append(None)
-
-        return pairs

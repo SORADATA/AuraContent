@@ -26,14 +26,17 @@ class AudioEngine:
         "Clear diction, slightly deep tone, controlled pacing, short pauses, "
         "cinematic but not theatrical."
     )
-    # FIX : voix Gemini TTS predefinie, requise par speechConfig.
+    
+    # FIX : voix Gemini TTS masculine prédéfinie
     GEMINI_VOICE_NAME = "Charon"
 
+    # Fallback Edge TTS masculin
     EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
     EDGE_FALLBACK_RATE = "-8%"
     EDGE_FALLBACK_PITCH = "-1Hz"
     EDGE_FALLBACK_VOLUME = "+0%"
 
+    # Kokoro (la voix française standard ff_siwis est féminine, on désactive Kokoro par défaut pour la finance)
     KOKORO_FRENCH_VOICE = "ff_siwis"
 
     def __init__(self, bark_url=None, use_kokoro=False, use_gemini=True):
@@ -47,6 +50,7 @@ class AudioEngine:
 
         self.use_kokoro = use_kokoro and KOKORO_AVAILABLE
         self._kokoro_pipeline = None
+        
         if self.use_kokoro:
             try:
                 self._kokoro_pipeline = KPipeline(
@@ -76,13 +80,6 @@ class AudioEngine:
         except Exception:
             return 0.0
 
-    def trim_silence(self, file_path):
-        return
-
-    def pad_to_min_duration(self, file_path, min_duration):
-        current_duration = self.get_audio_duration(file_path)
-        return max(current_duration, min_duration)
-
     def _save_pcm_wav(self, pcm_bytes, output_path, sample_rate=24000, channels=1, sampwidth=2):
         with wave.open(output_path, "wb") as wf:
             wf.setnchannels(channels)
@@ -99,11 +96,6 @@ class AudioEngine:
             f"{self.GEMINI_MODEL}:generateContent?key={self.gemini_api_key}"
         )
 
-        # FIX : speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
-        # est OBLIGATOIRE pour l'API Gemini TTS. Sans lui, generateContent
-        # ne renvoie aucune partie audio exploitable : inline_data reste
-        # toujours None et _try_gemini echoue a chaque appel, sans erreur
-        # explicite -- le pipeline retombe silencieusement sur Kokoro/Edge.
         payload = {
             "contents": [
                 {"parts": [{"text": self.stylize_for_gemini(text)}]}
@@ -147,7 +139,7 @@ class AudioEngine:
                 self._save_pcm_wav(audio_bytes, output_path_wav)
 
             if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
-                print("      Voix Gemini TTS utilisee")
+                print("      Voix Gemini TTS utilisee (Masculin)")
                 return True
 
             return False
@@ -197,12 +189,15 @@ class AudioEngine:
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
+        # 1. Tentative Gemini (Voix masculine Charon)
         if self._try_gemini(text, wav_path):
             return wav_path, "gemini-tts"
 
+        # 2. Tentative Kokoro (désactivé par défaut car voix féminine)
         if self._try_kokoro(text, wav_path):
             return wav_path, "kokoro"
 
+        # 3. Fallback robuste Edge-TTS (Voix masculine Henri)
         try:
             await self._try_edge(text, mp3_path)
             return mp3_path, "edge-tts"
@@ -212,7 +207,7 @@ class AudioEngine:
         raise RuntimeError("Aucun moteur TTS disponible")
 
     async def process_script(self, script_data):
-        print("Generation audio (Gemini TTS, fallback Kokoro, puis Edge-TTS)...")
+        print("Generation audio (Gemini TTS, fallback Edge-TTS)...")
 
         for scene in script_data:
             scene_id = scene["id"]

@@ -19,16 +19,12 @@ on:
         description: "Tester plusieurs hooks avant génération"
         required: false
         default: "true"
-  # Ajout d'un déclencheur API personnalisé pour cron-job.org
   repository_dispatch:
     types: [trigger-videos]
 
 jobs:
-  # ==========================================
-  # JOB 1 : CHAÎNE FINANCE (DÉSACTIVÉ TEMPORAIREMENT)
-  # ==========================================
   finance_generator:
-    if: false # 🛠️ Empeche de se lancer
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -56,11 +52,11 @@ jobs:
           cd whisper.cpp
           bash ./models/download-ggml-model.sh base
           make -j
-          
+
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: "pip"
 
       - name: 🗃️ Cache Hugging Face
@@ -118,9 +114,6 @@ jobs:
           path: caption.txt
           if-no-files-found: warn
 
-  # ==========================================
-  # JOB 2 : CHAÎNE MINUTE MYSTERE
-  # ==========================================
   mystere_generator:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -129,6 +122,8 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
       VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
       REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}
@@ -144,7 +139,7 @@ jobs:
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: "pip"
 
       - name: 🗃️ Cache Hugging Face
@@ -159,7 +154,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: 🎬 Générer la vidéo (Minute Mystere)
-        # 🛠️ Boucle de retry conservée pour encaisser les petites coupures réseau
         run: |
           for i in 1 2 3; do
             echo "Tentative $i..."

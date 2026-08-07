@@ -39,7 +39,6 @@ class AudioEngine:
         os.makedirs(self.output_dir, exist_ok=True)
 
         self.min_scene_duration = 3.0
-
         self.use_gemini = use_gemini and bool(os.getenv("GEMINI_API_KEY"))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
 
@@ -74,12 +73,8 @@ class AudioEngine:
         except Exception:
             return 0.0
 
-    def trim_silence(self, file_path):
-        return
-
-    def pad_to_min_duration(self, file_path, min_duration):
-        current_duration = self.get_audio_duration(file_path)
-        return max(current_duration, min_duration)
+    def _file_ready(self, path):
+        return os.path.exists(path) and os.path.getsize(path) > 0 and self.get_audio_duration(path) > 0
 
     def _save_pcm_wav(self, pcm_bytes, output_path, sample_rate=24000, channels=1, sampwidth=2):
         with wave.open(output_path, "wb") as wf:
@@ -138,7 +133,7 @@ class AudioEngine:
             else:
                 self._save_pcm_wav(audio_bytes, output_path_wav)
 
-            if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
+            if self._file_ready(output_path_wav):
                 print("      Voix Gemini TTS utilisee")
                 return True
 
@@ -161,7 +156,7 @@ class AudioEngine:
                 sf.write(output_path_wav, audio, 24000)
                 break
 
-            if os.path.exists(output_path_wav) and os.path.getsize(output_path_wav) > 0:
+            if self._file_ready(output_path_wav):
                 print("      Voix Kokoro utilisee")
                 return True
 
@@ -197,7 +192,8 @@ class AudioEngine:
 
         try:
             await self._try_edge(text, mp3_path)
-            return mp3_path, "edge-tts"
+            if self._file_ready(mp3_path):
+                return mp3_path, "edge-tts"
         except Exception as e:
             print(f"      Edge indisponible: {e}")
 

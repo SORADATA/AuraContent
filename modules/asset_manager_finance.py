@@ -1,182 +1,169 @@
 import os
-import shutil
 import time
-import threading
-import urllib.parse
 import requests
-import random
-import ffmpeg
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from modules.utils.pexels_client import get_pexels_video
-
-FALLBACK_VIDEO = os.path.join(os.getcwd(), "assets", "videos", "fallback.mp4")
-DEFAULT_CLIP_DURATION = 4.0
-POLLINATIONS_TOKEN = os.getenv("POLLINATIONS_TOKEN")  # inscription gratuite sur auth.pollinations.ai
-MAX_PARALLEL_WORKERS = 3
+import urllib.parse
+from PIL import Image, ImageDraw, ImageFont
 
 
 class AssetManager:
-    # Verrou et horodatage partages entre TOUS les threads/instances afin de
-    # respecter reellement le rate-limit Pollinations (1 req/5s tier Seed,
-    # 1 req/15s tier Anonyme), meme avec plusieurs workers en parallele.
-    _pollinations_lock = threading.Lock()
-    _last_pollinations_call = [0.0]
+    def __init__(self):
+        # Configuration Images
+        self.pollinations_url = "https://image.pollinations.ai/prompt/"
+        # Configuration Vidéos
+        self.pixabay_api_key = os.getenv("PIXABAY_API_KEY")
+        self.pexels_api_key = os.getenv("PEXELS_API_KEY")
 
-    def __init__(self, run_id=None):
-        self.run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
-        self.video_dir = os.path.join(os.getcwd(), "assets", "video_clips", self.run_id)
-        self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
-        os.makedirs(self.video_dir, exist_ok=True)
-        os.makedirs(self.temp_dir, exist_ok=True)
-        self.width = 1080
-        self.height = 1920
-        self.fps = 30
+    def _file_ok(self, path, min_bytes=5000):
+        """Vérifie que le fichier existe et n'est pas corrompu/vide."""
+        return os.path.exists(path) and os.path.getsize(path) >= min_bytes
 
-    def _safe_exists(self, path):
-        return path and os.path.exists(path) and os.path.getsize(path) > 0
+    # ==========================================
+    # 🖼️ PARTIE IMAGES (POLLINATIONS & FALLBACK)
+    # ==========================================
 
-    def _respect_pollinations_rate_limit(self):
-        min_interval = 5.5 if POLLINATIONS_TOKEN else 15.5
-        with self._pollinations_lock:
-            now = time.time()
-            elapsed = now - self._last_pollinations_call
-            if elapsed < min_interval:
-                time.sleep(min_interval - elapsed)
-            self._last_pollinations_call = time.time()
+    def _save_text_fallback(self, prompt, output_path):
+        """Génère une image sombre avec le texte du prompt en cas de crash total."""
+        img = Image.new("RGB", (1080, 1920), (10, 12, 15)) # Fond bleu très sombre/corporate
+        draw = ImageDraw.Draw(img)
+        text = "Capital Secret\nFallback image\n\n" + prompt[:180]
 
-    def _try_pexels(self, query, output_path):
         try:
-            result_path = get_pexels_video(query, output_path)
-            return result_path if self._safe_exists(result_path) else None
-        except Exception as e:
-            print(f"    ❌ Erreur Pexels pour '{query}': {e}")
-            return None
+            font = ImageFont.truetype("arial.ttf", 42)
+        except Exception:
+            font = ImageFont.load_default()
 
-    def _pollinations_image_to_video(self, img_path, output_path, duration):
-        try:
-            zoom_frames = max(int(duration * self.fps), 1)
-            (
-                ffmpeg.input(img_path, loop=1, t=duration)
-                .filter("scale", self.width * 2, self.height * 2)
-                .filter(
-                    "zoompan",
-                    z="min(zoom+0.0008,1.15)",
-                    d=zoom_frames,
-                    x="iw/2-(iw/zoom/2)",
-                    y="ih/2-(ih/zoom/2)",
-                    s=f"{self.width}x{self.height}",
-                    fps=self.fps,
-                )
-                .output(output_path, vcodec="libx264", pix_fmt="yuv420p", crf=18, preset="medium", t=duration)
-                .run(overwrite_output=True, quiet=True)
-            )
-            return output_path if self._safe_exists(output_path) else None
-        except Exception as e:
-            print(f"    ❌ Conversion image->vidéo échouée: {e}")
-            return None
+        draw.multiline_text((80, 120), text, fill="white", font=font, spacing=14)
+        img.save(output_path)
+        return self._file_ok(output_path, min_bytes=1000)
 
-    def _try_pollinations(self, scene_id, image_prompt, output_path, duration, retries=3):
-        img_path = os.path.join(self.temp_dir, f"pollinations_{self.run_id}_{scene_id}.jpg")
+    def _pollinations(self, prompt, output_path):
+        """Génère une image via Pollinations.ai avec un style dark corporate forcé et un seed aléatoire."""
+        import random
+        
+        # On force un style sombre, luxe et corporate pour éviter les hallucinations abstraites
+        forced_style = ", dark corporate finance aesthetic, sleek modern office, luxury, deep shadows, subtle neon, photorealistic, cinematic lighting, highly detailed"
+        clean_prompt = prompt.replace(forced_style, "") + forced_style
+        
+        # Ajout d'un seed aléatoire pour forcer l'IA à générer une nouvelle image à chaque fois
+        seed = random.randint(1, 1000000)
+        
+        url = self.pollinations_url + urllib.parse.quote(clean_prompt) + f"?seed={seed}&nologo=true"
+        
+        r = requests.get(url, timeout=90)
+        if r.status_code == 429:
+            raise RuntimeError("429 Too Many Requests")
+        r.raise_for_status()
 
-        for attempt in range(retries + 1):
-            # Le verrou global garantit qu'un seul thread appelle Pollinations
-            # a la fois, y compris pour la toute premiere tentative.
-            self._respect_pollinations_rate_limit()
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+            
+        # Sécurité supplémentaire : si le fichier récupéré est l'image par défaut connue de Pollinations
+        if os.path.getsize(output_path) < 15000:
+            pass 
+            
+        return self._file_ok(output_path)
 
-            if attempt > 0:
-                base_wait = 5.0 if POLLINATIONS_TOKEN else 15.0
-                wait_time = min(base_wait * (1.5 ** (attempt - 1)) + random.uniform(0, 1.5), 20)
-                print(f"    ⏳ Tentative {attempt + 1}/{retries + 1} Pollinations (pause {wait_time:.1f}s)...")
-                time.sleep(wait_time)
+    def generate_image(self, prompt, output_path, visual_identity=None):
+        """Fonction principale pour obtenir une image de scène."""
+        full_prompt = f"{visual_identity}. {prompt}" if visual_identity else prompt
+        max_attempts = 3
 
+        for attempt in range(1, max_attempts + 1):
             try:
-                encoded_prompt = urllib.parse.quote(image_prompt)
-                seed = random.randint(1, 999999)
-                url = (
-                    f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-                    f"?width={self.width}&height={self.height}&nologo=true&seed={seed}"
-                    f"&enhance=true&model=flux"
-                )
-                if POLLINATIONS_TOKEN:
-                    url += f"&token={POLLINATIONS_TOKEN}"
-
-                response = requests.get(url, timeout=120, headers={"User-Agent": "FinanceGenerator/1.0"})
-                content_type = response.headers.get("Content-Type", "")
-
-                if response.status_code == 200 and content_type.startswith("image/") and len(response.content) > 5000:
-                    with open(img_path, "wb") as f:
-                        f.write(response.content)
-                    if self._safe_exists(img_path):
-                        return self._pollinations_image_to_video(img_path, output_path, duration=duration)
-                elif response.status_code == 429:
-                    print("    ⚠️ Limite de requêtes Pollinations atteinte.")
-                else:
-                    print(f"    ⚠️ Erreur Pollinations : HTTP {response.status_code}")
-
-            except requests.exceptions.Timeout:
-                print("    ⚠️ Timeout Pollinations (serveur surchargé).")
+                if self._pollinations(full_prompt, output_path):
+                    print("✅ Pollinations utilisée avec succès (Style Finance)")
+                    return True
             except Exception as e:
-                print(f"    ❌ Erreur Pollinations scene {scene_id}: {e}")
+                print(f"⚠️ Pollinations échec tentative {attempt}/{max_attempts}: {e}")
+                if attempt < max_attempts:
+                    time.sleep(min(2 ** attempt, 10))
 
-        print(f"    ❌ Échec définitif Pollinations après {retries} tentatives.")
-        if os.path.exists(img_path):
-            try:
-                os.remove(img_path)
-            except OSError:
-                pass
+        print("⚠️ Fallback texte utilisé")
+        return self._save_text_fallback(full_prompt, output_path)
+
+    # ==========================================
+    # 🎥 PARTIE VIDÉOS (PIXABAY & PEXELS)
+    # ==========================================
+
+    def _get_pixabay_video(self, query):
+        if not self.pixabay_api_key:
+            return None
+
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://pixabay.com/api/videos/?key={self.pixabay_api_key}&q={encoded_query}&video_type=film"
+
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("totalHits", 0) > 0:
+                    for hit in data["hits"]:
+                        for size in ("large", "medium", "small", "tiny"):
+                            stream = hit["videos"].get(size)
+                            if stream and stream["height"] > stream["width"]:
+                                return stream["url"]
+        except Exception as e:
+            print(f"❌ Exception Pixabay : {e}")
         return None
 
-    def _copy_fallback(self, output_path):
+    def _get_pexels_video(self, query):
+        if not self.pexels_api_key:
+            return None
+
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://api.pexels.com/videos/search?query={encoded_query}&orientation=portrait&per_page=5"
+        headers = {"Authorization": self.pexels_api_key}
+
         try:
-            if self._safe_exists(FALLBACK_VIDEO):
-                shutil.copy2(FALLBACK_VIDEO, output_path)
-                return output_path if self._safe_exists(output_path) else None
-            return None
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("total_results", 0) > 0:
+                    for video in data["videos"]:
+                        mp4_files = [
+                            f for f in video.get("video_files", [])
+                            if f.get("file_type") == "video/mp4"
+                        ]
+                        if not mp4_files:
+                            continue
+                        selected = next(
+                            (f for f in mp4_files if f.get("quality") == "hd"),
+                            mp4_files[0],
+                        )
+                        return selected["link"]
         except Exception as e:
-            print(f"    ❌ Erreur fallback vidéo: {e}")
-            return None
+            print(f"❌ Exception Pexels : {e}")
+        return None
 
-    def _process_single_scene(self, scene, idx):
-        scene_id = scene["id"]
-        role = scene.get("role", "example")
-        output_path = os.path.join(self.video_dir, f"scene_{scene_id}.mp4")
-        duration = float(scene.get("duration") or DEFAULT_CLIP_DURATION)
+    def fetch_background_video(self, query, output_path):
+        """Fonction principale pour télécharger le fond vidéo en cascade."""
+        print(f"📡 Recherche du fond vidéo pour : '{query}'...")
 
-        if self._safe_exists(output_path):
-            print(f"    ✅ Vidéo déjà en cache pour la scène {scene_id}")
-            return scene_id, output_path
+        video_url = self._get_pixabay_video(query)
+        if video_url:
+            print("✅ Vidéo trouvée sur Pixabay !")
 
-        query = scene.get("stock_search", "finance")
-        image_prompt = scene.get("image_prompt", "")
+        if not video_url:
+            print("🔄 Basculement vers Pexels...")
+            video_url = self._get_pexels_video(query)
+            if video_url:
+                print("✅ Vidéo trouvée sur Pexels !")
 
-        if image_prompt and (idx % 2 == 0 or role in {"analogy", "misconception", "example"}):
-            print(f"🎨 Scene {scene_id} - Génération IA Pollinations (Flux)...")
-            pollinations_path = self._try_pollinations(scene_id, image_prompt, output_path, duration=duration)
-            if self._safe_exists(pollinations_path):
-                return scene_id, pollinations_path
+        if video_url:
+            print("📥 Téléchargement en cours...")
+            try:
+                r = requests.get(video_url, stream=True, timeout=30)
+                r.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
 
-        print(f"🎬 Scene {scene_id} - Récupération vidéo Pexels...")
-        pexels_path = self._try_pexels(query, output_path)
-        if self._safe_exists(pexels_path):
-            return scene_id, pexels_path
+                if self._file_ok(output_path):
+                    print("✅ Vidéo sauvegardée avec succès !")
+                    return True
+            except Exception as e:
+                print(f"❌ Erreur de téléchargement : {e}")
 
-        print(f"    ⚠️ Scene {scene_id}: échec Pexels/Pollinations, fallback")
-        fallback_path = self._copy_fallback(output_path)
-        return scene_id, fallback_path if self._safe_exists(fallback_path) else None
-
-    def get_videos(self, script_data):
-        """Version parallélisée : plusieurs scènes traitées simultanément.
-        Le rate-limit Pollinations est desormais respecte globalement via
-        un verrou partage entre threads (voir _respect_pollinations_rate_limit)."""
-        results = {}
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
-            futures = {
-                executor.submit(self._process_single_scene, scene, idx): scene["id"]
-                for idx, scene in enumerate(script_data)
-            }
-            for future in as_completed(futures):
-                scene_id, path = future.result()
-                results[scene_id] = path
-
-        return [results.get(scene["id"]) for scene in script_data]
+        print("❌ Impossible de récupérer un fond vidéo via les API.")
+        return False

@@ -1,0 +1,41 @@
+{
+  "generated_notions": [],
+  "history": [
+    {
+      "notion": "Le principe de la diversification d'un portefeuille",
+      "niveau": "intermediaire",
+      "angle": "erreur_fatale",
+      "pillar": "investissement",
+      "topic": "ARGENT #14 : L'erreur fatale qui fait s'effondrer un portefeuille mal diversifié.",
+      "hook_pattern": "choc",
+      "date": "2026-08-07T17:02:45.089307"
+    },
+    {
+      "notion": "Comment les banques gagnent de l'argent sur ton compte courant",
+      "niveau": "debutant",
+      "angle": "illusion_du_systeme",
+      "pillar": "epargne",
+      "topic": "ARGENT #14 : Votre compte courant, un piège qui fait gagner les banques énormément d'argent ?",
+      "hook_pattern": "choc",
+      "date": "2026-08-07T17:33:33.609477"
+    },
+    {
+      "notion": "La différence entre revenu actif et revenu passif",
+      "niveau": "debutant",
+      "angle": "secret_des_riches",
+      "pillar": "fiscalite",
+      "topic": "ARGENT #14 : Les riches gagnent-ils vraiment leur argent ou font-ils travailler leur argent pour eux ?",
+      "hook_pattern": "secret",
+      "date": "2026-08-07T17:45:12.928926"
+    },
+    {
+      "notion": "Comment fonctionne le crédit immobilier et le taux d'endettement",
+      "niveau": "intermediaire",
+      "angle": "illusion_du_systeme",
+      "pillar": "credit_dette",
+      "topic": "ARGENT #14 : L'illusion du crédit immobilier : pourquoi ton rêve de maison peut être un piège ?",
+      "hook_pattern": "choc",
+      "date": "2026-08-07T17:58:53.204409"
+    }
+  ]
+}

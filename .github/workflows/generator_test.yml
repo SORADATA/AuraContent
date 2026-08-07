@@ -20,12 +20,8 @@ on:
         required: false
         default: "true"
 
-  #schedule:
-  #- cron: "7 1 * * *"   # 03h07 Paris
-  #- cron: "7 8 * * *"   # 10h07 Paris
-
 permissions:
-  contents: write   # necessaire pour committer l'etat du curriculum en fin de run
+  contents: write   # Nécessaire pour committer l'état du curriculum en fin de run
 
 jobs:
   build-and-generate:
@@ -37,6 +33,7 @@ jobs:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       ZERNIO_API_KEYS_FINANCE: ${{ secrets.ZERNIO_API_KEYS_FINANCE }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       POLLINATIONS_TOKEN: ${{ secrets.POLLINATIONS_TOKEN }}
 
@@ -52,10 +49,17 @@ jobs:
       - name: ⚙️ Installer FFmpeg et espeak-ng (requis par kokoro TTS)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
 
+      - name: 🎙️ Installer whisper.cpp (pour sous-titres karaoké)
+        run: |
+          git clone https://github.com/ggerganov/whisper.cpp.git
+          cd whisper.cpp
+          bash ./models/download-ggml-model.sh base
+          make -j
+
       - name: 🐍 Configurer Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: "pip"
 
       - name: 🗃️ Cache Hugging Face
@@ -69,8 +73,16 @@ jobs:
       - name: 📦 Installer les dépendances
         run: pip install -r requirements.txt
 
-      - name: 🎬 Générer la vidéo
-        run: python main_finance.py
+      - name: 🎬 Générer la vidéo (Finance)
+        run: |
+          for i in 1 2 3; do
+            echo "Tentative $i..."
+            python main_finance.py && exit 0
+            echo "Échec de la tentative $i. Pause de 15 secondes avant de réessayer..."
+            sleep 15
+          done
+          echo "Les 3 tentatives ont échoué."
+          exit 1
 
       - name: 🔊 Vérifier le niveau sonore
         if: always()
@@ -97,7 +109,15 @@ jobs:
           path: assets/final/final_short.mp4
           if-no-files-found: warn
 
-      - name: 🧠 Committer l'état du curriculum (anti-repetition)
+      - name: 💾 Sauvegarder la légende
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Caption-Texte-Finance-${{ github.run_id }}
+          path: caption.txt
+          if-no-files-found: warn
+
+      - name: 🧠 Committer l'état du curriculum (anti-répétition)
         if: always()
         run: |
           if [ -f assets/state/curriculum_finance_state.json ]; then

@@ -2,6 +2,7 @@ import os
 import re
 import json
 import random
+import time
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -27,53 +28,42 @@ except ImportError:
 load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-flash-latest"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
 ACCENT_INSTRUCTION = (
     "IMPERATIF ORTHOGRAPHE : le francais doit etre parfaitement accentue "
     "(accents obligatoires). Exemples : 'epargne' avec accent, 'interet' avec "
-    "accent, 'strategie' avec accent, 'benefice' avec accent. "
-    "Verifie chaque mot avant de repondre."
+    "accent, 'strategie' avec accent, 'benefice' avec accent."
 )
 
 COMPLIANCE_INSTRUCTION = (
-    "REGLE DE CONFORMITE (LOI DU 9 JUIN 2023 / AMF) : ce contenu est de "
-    "l'education financiere generale, jamais un conseil en investissement "
-    "personnalise. N'utilise jamais des formulations imperatives du type "
-    "'achete cette action', 'tu dois investir dans', 'c'est une valeur sure'. "
-    "Prefere des formulations educatives : 'voici comment ca fonctionne', "
-    "'-voici ce que font certains investisseurs', 'a etudier selon ton profil'. "
-    "Mentionne implicitement ou explicitement qu'investir comporte des "
-    "risques de perte en capital. N'invente aucune promesse de gain garanti "
-    "ni de rendement chiffre non verifiable."
+    "REGLE DE CONFORMITE (AMF) ABSOLUE : Tu adoptes un ton de 'révélation' et de 'secret', "
+    "MAIS ce contenu reste de l'éducation financière. Ne donne JAMAIS de conseil en investissement personnalisé. "
+    "N'utilise jamais de formulations impératives du type 'achète cette action', 'investis là-dedans'. "
+    "Parle des 'mécanismes', des 'règles cachées', de 'ce que font les riches'. "
+    "N'invente aucune promesse de gain garanti."
 )
 
 COMPLIANCE_RETRY_INSTRUCTION = (
-    "ATTENTION - LA GENERATION PRECEDENTE A ECHOUE LE CONTROLE DE CONFORMITE "
-    "car elle contenait une formulation interdite (conseil en investissement "
-    "personnalise, promesse de gain garanti, ou incitation directe a l'achat). "
-    "Relis chaque phrase avant de repondre et reformule TOUT passage "
-    "imperatif en formulation strictement educative. " + COMPLIANCE_INSTRUCTION
+    "ATTENTION - LA GENERATION PRECEDENTE A ECHOUE LE CONTROLE DE CONFORMITE. "
+    "Même avec un ton mystérieux et percutant, tu ne dois formuler AUCUN conseil direct d'achat. "
+    "Garde le mystère, mais reste éducatif. " + COMPLIANCE_INSTRUCTION
 )
 
-PEDAGOGY_INSTRUCTION = (
-    "PRIORITE PEDAGOGIQUE : cette video doit apprendre une notion financiere "
-    "reelle et transferable, pas seulement divertir. A la fin, le spectateur "
-    "doit pouvoir expliquer le concept a quelqu'un d'autre avec ses propres mots. "
-    "Utilise une analogie simple et concrete pour la notion abordee. "
-    "Privilegie la clarte a la sophistication : une seule idee centrale par video."
+PERSONA_INSTRUCTION = (
+    "PERSONA : Tu n'es plus un prof de finance ennuyeux. Tu es un 'insider', un initié "
+    "qui révèle les rouages cachés de l'argent et du système économique avec un ton direct, "
+    "mystérieux, et légèrement provocateur. Ta promesse globale est : 'Je t'explique l'argent en moins d'une minute'. "
+    "Le spectateur doit avoir l'impression de découvrir un secret jalousement gardé."
 )
 
 VISUAL_CONSISTENCY_INSTRUCTION = (
-    "COHERENCE VISUELLE OBLIGATOIRE : toutes les scenes de cette video "
-    "doivent partager exactement la meme palette de couleurs, le meme style "
-    "d'eclairage et la meme ambiance visuelle generale, definis une seule "
-    "fois dans 'visual_identity'. Chaque 'image_prompt' doit reprendre "
-    "explicitement ces memes choix de couleur et de lumiere, afin de donner "
-    "l'impression d'une seule identite de marque cohesive du debut a la fin, "
-    "et non de plans generes independamment les uns des autres."
+    "COHERENCE VISUELLE OBLIGATOIRE (STYLE MYSTERE FINANCIER) : "
+    "L'esthétique doit être moderne, sombre, luxueuse et cinématique (dark corporate, néons discrets, "
+    "ambiance 'Succession' ou 'Loup de Wall Street' version sombre). "
+    "Chaque 'image_prompt' doit réutiliser EXACTEMENT la même palette de couleurs sombres et "
+    "le même éclairage définis dans 'visual_identity'. Interdiction d'utiliser les mots CGI, 3D, render."
 )
 
 CONTENT_PILLARS = {
@@ -119,15 +109,7 @@ CONTENT_PILLARS = {
     },
 }
 
-ANGLES = [
-    "mythe_a_corriger",
-    "etude_de_cas_chiffree",
-    "comparaison_avant_apres",
-    "question_audience",
-    "analogie_inedite",
-    "erreur_vecue",
-    "chiffre_choc",
-]
+ANGLES = ["secret_des_riches", "illusion_du_systeme", "chiffre_choc", "erreur_fatale"]
 
 CURRICULUM_STATE_DIR = os.path.join(os.getcwd(), "assets", "state")
 CURRICULUM_STATE_PATH = os.path.join(CURRICULUM_STATE_DIR, "curriculum_finance_state.json")
@@ -164,7 +146,6 @@ def _state_lock():
     class _NullLock:
         def __enter__(self):
             return self
-
         def __exit__(self, *exc_info):
             return False
 
@@ -234,7 +215,6 @@ def _script_missing_accents(script_data):
 
 def _safe_json_loads(content):
     text = content.strip()
-
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
@@ -266,7 +246,6 @@ ANALYSE DES PERFORMANCES RECENTES (FEEDBACK LOOP) :
 Voici les resultats de nos dernieres videos publiees :
 {stats_text}
 
-
 INSTRUCTION D'APPRENTISSAGE (AGENT IA) :
 Analyse brievement quelles notions ou structures pedagogiques ont le mieux
 retenu l'attention (vues completes, likes). Ajuste le {label} en consequence,
@@ -296,7 +275,6 @@ def _format_market_illustration(market_signals, notion):
 DONNEES DE MARCHE DU JOUR (OPTIONNEL, A UTILISER SEULEMENT SI PERTINENT) :
 {signals_text}
 
-
 INSTRUCTION :
 Si et seulement si un de ces exemples illustre naturellement la notion
 "{notion}", tu peux t'en servir comme UN exemple concret parmi d'autres
@@ -310,7 +288,7 @@ toujours sur l'actualite.
 def _clean_single_line_title(text):
     if not text:
         return ""
-    cleaned = text.replace('"', '').replace('"', '').replace('"', '').strip()
+    cleaned = text.replace('"', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
@@ -323,15 +301,17 @@ def _is_valid_topic_candidate(topic, recent_topics=None):
         return False
     lowered = topic.lower().strip()
     invalid_markers = [
-        "mais voici", "voici le bon", "je me suis trompe",
+        "voici le bon", "je me suis trompe",
         "option", "proposition", "titre :", "sujet :", "1.", "2.", "3.",
         "\n", "hook", "analyse", "explication"
     ]
     if any(marker in lowered for marker in invalid_markers):
         return False
+        
     word_count = len(topic.split())
-    if word_count < 4 or word_count > 18:
+    if word_count < 4 or word_count > 30:
         return False
+        
     if lowered.endswith(":"):
         return False
     if topic.count('.') > 1:
@@ -356,14 +336,12 @@ def _normalize_title_for_matching(title):
 def _enrich_stats_with_local_pattern(previous_stats_list, state):
     if not previous_stats_list:
         return []
-
     history = state.get("history", [])
     pattern_by_title = {
         _normalize_title_for_matching(h["topic"]): h.get("hook_pattern")
         for h in history
         if h.get("topic") and h.get("hook_pattern")
     }
-
     enriched = []
     for stat in previous_stats_list:
         stat_copy = dict(stat)
@@ -388,51 +366,73 @@ def _score_hook(hook, enriched_stats_list):
 
 
 class ContentBrain:
-    def _build_client(self, provider):
-        if provider == "groq":
-            groq_key = os.getenv("GROQ_API_KEY")
-            if not groq_key:
-                return None
-            return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
-        if provider == "gemini":
-            gemini_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_key:
-                return None
-            return OpenAI(
-                base_url="[https://generativelanguage.googleapis.com/v1beta/openai/](https://generativelanguage.googleapis.com/v1beta/openai/)",
-                api_key=gemini_key
-            )
-        return None
+    def _build_client(self):
+        groq_key = os.getenv("GROQ_API_KEY")
+        if not groq_key:
+            raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
+        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
-    def _model_for(self, provider):
-        return GROQ_MODEL if provider == "groq" else GEMINI_MODEL
+    def _extract_content(self, response):
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices")
+        if not choices:
+            raise ValueError(f"Réponse inattendue de Groq: {response}")
 
-    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, skip_providers=None):
-        skip_providers = skip_providers or set()
+        choice0 = choices[0]
+        message = getattr(choice0, "message", None)
+        if message is None and isinstance(choice0, dict):
+            message = choice0.get("message")
+
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+
+        if content is None and isinstance(choice0, dict):
+            content = choice0.get("content")
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(item.get("text") or item.get("content") or "")
+                elif isinstance(item, str):
+                    parts.append(item)
+            content = "".join(parts).strip()
+
+        if not content:
+            raise ValueError(f"Contenu vide de Groq: {response}")
+
+        return content
+
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
+        client = self._build_client()
         last_error = None
-        for provider in ("groq", "gemini"):
-            if provider in skip_providers:
-                continue
-            client = self._build_client(provider)
-            if client is None:
-                print(f"Cle API absente pour {provider}, on passe au suivant...")
-                continue
+
+        for attempt in range(3):
             try:
                 kwargs = {
-                    "model": self._model_for(provider),
+                    "model": GROQ_MODEL,
                     "messages": messages,
                     "temperature": temperature,
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
+
                 response = client.chat.completions.create(**kwargs)
-                print(f"Reponse obtenue via {provider}")
-                return response.choices[0].message.content, provider
+                content = self._extract_content(response)
+                print("✅ Reponse obtenue via Groq")
+
+                time.sleep(4)
+                return content
+
             except Exception as e:
-                print(f"Echec avec {provider}: {e}")
+                print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                continue
-        raise RuntimeError(f"Aucun provider disponible. Derniere erreur: {last_error}")
+                time.sleep(8)
+
+        raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
     def expand_curriculum_with_llm(self, pillar_key, existing_notions, n=8):
         pillar_label = CONTENT_PILLARS[pillar_key]["label"]
@@ -474,7 +474,7 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         ]
 
         try:
-            content, _ = self._call_with_fallback(messages, temperature=0.9, json_mode=True)
+            content = self._call_with_fallback(messages, temperature=0.9, json_mode=True)
             data = _safe_json_loads(content)
             notions = data.get("notions", [])
             return [
@@ -560,40 +560,38 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
         market_instruction = _format_market_illustration(market_signals, notion)
 
-        angle_instruction = (
-            f"ANGLE IMPOSE POUR CETTE VIDEO : {angle.replace('_', ' ')}. "
-            "Le titre doit refleter clairement cet angle, pas juste redire la notion."
-        )
-
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Tu es prof de finance personnelle sur TikTok. Ta mission est "
-                    "d'enseigner une notion precise de facon claire et memorable, "
-                    "pas de faire du buzz vide. "
-                    "Transforme la notion fournie en titre accrocheur mais honnete, "
-                    "qui donne envie d'apprendre, en respectant l'angle impose. "
-                    "Reponds UNIQUEMENT avec un seul titre en francais, sur UNE seule ligne, "
-                    "sans guillemets, sans liste, sans justification. Maximum 18 mots. "
-                    f"{ACCENT_INSTRUCTION} {PEDAGOGY_INSTRUCTION}"
+                    f"{PERSONA_INSTRUCTION}\n"
+                    "Tu dois créer une véritable IDENTITÉ de série (comme une mini-série Netflix sur l'argent). "
+                    "Le but n'est pas de faire un titre scolaire, mais de créer une dissonance cognitive, de révéler un secret d'initié ou de poser une situation hyper concrète pour donner envie de voir le prochain épisode.\n\n"
+                    "FORMAT EXIGÉ : Commence TOUJOURS par 'ARGENT #XX :' (invente un numéro aléatoire entre 01 et 99). "
+                    "Réponds UNIQUEMENT avec un seul titre en français, sur UNE seule ligne. MAXIMUM 18 MOTS STRICTEMENT.\n\n"
+                    "ANALYSE CES EXEMPLES POUR COMPRENDRE L'ADN DE LA CHAÎNE (applique cette même psychologie à la notion demandée) :\n"
+                    "- Paradoxe/Dissonance : 'ARGENT #01 : Pourquoi ton salaire augmente mais tu as l'impression de t'appauvrir ?'\n"
+                    "- Comportement d'initié : 'ARGENT #02 : Pourquoi les riches ne gardent presque jamais tout leur argent sur leur compte ?'\n"
+                    "- Cas hyper concret + Mise en garde : 'ARGENT #03 : Si tu gagnes 2 000 €, voici l'erreur que tu ne dois surtout pas faire.'\n"
+                    "- Projection mathématique choc : 'ARGENT #04 : 100 € par mois pendant 20 ans : voici ce que ça peut réellement devenir.'\n\n"
+                    f"{ACCENT_INSTRUCTION} {COMPLIANCE_INSTRUCTION}"
                 )
             },
             {
                 "role": "user",
                 "content": (
-                    f"Notion a enseigner (niveau {niveau}) : {notion}\n"
-                    f"{angle_instruction}\n"
-                    "Transforme cette notion en titre de video TikTok accrocheur et honnete."
+                    f"Notion financière à enseigner (niveau {niveau}) : {notion}\n"
+                    f"Angle de révélation imposé : {angle.replace('_', ' ')}\n"
+                    "Applique l'ADN de la chaîne pour créer LE titre percutant de cet épisode. Reste très court (18 mots max)."
                     + stats_instruction
                     + market_instruction
                 )
             }
         ]
-
+        
         last_topic = ""
         for attempt in range(2):
-            content, _ = self._call_with_fallback(messages, temperature=0.85)
+            content = self._call_with_fallback(messages, temperature=0.85)
             topic = _clean_single_line_title(content)
             last_topic = topic
             if _is_valid_topic_candidate(topic):
@@ -601,9 +599,89 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
                     "topic": topic, "notion": notion, "niveau": niveau,
                     "angle": angle, "pillar": notion_entry.get("pillar"), "state": state,
                 }
-            print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
+            print(f"⚠️ Sujet invalide généré (tentative {attempt + 1}) : {topic}")
 
-        raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
+        raise ValueError(f"Impossible d'obtenir un sujet valide : {last_topic}")
+
+    def generate_hook_variants(self, topic, notion=None, angle=None, n=5, previous_stats_list=None):
+        print(f"Génération de {n} hooks mystères pour: {topic}...")
+        stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
+        
+        prompt = f"""
+{PERSONA_INSTRUCTION}
+
+SUJET / TITRE :
+{topic}
+NOTION CACHÉE : {notion}
+
+OBJECTIF :
+Génère {n} hooks différents. Le hook est la toute première phrase de la vidéo (max 3 secondes).
+Il doit créer un choc cognitif, révéler une dissonance ou dénoncer une illusion du système financier.
+
+REGLES :
+- 12 à 18 mots max. Phrase très orale, percutante.
+- Ne mentionne PAS le préfixe 'ARGENT #XX' dans le texte lu à voix haute, c'est juste pour le titre visuel.
+- Varie les approches : le piège invisible, le secret des ultra-riches, la fausse croyance populaire.
+- Interdiction d'utiliser : "Aujourd'hui", "Bienvenue", "Dans cette vidéo", "Savais-tu que".
+- {COMPLIANCE_INSTRUCTION}
+
+FORMAT DE SORTIE (JSON) :
+{{
+  "analyse_agent": "Pourquoi ces hooks vont retenir l'attention.",
+  "hooks": [
+    {{
+      "text": "Phrase du hook.",
+      "pattern": "illusion | secret | choc",
+      "raison": "Pourquoi ça marche."
+    }}
+  ]
+}}
+"""
+        messages = [
+            {"role": "system", "content": f"Produis uniquement du JSON valide. {ACCENT_INSTRUCTION}"},
+            {"role": "user", "content": prompt},
+        ]
+        content = self._call_with_fallback(messages, temperature=1.0, json_mode=True)
+        data = _safe_json_loads(content)
+
+        if _script_missing_accents({"scenes": [{"text": h.get("text", "")} for h in data.get("hooks", [])]}):
+            print("⚠️ Accents manquants détectés, nouvelle tentative Groq...")
+            content = self._call_with_fallback(messages, temperature=1.0, json_mode=True)
+            data = _safe_json_loads(content)
+
+        return data.get("hooks")
+
+    def get_newsjacking_topic(self, market_signals, previous_stats_list=None):
+        if not market_signals:
+            raise ValueError("Pas de signaux de marche disponibles pour le mode newsjacking.")
+
+        market_instruction = _format_market_illustration(market_signals, "actualite des marches")
+        stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet d'actualite")
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"{PERSONA_INSTRUCTION} "
+                    "Une actualité de marché vient de se produire. Transforme-la en LECON mystérieuse : "
+                    "n'explique pas juste 'ce qui bouge', révèle CE QUE CA CACHE sur le système. "
+                    "FORMAT EXIGÉ : Commence toujours par 'ARGENT #XX :'. "
+                    "Réponds UNIQUEMENT avec un titre en français, une seule ligne, max 18 mots. "
+                    f"{ACCENT_INSTRUCTION} {COMPLIANCE_INSTRUCTION}"
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Transforme l'actualité de marché ci-dessous en sujet de vidéo révélation."
+                    + market_instruction
+                    + stats_instruction
+                )
+            }
+        ]
+
+        content = self._call_with_fallback(messages, temperature=0.85)
+        return _clean_single_line_title(content)
 
     def record_topic_used(self, state, notion, niveau, angle, pillar, topic=None, hook_pattern=None):
         with _state_lock():
@@ -619,115 +697,6 @@ FORMAT DE SORTIE : JSON uniquement, sans Markdown.
             state["history"] = state["history"][-500:]
             _save_curriculum_state(state)
 
-    def get_newsjacking_topic(self, market_signals, previous_stats_list=None):
-        if not market_signals:
-            raise ValueError("Pas de signaux de marche disponibles pour le mode newsjacking.")
-
-        market_instruction = _format_market_illustration(market_signals, "actualite des marches")
-        stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet d'actualite")
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Tu es prof de finance personnelle. Une actualite de marche vient "
-                    "de se produire. Transforme-la en LECON pour les debutants : "
-                    "n'explique pas juste 'ce qui bouge', explique CE QUE CA APPREND "
-                    "sur le fonctionnement des marches ou de l'argent en general. "
-                    "Reponds UNIQUEMENT avec un titre en francais, une seule ligne, max 18 mots. "
-                    f"{ACCENT_INSTRUCTION} {PEDAGOGY_INSTRUCTION} {COMPLIANCE_INSTRUCTION}"
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Transforme l'actualite de marche ci-dessous en sujet de video "
-                    "pedagogique (pas juste informatif)."
-                    + market_instruction
-                    + stats_instruction
-                )
-            }
-        ]
-
-        content, _ = self._call_with_fallback(messages, temperature=0.85)
-        return _clean_single_line_title(content)
-
-    def generate_hook_variants(self, topic, notion=None, angle=None, n=5, previous_stats_list=None):
-        print(f"Generation de {n} hooks pedagogiques pour: {topic}...")
-
-        stats_instruction = _format_stats_instruction(
-            previous_stats_list, label="le niveau de clarte pedagogique et la structure des hooks"
-        )
-        notion_line = f"NOTION ENSEIGNEE : {notion}\n" if notion else ""
-        angle_line = f"ANGLE IMPOSE : {angle.replace('_', ' ')}\n" if angle else ""
-
-        prompt = f"""
-Tu es prof de finance personnelle qui excelle a rendre des concepts arides
-captivants sur TikTok, sans jamais sacrifier l'exactitude pedagogique.
-
-{stats_instruction}
-
-{notion_line}{angle_line}SUJET / TITRE :
-{topic}
-
-OBJECTIF :
-Genere {n} hooks differents pour la meme video pedagogique, tous alignes sur
-l'angle impose. Chaque hook doit arreter le scroll en moins de 3 secondes ET
-annoncer clairement ce que le spectateur va APPRENDRE.
-
-REGLES POUR CHAQUE HOOK :
-- 12 a 18 mots, phrase complete en francais oral et naturel.
-- Doit creer une envie d'apprendre : une question qui revele une lacune, un
-  malentendu courant a corriger, ou une comparaison qui simplifie.
-- Varie les patterns : question directe, statistique choc, erreur courante,
-  contre-intuition, mise en garde.
-- N'utilise jamais "Aujourd'hui", "Savais-tu que", "Bienvenue", "Dans cette video".
-- N'invente ni chiffre impossible ni promesse de gain garanti.
-- {ACCENT_INSTRUCTION}
-- {COMPLIANCE_INSTRUCTION}
-
-FORMAT DE SORTIE :
-Retourne uniquement un objet JSON valide, sans bloc Markdown.
-
-{{
-  "analyse_agent": "Une phrase courte (max 20 mots) expliquant l'ajustement pedagogique fait.",
-  "hooks": [
-    {{
-      "text": "Phrase du hook.",
-      "pattern": "question | statistique | erreur_courante | contre-intuition | mise_en_garde",
-      "raison": "Une phrase expliquant pourquoi ce hook donne envie d'apprendre."
-    }}
-  ]
-}}
-"""
-        messages = [
-            {
-                "role": "system",
-                "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks pedagogiques. {ACCENT_INSTRUCTION}"
-            },
-            {"role": "user", "content": prompt},
-        ]
-
-        content, provider_used = self._call_with_fallback(messages, temperature=1.05, json_mode=True)
-        data = _safe_json_loads(content)
-
-        if provider_used == "groq" and _script_missing_accents({
-            "scenes": [{"text": h.get("text", "")} for h in data.get("hooks", [])]
-        }):
-            print("⚠️ Accents manquants detectes (Groq), nouvelle tentative via Gemini...")
-            content, _ = self._call_with_fallback(messages, temperature=1.05, json_mode=True, skip_providers={"groq"})
-            data = _safe_json_loads(content)
-
-        analyse = data.get("analyse_agent", "")
-        if analyse:
-            print(f"\n🧠 Réflexion de l'Agent IA : {analyse}\n")
-
-        hooks = data.get("hooks")
-        if not isinstance(hooks, list) or len(hooks) != n:
-            raise ValueError(f"Nombre de hooks invalide: {len(hooks) if isinstance(hooks, list) else 0} au lieu de {n}.")
-
-        return hooks
-
     def pick_best_hook(self, hooks, previous_stats_list=None, state=None):
         if not previous_stats_list or not state:
             return hooks[0]
@@ -741,42 +710,26 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         return self.generate_script_with_target(topic, notion=notion, angle=angle, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, notion=None, angle=None, scene_count=11, chosen_hook=None):
-        if scene_count < 6:
-            raise ValueError("scene_count doit etre superieur ou egal a 6.")
+        if scene_count < 6: raise ValueError("scene_count doit être >= 6.")
 
-        print(f"Ecriture du script pedagogique pour : {topic} ({scene_count} scenes)...")
-
-        if chosen_hook:
-            hook_instruction = (
-                "La scene 1 doit reprendre exactement ou reformuler tres legerement "
-                "ce hook deja valide : " + json.dumps(chosen_hook, ensure_ascii=False)
-            )
-        else:
-            hook_instruction = (
-                "Scene 1 - hook : une phrase de 12 a 18 mots qui annonce "
-                "clairement ce que le spectateur va apprendre."
-            )
-
-        notion_line = f"NOTION CENTRALE A ENSEIGNER : {notion}\n" if notion else ""
-        angle_line = f"ANGLE IMPOSE : {angle.replace('_', ' ')}\n" if angle else ""
+        hook_instruction = (
+            "La scene 1 doit reprendre exactement ce hook : " + json.dumps(chosen_hook, ensure_ascii=False)
+        ) if chosen_hook else "Scene 1 - hook : Accroche percutante et mystérieuse."
 
         skeleton_dict = {
-            "title": "Titre francais pedagogique court et accrocheur",
+            "title": topic,
             "notion_enseignee": notion or "",
-            "angle": angle or "",
-            "visual_identity": "One concise English sentence defining the FIXED recurring color palette, lighting style and overall visual mood shared by every scene of this video",
-            "audio_profile": "French premium narrator, confident, sharp, clear, pedagogical, natural pacing",
-            "compliance_note": "Contenu educatif general, ne constitue pas un conseil en investissement personnalise.",
+            "visual_identity": "Consistent modern dark cinematic finance world, sleek corporate aesthetic, deep shadows with subtle neon accents, highly photorealistic",
+            "audio_profile": "French premium narrator, confident, slightly mysterious, sharp, insider tone, natural pacing",
             "scenes": [
                 {
                     "id": 1,
-                    "text": "Phrase francaise complete de douze a vingt-deux mots.",
-                    "voice_direction": "French premium narrator, confident, clear, engaging",
+                    "text": "Phrase française.",
+                    "voice_direction": "French premium narrator, intriguing, revealing a secret",
                     "pause_after_ms": 300,
-                    "tts_emphasis_word": "mot",
-                    "stock_search": "concrete English finance education stock footage keywords",
-                    "image_prompt": "Detailed English visual prompt following the mandatory modular structure above, reusing the same color palette and lighting as visual_identity",
-                    "mood": "pedagogical",
+                    "stock_search": "dark modern finance background",
+                    "image_prompt": "Detailed English visual prompt following the modular structure, matching visual_identity strictly",
+                    "mood": "intriguing",
                     "role": "hook"
                 }
             ]
@@ -784,138 +737,57 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         json_skeleton = json.dumps(skeleton_dict, ensure_ascii=False, indent=2)
 
         def build_prompt(compliance_block):
-            lines = []
-            lines.append("Tu es prof de finance personnelle, redacteur en chef d'une chaine francophone")
-            lines.append("d'education financiere dont la mission est d'ENSEIGNER durablement, pas")
-            lines.append("seulement d'informer sur l'actualite.")
-            lines.append("")
-            lines.append(f"{notion_line}{angle_line}TITRE :")
-            lines.append(topic)
-            lines.append("")
-            lines.append("OBJECTIF :")
-            lines.append("Creer une video TikTok pedagogique ou, a la fin, le spectateur peut expliquer")
-            lines.append("la notion avec ses propres mots. Le divertissement sert la comprehension,")
-            lines.append("jamais l'inverse.")
-            lines.append("")
-            lines.append("CONTRAINTE ABSOLUE :")
-            lines.append(f"Genere exactement {scene_count} scenes.")
-            lines.append("")
-            lines.append("LANGUES :")
-            lines.append('- "text" : uniquement en francais naturel et oral, PARFAITEMENT ACCENTUE.')
-            lines.append('- "voice_direction" : uniquement en anglais.')
-            lines.append('- "stock_search" : uniquement en anglais, mots-cles concrets finance/bureau/argent.')
-            lines.append('- "image_prompt" : uniquement en anglais.')
-            lines.append('- "mood" et "role" : uniquement parmi les valeurs autorisees.')
-            lines.append("")
-            lines.append(ACCENT_INSTRUCTION)
-            lines.append(compliance_block)
-            lines.append(PEDAGOGY_INSTRUCTION)
-            lines.append(VISUAL_CONSISTENCY_INSTRUCTION)
-            lines.append("")
-            lines.append("STRUCTURE NARRATIVE PEDAGOGIQUE (methode : erreur -> mecanisme -> analogie -> application) :")
-            lines.append(f"- {hook_instruction}")
-            lines.append("- Scene 2 - erreur courante :")
-            lines.append("  montre le malentendu ou l'erreur que la plupart des gens font sur cette notion.")
-            lines.append("- Scene 3 - definition simple :")
-            lines.append("  donne une definition claire de la notion en une phrase, sans jargon inutile.")
-            lines.append(f"- Scenes 4 a {scene_count - 4} - mecanisme :")
-            lines.append("  explique pas a pas comment ca fonctionne reellement, une idee par scene.")
-            lines.append(f"- Scene {scene_count - 3} - analogie concrete :")
-            lines.append("  utilise une comparaison de la vie quotidienne pour ancrer la notion durablement.")
-            lines.append(f"- Scene {scene_count - 2} - exemple applique :")
-            lines.append("  donne un exemple chiffre generique et realiste (ou l'exemple de marche fourni")
-            lines.append("  si pertinent) pour montrer la notion en action.")
-            lines.append(f"- Scene {scene_count - 1} - synthese actionnable :")
-            lines.append("  resume en une phrase memorable ce qu'il faut retenir et faire concretement.")
-            lines.append(f"- Scene {scene_count} - CTA pedagogique :")
-            lines.append("  pose une question qui verifie la comprehension ou invite a partager son")
-            lines.append("  experience personnelle sur cette notion.")
-            lines.append('  Interdiction des CTA generiques comme "Abonne-toi pour plus de videos".')
-            lines.append("")
-            lines.append("REGLES D'ECRITURE (RYTHME) :")
-            lines.append('- Chaque "text" contient une phrase complete de 12 a 22 mots, une seule idee principale par scene.')
-            lines.append("- Alterne systematiquement une phrase courte percutante (moins de 14 mots) et une phrase plus longue explicative.")
-            lines.append("- Cree une transition logique explicite entre chaque scene.")
-            lines.append('- Ne commence jamais par : "Aujourd\'hui", "Savais-tu que", "Bienvenue", "Dans cette video".')
-            lines.append("- N'invente jamais de promesse d'enrichissement rapide ni de rendement garanti.")
-            lines.append("- Pas de hashtags, d'emojis, de titres, de notes ou d'explications hors JSON.")
-            lines.append("")
-            lines.append("REGLES AUDIO :")
-            lines.append('- Chaque scene doit inclure "voice_direction" en anglais.')
-            lines.append('- Chaque scene doit inclure "pause_after_ms" avec une valeur entiere entre 180 et 450.')
-            lines.append('- Chaque scene peut inclure "tts_emphasis_word".')
-            lines.append("")
-            lines.append("REGLES VISUELLES (COHERENCE STRICTE ENTRE TOUTES LES SCENES) :")
-            lines.append('- "stock_search" : 3 a 7 mots-cles anglais orientes finance/education.')
-            lines.append('- "image_prompt" : DOIT suivre EXACTEMENT cette structure modulaire en anglais,')
-            lines.append("  dans cet ordre :")
-            lines.append("  [subject + action], [location/background + atmosphere], [shot size: close-up")
-            lines.append("  OR medium shot OR wide shot], [camera angle: eye level OR slightly low angle],")
-            lines.append("  [lighting: soft natural daylight OR warm golden hour OR clean studio light],")
-            lines.append("  [color palette: consistent warm neutral tones], vertical 9:16 composition,")
-            lines.append("  clean negative space top and bottom for subtitles, photorealistic, no text,")
-            lines.append("  no logo, no watermark.")
-            lines.append("- La palette de couleur et le style de lumiere choisis DOIVENT etre identiques")
-            lines.append(f"  dans toutes les {scene_count} scenes (definis une seule fois et repris")
-            lines.append('  litteralement dans chaque "image_prompt").')
-            lines.append("- Varie uniquement le sujet, le cadrage et l'angle de camera d'une scene a")
-            lines.append("  l'autre, jamais la lumiere ni la palette de couleur.")
-            lines.append("")
-            lines.append("VALEURS AUTORISEES :")
-            lines.append('- "role" : "hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"')
-            lines.append('- "mood" : "confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"')
-            lines.append("")
-            lines.append("FORMAT DE SORTIE :")
-            lines.append("Retourne uniquement un objet JSON valide, sans bloc Markdown, suivant exactement ce squelette (adapte le contenu, garde la structure) :")
-            lines.append("")
+            lines = [
+                PERSONA_INSTRUCTION,
+                "",
+                f"TITRE DE LA VIDÉO : {topic}",
+                f"VERITABLE NOTION A ENSEIGNER : {notion}",
+                "",
+                "STRUCTURE NARRATIVE (Le format 'Révélation') :",
+                f"- {hook_instruction}",
+                "- Scene 2 - L'Illusion : Montre ce que 99% des gens croient à tort sur ce sujet.",
+                "- Scene 3 - La Faille : Explique pourquoi cette croyance les maintient dans la 'rat race' ou leur fait perdre de l'argent.",
+                f"- Scenes 4 à {scene_count - 3} - Le Mécanisme Caché (La réalité) : Décortique comment le système fonctionne vraiment pas à pas.",
+                f"- Scene {scene_count - 2} - L'Exemple Chiffré : Un cas concret et frappant.",
+                f"- Scene {scene_count - 1} - La Règle d'Or : Une phrase mémorable à retenir pour changer sa vision.",
+                f"- Scene {scene_count} - Outro : Un call-to-action mystérieux ou une question ouverte (ex: 'Et toi, de quel côté es-tu ?').",
+                "",
+                "REGLES VISUELLES (MYSTERE FINANCIER) :",
+                "- 'image_prompt' DOIT suivre l'ambiance définie (sombre, luxueux, financier, cinématique).",
+                "- PAS de 3D, PAS de CGI, uniquement du photoréalisme.",
+                "",
+                compliance_block,
+                VISUAL_CONSISTENCY_INSTRUCTION,
+                "",
+                "FORMAT EXIGÉ : Uniquement du JSON valide calqué sur ce squelette :"
+            ]
             lines.append(json_skeleton)
             return "\n".join(lines)
 
-        def build_messages(compliance_block):
-            prompt = build_prompt(compliance_block)
-            return [
-                {
-                    "role": "system",
-                    "content": (
-                        "Tu produis uniquement du JSON valide. "
-                        f"La cle scenes contient exactement {scene_count} scenes. "
-                        "Tu respectes strictement la structure pedagogique erreur->mecanisme->analogie->application. "
-                        "Tu respectes strictement la coherence visuelle imposee (meme palette et meme lumiere partout). "
-                        "Aucun texte hors du JSON. "
-                        f"{ACCENT_INSTRUCTION} {compliance_block} {PEDAGOGY_INSTRUCTION} {VISUAL_CONSISTENCY_INSTRUCTION}"
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ]
-
-        skip_providers = set()
-        last_error = None
-
         for attempt in range(2):
             compliance_block = COMPLIANCE_INSTRUCTION if attempt == 0 else COMPLIANCE_RETRY_INSTRUCTION
-            messages = build_messages(compliance_block)
-
-            content, provider_used = self._call_with_fallback(
-                messages, temperature=0.7, json_mode=True, skip_providers=skip_providers
-            )
+            prompt = build_prompt(compliance_block)
+            messages = [
+                {"role": "system", "content": f"Uniquement du JSON valide pour {scene_count} scènes. {ACCENT_INSTRUCTION}"},
+                {"role": "user", "content": prompt}
+            ]
+            
+            content = self._call_with_fallback(messages, temperature=0.7, json_mode=True)
             data = _safe_json_loads(content)
-
-            if provider_used == "groq" and _script_missing_accents(data):
-                print("⚠️ Accents manquants detectes dans le script (Groq), nouvelle tentative via Gemini...")
-                content, _ = self._call_with_fallback(
-                    messages, temperature=0.7, json_mode=True, skip_providers={"groq"} | skip_providers
-                )
+            
+            if _script_missing_accents(data):
+                print("⚠️ Accents manquants détectés, nouvelle tentative Groq...")
+                content = self._call_with_fallback(messages, temperature=0.7, json_mode=True)
                 data = _safe_json_loads(content)
 
             try:
                 self._validate_script(data, scene_count)
                 return data
             except ComplianceViolationError as e:
-                last_error = e
-                print(f"🚫 Violation de conformite (tentative {attempt + 1}/2) : {e}")
+                print(f"🚫 Violation de conformité détectée : {e}")
                 continue
-
-        raise last_error
+                
+        raise RuntimeError("Échec de génération après 2 tentatives.")
 
     def _normalize_word(self, text):
         text = str(text).lower().strip()
@@ -936,8 +808,16 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
         if actual_ids != expected_ids:
             raise ValueError(f"IDs de scenes invalides : {actual_ids}")
 
-        allowed_roles = {"hook", "misconception", "definition", "mechanism", "analogy", "example", "summary", "cta"}
-        allowed_moods = {"confident", "sharp", "clear", "pedagogical", "engaging", "revelatory"}
+        allowed_roles = {
+            "hook", "misconception", "illusion", "faille", "definition", 
+            "mechanism", "analogy", "example", "summary", "cta", "regle", 
+            "value", "tension", "context", "escalation", "reveal"
+        }
+        allowed_moods = {
+            "confident", "sharp", "clear", "pedagogical", "engaging", 
+            "revelatory", "intriguing", "ominous", "tense", "awe", 
+            "scientific", "melancholic", "misconception", "illusion", "faille"
+        }
 
         compliance_violations = []
 
@@ -958,18 +838,34 @@ Retourne uniquement un objet JSON valide, sans bloc Markdown.
 
             if isinstance(pause_after_ms, float) and pause_after_ms.is_integer():
                 pause_after_ms = int(pause_after_ms)
-                scene["pause_after_ms"] = pause_after_ms
-            if not isinstance(pause_after_ms, int) or not (180 <= pause_after_ms <= 450):
-                raise ValueError(f"Scene {scene.get('id')} : pause_after_ms invalide ({pause_after_ms}).")
+            
+            # --- CORRECTION AUTOMATIQUE DES PAUSES (Anti-plantage 500ms) ---
+            if not isinstance(pause_after_ms, int) or not (150 <= pause_after_ms <= 600):
+                pause_after_ms = 300
+            scene["pause_after_ms"] = pause_after_ms
 
-            if role not in allowed_roles:
-                raise ValueError(f"Scene {scene.get('id')} : role invalide ({role}).")
-            if mood not in allowed_moods:
-                raise ValueError(f"Scene {scene.get('id')} : mood invalide ({mood}).")
+            # Sécurité rôles
+            if role:
+                role = str(role).strip().lower().replace("l'", "").replace("la ", "").replace("le ", "")
+                if role not in allowed_roles:
+                    role = "mechanism"
+                scene["role"] = role
+            else:
+                scene["role"] = "mechanism"
+
+            # Sécurité moods
+            if mood:
+                mood = str(mood).strip().lower()
+                if mood not in allowed_moods:
+                    mood = "intriguing"
+                scene["mood"] = mood
+            else:
+                scene["mood"] = "intriguing"
+
             if not stock_search:
-                raise ValueError(f"Scene {scene.get('id')} : stock_search manquant.")
+                scene["stock_search"] = "dark modern finance background"
             if not image_prompt:
-                raise ValueError(f"Scene {scene.get('id')} : image_prompt manquant.")
+                scene["image_prompt"] = "Detailed English visual prompt matching visual_identity strictly"
 
             text_lower = text.lower()
             for phrase in FORBIDDEN_COMPLIANCE_PHRASES:

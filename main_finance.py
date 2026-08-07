@@ -189,7 +189,7 @@ GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
 
 
 def generate_caption_with_gemini(prompt_legende):
-    """Génère la légende via la nouvelle SDK google-genai (l'ancienne google-generativeai est dépréciée)."""
+    """Génère la légende via la nouvelle SDK google-genai."""
     from google import genai
 
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -209,7 +209,7 @@ def generate_caption_with_gemini(prompt_legende):
 
 
 def generate_caption_with_groq(prompt_legende):
-    """Génère la légende via Groq, avec un modèle actif (llama-3.x-versatile est décommissionné)."""
+    """Génère la légende via Groq, avec un modèle actif."""
     import requests
 
     groq_key = os.getenv("GROQ_API_KEY")
@@ -286,8 +286,6 @@ async def main():
         print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
         stats_historique = None
 
-    # Variables necessaires plus loin pour enregistrer l'historique du
-    # curriculum (record_topic_used) une fois la video generee avec succes.
     curriculum_state = None
     curriculum_niveau = None
     curriculum_pillar = None
@@ -330,12 +328,6 @@ async def main():
             except Exception as e:
                 print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
 
-        # FIX : scene_count calcule a partir de VIDEO_DURATION doit etre
-        # reellement transmis au generateur de script. L'ancienne version
-        # appelait brain.generate_script(...), qui ignore ce parametre et
-        # utilise toujours 11 scenes en dur, quelle que soit la duree
-        # demandee. On appelle desormais generate_script_with_target(...)
-        # avec le scene_count calcule.
         scene_count = estimate_scene_count(duration_target)
         print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
 
@@ -351,12 +343,6 @@ async def main():
         script = script_payload["scenes"]
         video_title = script_payload.get("title", topic)
 
-        # FIX : sans cet appel, l'historique du curriculum (assets/state/
-        # curriculum_finance_state.json) n'est jamais mis a jour pendant
-        # le pipeline reel, et le systeme anti-repetition (fenetre de 15
-        # videos, cooldown de 21 jours) reste inoperant. On enregistre
-        # uniquement si le sujet vient du curriculum auto (pas un topic
-        # manuel), puisque curriculum_state est alors disponible.
         if curriculum_state is not None:
             try:
                 brain.record_topic_used(
@@ -393,7 +379,6 @@ async def main():
         print("👀 TEXTE DE LA LÉGENDE FINANCE :\n" + "-" * 30 + f"\n{legende_finale}\n" + "-" * 30)
     except Exception as e:
         print(f"⚠️ Erreur lors de l'écriture du fichier caption.txt : {e}")
-    # =====================================================================
 
     audio_engine = AudioEngine()
 
@@ -419,13 +404,58 @@ async def main():
         )
         scene["srt_path"] = result
 
+    # =====================================================================
+    # --- MODE HYBRIDE : VIDÉOS D'ILLUSTRATION ET IMAGES IA PAR SCÈNE ---
+    # =====================================================================
     try:
-        print("🎞️ Téléchargement des B-Rolls depuis Pexels / visuels hybrides...")
+        temp_dir = os.path.join(os.getcwd(), "assets", "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
         asset_manager = AssetManager()
-        video_paths = asset_manager.get_videos(script)
+        video_paths = []
+
+        print("🔄 Génération du mix hybride dynamique (Vidéos de stock prioritaires + Images IA)...")
+        visual_id = script_payload.get("visual_identity", "Consistent modern dark cinematic finance world")
+
+        for index, scene in enumerate(script):
+            role = scene.get("role", "value")
+            scene_id = scene['id']
+            asset_path = None
+
+            # On force l'image IA pour le CTA final OU pour une scène sur deux (index impair)
+            force_ai_image = (role == "cta") or (index % 2 != 0)
+
+            # Si on ne force pas l'IA, on cherche une vidéo de stock
+            if not force_ai_image:
+                scene_query = scene.get("stock_search", "finance concept") + " vertical 9:16"
+                video_path = os.path.join(temp_dir, f"scene_video_{scene_id}.mp4")
+                print(f"   🎬 Scène {scene_id} ({role}) : Recherche vidéo stock pour '{scene_query}'...")
+                
+                try:
+                    if asset_manager.fetch_background_video(scene_query, video_path):
+                        asset_path = video_path
+                except Exception as e:
+                    print(f"   ⚠️ Erreur stock vidéo scène {scene_id} : {e}")
+
+            # Si on a forcé l'IA, OU si la recherche de vidéo a échoué (fallback)
+            if not asset_path:
+                label = "Génération" if force_ai_image else "Fallback"
+                print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
+                img_path = os.path.join(temp_dir, f"scene_{scene_id}.jpg")
+                
+                # Sécurisation du prompt IA pour forcer l'identité visuelle Finance Mystère
+                base_prompt = scene.get("image_prompt", "dark corporate finance aesthetic")
+                safe_thematic_prompt = f"{base_prompt}, photorealistic, sleek modern office, luxury, dark cinematic lighting, highly detailed, real photography, 8k, no 3d render"
+                
+                asset_manager.generate_image(safe_thematic_prompt, img_path, visual_id)
+                asset_path = img_path
+
+            video_paths.append(asset_path)
+
     except Exception as e:
         print(f"❌ Asset Error: {e}")
         return
+    # =====================================================================
 
     try:
         print("🎬 Montage de la vidéo finale...")
