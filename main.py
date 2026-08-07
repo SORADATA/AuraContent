@@ -108,15 +108,17 @@ async def main():
     print("🔄 Génération du mix hybride dynamique (Vidéos de stock prioritaires + Images IA)...")
     visual_id = script_payload.get("visual_identity", "Cinematic documentary")
 
-    for scene in script:
+    for index, scene in enumerate(script):
         role = scene.get("role", "value")
         scene_id = scene['id']
         
-        # Modification ici : on cherche une vraie vidéo pour toutes les scènes sauf le CTA final
-        use_video = role != "cta"
         asset_path = None
 
-        if use_video:
+        # On force l'image IA pour le CTA final OU pour une scène sur deux (index impair)
+        force_ai_image = (role == "cta") or (index % 2 != 0)
+
+        # Si on ne force pas l'IA, on cherche une vidéo de stock
+        if not force_ai_image:
             scene_query = scene.get("stock_search", dynamic_query) + " vertical 9:16"
             video_path = os.path.join(temp_dir, f"scene_video_{scene_id}.mp4")
             print(f"   🎬 Scène {scene_id} ({role}) : Recherche vidéo stock pour '{scene_query}'...")
@@ -127,8 +129,10 @@ async def main():
             except Exception as e:
                 print(f"   ⚠️ Erreur stock vidéo scène {scene_id} : {e}")
 
+        # Si on a forcé l'IA, OU si la recherche de vidéo a échoué (fallback)
         if not asset_path:
-            print(f"   🎨 Scène {scene_id} ({role}) : Fallback image IA contextuelle...")
+            label = "Génération" if force_ai_image else "Fallback"
+            print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
             img_path = os.path.join(temp_dir, f"scene_{scene_id}.jpg")
             asset_manager.generate_image(scene["image_prompt"], img_path, visual_id)
             asset_path = img_path
