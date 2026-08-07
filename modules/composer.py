@@ -66,13 +66,15 @@ class Composer:
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
-        output_path = os.path.join(self.temp_dir, f"scene_{scene_id}.mp4")
+        
+        # Suffixe _rendered pour éviter les erreurs de verrouillage / écrasement
+        output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
 
         try:
             input_audio = ffmpeg.input(audio_path)
 
             if bg_video_path and os.path.exists(bg_video_path):
-                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo + 🎨 Overlay possible")
+                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo Global")
 
                 source_duration = self.get_duration(bg_video_path)
                 start_offset = bg_offset % source_duration if source_duration > 0 else 0.0
@@ -85,48 +87,61 @@ class Composer:
                     .setpts("PTS-STARTPTS")
                 )
             else:
-                print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
-
                 path_a, path_b = self._ensure_pair(image_pair)
                 if not path_a:
-                    raise ValueError(f"Scene {scene_id}: aucune image disponible.")
+                    raise ValueError(f"Scene {scene_id}: aucune image ou vidéo disponible.")
 
                 path_b = path_b or path_a
 
-                duration_a = max(total_duration / 2, 0.1)
-                duration_b = max((total_duration / 2) + 0.35, 0.1)
+                # Vérification si le fichier fourni est une vidéo ou une image
+                is_video = str(path_a).lower().endswith(('.mp4', '.mov', '.webm', '.avi', '.mkv'))
 
-                frames_a = max(int(duration_a * self.fps), 1)
-                frames_b = max(int(duration_b * self.fps), 1)
-
-                stream_a = (
-                    ffmpeg.input(path_a, loop=1, t=duration_a)
-                    .filter("scale", 2200, -1)
-                    .filter(
-                        "zoompan",
-                        z="min(zoom+0.0012,1.18)",
-                        d=frames_a,
-                        s=f"{self.video_width}x{self.video_height}",
-                        fps=self.fps
+                if is_video:
+                    print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Vidéo Stock locale")
+                    video_stream = (
+                        ffmpeg.input(path_a, stream_loop=-1)
+                        .filter("trim", duration=total_duration)
+                        .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
+                        .filter("crop", self.video_width, self.video_height)
+                        .setpts("PTS-STARTPTS")
                     )
-                    .setpts("PTS-STARTPTS")
-                )
+                else:
+                    print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
+                    duration_a = max(total_duration / 2, 0.1)
+                    duration_b = max((total_duration / 2) + 0.35, 0.1)
 
-                stream_b = (
-                    ffmpeg.input(path_b, loop=1, t=duration_b)
-                    .filter("scale", 2200, -1)
-                    .filter(
-                        "zoompan",
-                        z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))",
-                        d=frames_b,
-                        s=f"{self.video_width}x{self.video_height}",
-                        fps=self.fps
+                    frames_a = max(int(duration_a * self.fps), 1)
+                    frames_b = max(int(duration_b * self.fps), 1)
+
+                    stream_a = (
+                        ffmpeg.input(path_a, loop=1, t=duration_a)
+                        .filter("scale", 2200, -1)
+                        .filter(
+                            "zoompan",
+                            z="min(zoom+0.0012,1.18)",
+                            d=frames_a,
+                            s=f"{self.video_width}x{self.video_height}",
+                            fps=self.fps
+                        )
+                        .setpts("PTS-STARTPTS")
                     )
-                    .setpts("PTS-STARTPTS")
-                )
 
-                video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+                    stream_b = (
+                        ffmpeg.input(path_b, loop=1, t=duration_b)
+                        .filter("scale", 2200, -1)
+                        .filter(
+                            "zoompan",
+                            z="if(eq(on,1),1.10,max(zoom-0.0010,1.0))",
+                            d=frames_b,
+                            s=f"{self.video_width}x{self.video_height}",
+                            fps=self.fps
+                        )
+                        .setpts("PTS-STARTPTS")
+                    )
 
+                    video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+
+            # Application des sous-titres
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
                 escaped_srt_path = self._escape_path_for_filter(srt_path)
@@ -375,7 +390,7 @@ class Composer:
 
                 print(f"✅ FINAL VIDEO SAVED: {output_path}")
         else:
-            print("⚠️ Aucune musique de fond trouvee dans assets/music/bg_track.mp3, export avec voix normalisee.")
+            print("⚠️ Aucune musique de fond trouvée dans assets/music/bg_track.mp3, export avec voix normalisée.")
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
