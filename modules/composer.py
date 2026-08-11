@@ -62,20 +62,21 @@ class Composer:
             return str(image_pair), str(image_pair)
         return None, None
 
-    def add_watermark_text(self, input_video_path, output_video_path, channel_name="@MinuteMystere"):
-        """Incruste un filigrane texte semi-transparent en bas de la vidéo finale."""
+    def add_watermark_text(self, input_video_path, output_video_path, channel_name="MinuteMystere"):
+        """Incruste un filigrane texte élégant et épuré en haut à droite (style pro)."""
         try:
             stream = ffmpeg.input(input_video_path)
             v_stream = stream.video.filter(
                 "drawtext",
                 text=channel_name,
                 fontcolor="white",
-                fontsize=36,
-                box=1,
-                boxcolor="black@0.5",
-                boxborderw=10,
-                x="(w-text_w)/2",
-                y="h-150"
+                fontsize=32,
+                box=0,
+                shadowcolor="black",
+                shadowx=2,
+                shadowy=2,
+                x="w-text_w-40",
+                y="50"
             )
             a_stream = stream.audio
 
@@ -100,15 +101,12 @@ class Composer:
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
         
-        # Suffixe _rendered pour éviter les erreurs de verrouillage / écrasement
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
 
         try:
             input_audio = ffmpeg.input(audio_path)
 
             if bg_video_path and os.path.exists(bg_video_path):
-                print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Fond Vidéo Global")
-
                 source_duration = self.get_duration(bg_video_path)
                 start_offset = bg_offset % source_duration if source_duration > 0 else 0.0
 
@@ -126,11 +124,9 @@ class Composer:
 
                 path_b = path_b or path_a
 
-                # Vérification si le fichier fourni est une vidéo ou une image
                 is_video = str(path_a).lower().endswith(('.mp4', '.mov', '.webm', '.avi', '.mkv'))
 
                 if is_video:
-                    print(f"    ⚙️ Processing Scene {scene_id}: 🎬 Vidéo Stock locale")
                     video_stream = (
                         ffmpeg.input(path_a, stream_loop=-1)
                         .filter("trim", duration=total_duration)
@@ -139,7 +135,6 @@ class Composer:
                         .setpts("PTS-STARTPTS")
                     )
                 else:
-                    print(f"    ⚙️ Processing Scene {scene_id}: 🎨 AI Images + Ken Burns Zoom")
                     duration_a = max(total_duration / 2, 0.1)
                     duration_b = max((total_duration / 2) + 0.35, 0.1)
 
@@ -174,7 +169,6 @@ class Composer:
 
                     video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
 
-            # Application des sous-titres
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
                 escaped_srt_path = self._escape_path_for_filter(srt_path)
@@ -359,7 +353,6 @@ class Composer:
                 preset="medium"
             )
             final_runner.run(overwrite_output=True, quiet=True)
-            print(f"✅ FINAL VIDEO SAVED (with music): {output_path}")
             return True
 
         except ffmpeg.Error as e:
@@ -368,9 +361,6 @@ class Composer:
             return False
 
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
-        print("🎬 Stitching final video (cascade mode)...")
-        
-        # Le fichier final intermédiaire avant d'ajouter le filigrane
         raw_final_output_path = os.path.join(self.temp_dir, "raw_final_stitched.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
 
@@ -378,7 +368,7 @@ class Composer:
             try:
                 os.remove(output_path)
             except Exception:
-                print(f"⚠️ Warning: Could not delete old file {output_path}.")
+                pass
 
         if not video_paths:
             return None
@@ -396,7 +386,6 @@ class Composer:
 
                 try:
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output)
-                    print(f"    ✨ Transition {i}: '{effect}' at {offset:.2f}s")
                 except ffmpeg.Error as e:
                     error_log = e.stderr.decode("utf8") if e.stderr else str(e)
                     print(f"❌ Stitching Error at step {i}: {error_log}")
@@ -411,12 +400,10 @@ class Composer:
             stitched_path = courant
 
         if os.path.exists(self.bg_music_path):
-            print("🎵 Mixing background music with ducking...")
             success = self._mix_background_music(stitched_path, raw_final_output_path)
 
             if not success:
                 normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
-                print("🔈 Fallback: export sans musique, avec normalisation voix...")
                 ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
                 if ok and os.path.exists(normalized_fallback):
@@ -424,7 +411,6 @@ class Composer:
                 else:
                     shutil.copy2(stitched_path, raw_final_output_path)
         else:
-            print("⚠️ Aucune musique de fond trouvée dans assets/music/bg_track.mp3, export avec voix normalisée.")
             normalized_fallback = os.path.join(self.temp_dir, "normalized_no_music.mp4")
             ok = self._normalize_audio_track(stitched_path, normalized_fallback)
 
@@ -433,22 +419,16 @@ class Composer:
             else:
                 shutil.copy2(stitched_path, raw_final_output_path)
 
-        # 💧 Application du filigrane textuel sur le fichier final assemblé
-        print("💧 Adding watermark text (@MinuteMystere)...")
         watermark_success = self.add_watermark_text(raw_final_output_path, output_path, channel_name="@MinuteMystere")
         
         if not watermark_success:
-            print("⚠️ Watermark failed, copying raw final video instead.")
             shutil.copy2(raw_final_output_path, output_path)
 
-        # Nettoyage du fichier intermédiaire brut si besoin
         if os.path.exists(raw_final_output_path):
             try:
                 os.remove(raw_final_output_path)
             except Exception:
                 pass
-
-        print(f"✅ FINAL VIDEO SAVED (Watermarked): {output_path}")
 
         self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
         if stitched_path not in video_paths and stitched_path != output_path:
