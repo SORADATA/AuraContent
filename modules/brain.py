@@ -213,11 +213,11 @@ GENERE {n} hooks viraux en francais.
 RETURNS JSON:
 {{
   "hooks": [
-    {
+    {{
       "text": "hook",
       "pattern": "question",
       "raison": "..."
-    }
+    }}
   ]
 }}
 
