@@ -42,12 +42,12 @@ class AssetManager:
         # On force un style sombre, réaliste et cinématique pour éviter les hallucinations abstraites de Pollinations
         forced_style = ", dark cinematic moody lighting, mysterious historical documentary style, photorealistic, high detail"
         clean_prompt = prompt.replace(forced_style, "") + forced_style
-        
+
         # Ajout d'un seed aléatoire pour forcer l'IA à générer une nouvelle image
         seed = random.randint(1, 1000000)
-        
+
         url = self.pollinations_url + urllib.parse.quote(clean_prompt) + f"?seed={seed}&nologo=true"
-        
+
         r = requests.get(url, timeout=90)
         if r.status_code == 429:
             raise RuntimeError("429 Too Many Requests")
@@ -55,7 +55,7 @@ class AssetManager:
 
         with open(output_path, "wb") as f:
             f.write(r.content)
-            
+
         return self._file_ok(output_path)
 
     def generate_image(self, prompt, output_path, visual_identity=None):
@@ -80,48 +80,120 @@ class AssetManager:
     # 🏛️ PARTIE ARCHIVES (WIKIMEDIA COMMONS)
     # ==========================================
 
+    def _download_wikimedia_pages(self, pages, output_path, headers):
+        """Parcourt les pages retournées par l'API Commons et télécharge la première
+        image jpeg/png valide trouvée."""
+        for page_id, page_info in pages.items():
+            image_info_list = page_info.get("imageinfo", [])
+            if not image_info_list:
+                continue
+            info = image_info_list[0]
+            mime_type = info.get("mime", "")
+            img_url = info.get("url", "")
+            if img_url and ("jpeg" in mime_type or "png" in mime_type):
+                print(f"⬇️ Téléchargement de l'archive Wikimedia ({page_info.get('title')})...")
+                try:
+                    img_data = requests.get(img_url, headers=headers, timeout=15).content
+                except Exception as e:
+                    print(f"❌ Exception téléchargement image Wikimedia : {e}")
+                    continue
+                with open(output_path, "wb") as f:
+                    f.write(img_data)
+                if self._file_ok(output_path):
+                    print("✅ Image historique sauvegardée avec succès !")
+                    return True
+        return False
+
     def fetch_wikimedia_image(self, query, output_path):
-        """Recherche et télécharge une photo exacte d'un lieu (ex: 'Saint-Cado')."""
-        print(f"🏛️ Recherche Wikimedia pour le lieu : '{query}'...")
-        url = "https://commons.wikimedia.org/w/api.php"
-        params = {
-            "action": "query",
-            "format": "json",
-            "generator": "search",
-            "gsrsearch": query,
-            "gsrnamespace": "6",  # Fichiers média
-            "gsrlimit": "3",
-            "prop": "imageinfo",
-            "iiprop": "url|mime"
-        }
+        """Recherche et télécharge une photo exacte d'un lieu (ex: 'Île de Saint-Cado').
+
+        Stratégie en cascade :
+        1) Catégorie Commons exacte "Category:<query>" (le plus fiable, car les vraies
+           photos d'un lieu sont presque toujours rangées dans une catégorie dédiée,
+           pas juste retrouvables par recherche plein texte).
+        2) Catégorie approchante trouvée via une recherche dans le namespace Catégorie.
+        3) Recherche plein texte classique sur les fichiers (ancien comportement),
+           gardée en dernier recours.
+        """
         headers = {"User-Agent": "MinuteMysterePipeline/1.0"}
-        
+        url = "https://commons.wikimedia.org/w/api.php"
+
+        # --- 1) Catégorie exacte "Category:<query>" ---
+        print(f"🏛️ Recherche de la catégorie Wikimedia exacte pour : '{query}'...")
         try:
+            params = {
+                "action": "query",
+                "format": "json",
+                "generator": "categorymembers",
+                "gcmtitle": f"Category:{query}",
+                "gcmtype": "file",
+                "gcmlimit": "10",
+                "prop": "imageinfo",
+                "iiprop": "url|mime",
+            }
             r = requests.get(url, params=params, headers=headers, timeout=10)
             if r.status_code == 200:
-                data = r.json()
-                pages = data.get("query", {}).get("pages", {})
-                for page_id, page_info in pages.items():
-                    image_info_list = page_info.get("imageinfo", [])
-                    if not image_info_list:
-                        continue
-                        
-                    info = image_info_list[0]
-                    mime_type = info.get("mime", "")
-                    img_url = info.get("url", "")
-                    
-                    if img_url and ("jpeg" in mime_type or "png" in mime_type):
-                        print("⬇️ Téléchargement de l'archive Wikimedia...")
-                        img_data = requests.get(img_url, headers=headers, timeout=15).content
-                        with open(output_path, "wb") as f:
-                            f.write(img_data)
-                        
-                        if self._file_ok(output_path):
-                            print("✅ Image historique sauvegardée avec succès !")
+                pages = r.json().get("query", {}).get("pages", {})
+                if pages and self._download_wikimedia_pages(pages, output_path, headers):
+                    return True
+        except Exception as e:
+            print(f"❌ Exception Wikimedia (catégorie exacte) : {e}")
+
+        # --- 2) Catégorie approchante trouvée via recherche dans le namespace Catégorie (14) ---
+        print(f"🔎 Aucune catégorie exacte, recherche d'une catégorie approchante pour : '{query}'...")
+        try:
+            params = {
+                "action": "query",
+                "format": "json",
+                "list": "search",
+                "srsearch": query,
+                "srnamespace": "14",  # namespace "Category"
+                "srlimit": "3",
+            }
+            r = requests.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code == 200:
+                results = r.json().get("query", {}).get("search", [])
+                for result in results:
+                    cat_title = result.get("title")  # ex: "Category:Île de Saint-Cado"
+                    params2 = {
+                        "action": "query",
+                        "format": "json",
+                        "generator": "categorymembers",
+                        "gcmtitle": cat_title,
+                        "gcmtype": "file",
+                        "gcmlimit": "10",
+                        "prop": "imageinfo",
+                        "iiprop": "url|mime",
+                    }
+                    r2 = requests.get(url, params=params2, headers=headers, timeout=10)
+                    if r2.status_code == 200:
+                        pages = r2.json().get("query", {}).get("pages", {})
+                        if pages and self._download_wikimedia_pages(pages, output_path, headers):
                             return True
         except Exception as e:
-            print(f"❌ Exception Wikimedia : {e}")
-            
+            print(f"❌ Exception Wikimedia (catégorie approchante) : {e}")
+
+        # --- 3) Fallback : ancienne recherche plein texte sur les fichiers ---
+        print(f"🏛️ Fallback recherche plein texte pour : '{query}'...")
+        try:
+            params = {
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": query,
+                "gsrnamespace": "6",  # Fichiers média
+                "gsrlimit": "5",
+                "prop": "imageinfo",
+                "iiprop": "url|mime",
+            }
+            r = requests.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code == 200:
+                pages = r.json().get("query", {}).get("pages", {})
+                if pages and self._download_wikimedia_pages(pages, output_path, headers):
+                    return True
+        except Exception as e:
+            print(f"❌ Exception Wikimedia (recherche plein texte) : {e}")
+
         print("⚠️ Aucun lieu exact trouvé sur Wikimedia.")
         return False
 
@@ -199,8 +271,8 @@ class AssetManager:
         if not video_url:
             if not is_fallback:
                 fallback_keywords = [
-                    "dark ocean waves", "foggy rocky coast", 
-                    "creepy dark forest", "old stone ruins", 
+                    "dark ocean waves", "foggy rocky coast",
+                    "creepy dark forest", "old stone ruins",
                     "dark rainy night", "ancient stone bridge"
                 ]
                 fallback_query = random.choice(fallback_keywords)
@@ -230,3 +302,4 @@ class AssetManager:
                 print(f"❌ Erreur de téléchargement : {e}")
 
         return False
+
