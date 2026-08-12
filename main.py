@@ -98,14 +98,14 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # --- 3. MODE HYBRIDE : VIDÉOS D'ILLUSTRATION ET IMAGES IA PAR SCÈNE ---
+    # --- 3. MODE HYBRIDE : ARCHIVES + VIDÉOS DE STOCK + IMAGES IA ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
     
     bg_video_path = None
     video_pairs = []
 
-    print("🔄 Génération du mix hybride dynamique (Vidéos de stock prioritaires + Images IA)...")
+    print("🔄 Génération du mix hybride dynamique (Archives + Vidéos + Images IA)...")
     visual_id = script_payload.get("visual_identity", "Cinematic documentary")
 
     for index, scene in enumerate(script):
@@ -114,11 +114,20 @@ async def main():
         
         asset_path = None
 
-        # On force l'image IA pour le CTA final OU pour une scène sur deux (index impair)
-        force_ai_image = (role == "cta") or (index % 2 != 0)
+        # On vérifie si l'IA a défini un lieu historique exact pour cette scène
+        location_name = scene.get("location_name")
 
-        # Si on ne force pas l'IA, on cherche une vidéo de stock
-        if not force_ai_image:
+        # 1. TENTATIVE WIKIMEDIA COMMONS (Priorité absolue)
+        if location_name:
+            wiki_path = os.path.join(temp_dir, f"scene_{scene_id}_wiki.jpg")
+            print(f"   🏛️ Scène {scene_id} : Recherche du lieu exact '{location_name}' sur Wikimedia...")
+            if asset_manager.fetch_wikimedia_image(location_name, wiki_path):
+                asset_path = wiki_path
+
+        # 2. TENTATIVE VIDÉO DE STOCK (Si pas d'archive et pas d'image IA forcée)
+        force_ai_image = (role == "cta") or (index % 2 != 0)
+        
+        if not asset_path and not force_ai_image:
             scene_query = scene.get("stock_search", dynamic_query) + " vertical 9:16"
             video_path = os.path.join(temp_dir, f"scene_video_{scene_id}.mp4")
             print(f"   🎬 Scène {scene_id} ({role}) : Recherche vidéo stock pour '{scene_query}'...")
@@ -129,7 +138,7 @@ async def main():
             except Exception as e:
                 print(f"   ⚠️ Erreur stock vidéo scène {scene_id} : {e}")
 
-        # Si on a forcé l'IA, OU si la recherche de vidéo a échoué (fallback)
+        # 3. FALLBACK OU FORÇAGE IMAGE IA (Pollinations)
         if not asset_path:
             label = "Génération" if force_ai_image else "Fallback"
             print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
