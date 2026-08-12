@@ -62,7 +62,7 @@ class Composer:
             return str(image_pair), str(image_pair)
         return None, None
 
-    def add_watermark_text(self, input_video_path, output_video_path, channel_name="MinuteMystere"):
+    def add_watermark_text(self, input_video_path, output_video_path, channel_name="@MinuteMystere"):
         """Incruste un filigrane texte élégant et épuré en haut à droite (style pro)."""
         try:
             stream = ffmpeg.input(input_video_path)
@@ -168,6 +168,34 @@ class Composer:
                     )
 
                     video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+
+            # ========================================================
+            # 📌 AJOUT DU CRÉDIT DE LA SOURCE
+            # ========================================================
+            source_text = ""
+            if not bg_video_path and path_a:
+                file_name = str(path_a).lower()
+                if "wiki" in file_name:
+                    source_text = "Source : Wikimedia Commons"
+                elif "video" in file_name or "pexels" in file_name or "pixabay" in file_name:
+                    source_text = "Illustration : Pexels/Pixabay"
+                else:
+                    source_text = "Illustration générée par IA"
+
+            if source_text:
+                video_stream = video_stream.filter(
+                    "drawtext",
+                    text=source_text,
+                    fontcolor="white@0.6",  # 60% d'opacité
+                    fontsize=20,            # Texte discret
+                    box=0,
+                    shadowcolor="black",
+                    shadowx=1,
+                    shadowy=1,
+                    x="30",                 # Marge à gauche
+                    y="h-40"                # Placé en bas
+                )
+            # ========================================================
 
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
