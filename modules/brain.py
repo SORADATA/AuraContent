@@ -20,7 +20,7 @@ try:
 except ImportError:
     GROUNDING_AVAILABLE = False
 
-    def fetch_grounding_source(query):
+    def fetch_grounding_source(query, hint_country=None):
         return None
 
 load_dotenv()
@@ -34,10 +34,6 @@ ACCENT_INSTRUCTION = (
     "(é, è, ê, à, ù, ç, ô, î etc)."
 )
 
-# === Consigne anti meta-IA ===
-# Empeche le LLM de faire reference a lui-meme, a l'IA, a la technologie
-# de generation, etc. Le sujet/script doit rester 100% centre sur le
-# mystere/l'histoire racontee, jamais sur l'outil qui la produit.
 NO_META_AI_INSTRUCTION = (
     "INTERDICTION ABSOLUE : ne jamais mentionner l'intelligence artificielle, "
     "l'IA, un algorithme, une technologie de generation de contenu, ou tout "
@@ -46,7 +42,6 @@ NO_META_AI_INSTRUCTION = (
     "de l'outil ou de la methode utilisee pour le raconter."
 )
 
-# === Consigne de veracite historique et geographique ===
 VERACITY_INSTRUCTION = (
     "EXIGENCE DE VERACITE HISTORIQUE : "
     "1) N'utilise QUE des lieux, evenements et personnages REELS et documentes. "
@@ -58,12 +53,14 @@ VERACITY_INSTRUCTION = (
     "est fascinante. "
     "3) Le sujet doit rester peu connu du grand public mais reel et verifiable, "
     "jamais une invention presentee comme un fait. "
-    "4) Pour chaque lieu mentionne dans le champ 'location_name', precise aussi "
+    "4) EVITE les noms de lieux trop generiques/ambigus (ex: une simple 'Eglise "
+    "Saint-Pierre' sans precision) qui existent en plusieurs exemplaires dans "
+    "differents pays -- precise toujours le nom complet et specifique du lieu "
+    "(ex: 'Eglise Saint-Pierre d'Oron' plutot que juste 'Eglise Saint-Pierre'). "
+    "5) Pour chaque lieu mentionne dans le champ 'location_name', precise aussi "
     "le pays reel dans un champ 'location_country' (ex: 'France', 'Allemagne', "
-    "'Egypte'). Si le sujet annonce une zone geographique specifique (ex: 'cote "
-    "atlantique francaise'), TOUS les lieux du script doivent appartenir a cette "
-    "zone reelle -- sinon, corrige le sujet ou choisis d'autres exemples reels "
-    "qui correspondent vraiment a cette zone."
+    "'Suisse'). Si le sujet annonce une zone geographique specifique, TOUS les "
+    "lieux du script doivent appartenir a cette zone reelle."
 )
 
 
@@ -80,7 +77,6 @@ def _has_missing_accents(text, min_hits=3):
     return hits >= min_hits and not has_any_accent
 
 
-# === Filet de securite anti-IA post-generation ===
 AI_MENTION_PATTERNS = [
     r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
     r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
@@ -141,10 +137,34 @@ FRENCH_GEO_KEYWORDS = [
     "cote atlantique francaise", "cote d'azur", "provence", "occitanie",
 ]
 
+# CORRECTIF : detection generique du pays annonce dans le sujet, pas
+# seulement la France -- utile pour construire un hint_country pour la
+# recherche Wikipedia/Wikidata (ex: sujet suisse -> hint "Suisse").
+COUNTRY_KEYWORDS = {
+    "france": ["france", "francaise", "francais", "bretagne", "normandie",
+               "vendee", "charente", "gironde", "aquitaine", "provence", "occitanie"],
+    "suisse": ["suisse", "helvetique", "vaud", "geneve", "valais", "zurich", "berne"],
+    "allemagne": ["allemagne", "allemand", "allemande", "baviere", "bavaria"],
+    "italie": ["italie", "italien", "italienne", "toscane", "sicile"],
+    "espagne": ["espagne", "espagnol", "espagnole", "catalogne", "andalousie"],
+    "belgique": ["belgique", "belge"],
+}
+
 
 def _topic_claims_french_location(topic):
     topic_lower = topic.lower()
     return any(kw in topic_lower for kw in FRENCH_GEO_KEYWORDS)
+
+
+def _guess_country_hint(topic):
+    """CORRECTIF : devine le pays probable evoque dans le sujet, pour
+    orienter a la fois la recherche Wikipedia (grounding) et fournir un
+    contexte de desambiguisation a Wikidata."""
+    topic_lower = topic.lower()
+    for country, keywords in COUNTRY_KEYWORDS.items():
+        if any(kw in topic_lower for kw in keywords):
+            return country.capitalize()
+    return None
 
 
 # =====================================================================
@@ -154,10 +174,12 @@ def _topic_claims_french_location(topic):
 class WikidataChecker:
     """
     Interroge l'API publique Wikidata pour verifier le pays reel d'un lieu.
-    Contrairement au fact-check LLM (qui peut valider ses propres
-    hallucinations), Wikidata est une source externe structuree : si le
-    lieu existe, on recupere son pays via la propriete P17 ("country").
-    Sert de garde-fou objectif en complement du fact-check LLM.
+    CORRECTIF : throttling renforce (delai systematique avant CHAQUE appel,
+    succes ou echec) pour eviter le rate limit 429 en cascade observe sur
+    des scripts a nombreux lieux. Ajoute aussi un retry avec backoff sur 429.
+    CORRECTIF : desambiguisation via hint_country pour les noms generiques
+    (ex: 'Eglise Saint-Pierre') -- si plusieurs resultats de recherche sont
+    disponibles, on privilegie celui dont le pays correspond au hint.
     """
 
     API_URL = "https://www.wikidata.org/w/api.php"
@@ -168,26 +190,47 @@ class WikidataChecker:
         )
     }
     CACHE = {}
+    MIN_DELAY_BETWEEN_CALLS = 0.6  # secondes, throttling systematique
 
     @classmethod
-    def _search_entity_id(cls, location_name):
+    def _throttled_get(cls, params, max_retries=2):
+        for attempt in range(max_retries + 1):
+            time.sleep(cls.MIN_DELAY_BETWEEN_CALLS)
+            try:
+                r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
+                if r.status_code == 429:
+                    wait = 3 * (attempt + 1)
+                    print(f"⏳ Wikidata 429, attente {wait}s avant retry...")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r
+            except requests.exceptions.RequestException as e:
+                if attempt == max_retries:
+                    print(f"⚠️ Wikidata erreur reseau (abandon apres {max_retries + 1} tentatives) : {e}")
+                    return None
+                time.sleep(2)
+        return None
+
+    @classmethod
+    def _search_entity_ids(cls, location_name, limit=3):
         params = {
             "action": "wbsearchentities",
             "search": location_name,
             "language": "fr",
             "format": "json",
-            "limit": 1,
+            "limit": limit,
             "type": "item",
         }
+        r = cls._throttled_get(params)
+        if r is None:
+            return []
         try:
-            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
-            r.raise_for_status()
             results = r.json().get("search", [])
-            if results:
-                return results[0].get("id")
+            return [item.get("id") for item in results if item.get("id")]
         except Exception as e:
-            print(f"⚠️ Wikidata (recherche entite) erreur pour '{location_name}' : {e}")
-        return None
+            print(f"⚠️ Wikidata (parsing recherche) erreur pour '{location_name}' : {e}")
+            return []
 
     @classmethod
     def _get_country_for_entity(cls, entity_id):
@@ -197,9 +240,10 @@ class WikidataChecker:
             "props": "claims",
             "format": "json",
         }
+        r = cls._throttled_get(params)
+        if r is None:
+            return None
         try:
-            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
-            r.raise_for_status()
             entities = r.json().get("entities", {})
             entity = entities.get(entity_id, {})
             claims = entity.get("claims", {})
@@ -217,8 +261,8 @@ class WikidataChecker:
                 return None
             return cls._resolve_entity_label(country_entity_id)
         except Exception as e:
-            print(f"⚠️ Wikidata (recuperation pays) erreur pour '{entity_id}' : {e}")
-        return None
+            print(f"⚠️ Wikidata (parsing pays) erreur pour '{entity_id}' : {e}")
+            return None
 
     @classmethod
     def _resolve_entity_label(cls, entity_id):
@@ -229,9 +273,10 @@ class WikidataChecker:
             "languages": "fr|en",
             "format": "json",
         }
+        r = cls._throttled_get(params)
+        if r is None:
+            return None
         try:
-            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
-            r.raise_for_status()
             entities = r.json().get("entities", {})
             entity = entities.get(entity_id, {})
             labels = entity.get("labels", {})
@@ -239,30 +284,44 @@ class WikidataChecker:
             if label:
                 return label.get("value")
         except Exception as e:
-            print(f"⚠️ Wikidata (resolution label pays) erreur : {e}")
+            print(f"⚠️ Wikidata (parsing label) erreur : {e}")
         return None
 
     @classmethod
-    def get_real_country(cls, location_name):
-        """Retourne le pays reel d'un lieu selon Wikidata, ou None si
-        introuvable / echec (fail-open : pas de blocage du pipeline)."""
+    def get_real_country(cls, location_name, hint_country=None):
+        """
+        Retourne le pays reel d'un lieu selon Wikidata, ou None si
+        introuvable / echec (fail-open). CORRECTIF : si plusieurs entites
+        correspondent au nom (cas des noms generiques comme 'Eglise
+        Saint-Pierre'), on parcourt les candidats et on privilegie celui
+        dont le pays correspond au hint_country fourni, au lieu de
+        prendre systematiquement le premier resultat (souvent le plus
+        "notoire", pas forcement le bon).
+        """
         if not location_name:
             return None
 
-        key = location_name.strip().lower()
-        if key in cls.CACHE:
-            return cls.CACHE[key]
+        cache_key = f"{location_name.strip().lower()}|{(hint_country or '').lower()}"
+        if cache_key in cls.CACHE:
+            return cls.CACHE[cache_key]
 
-        entity_id = cls._search_entity_id(location_name)
-        if not entity_id:
-            cls.CACHE[key] = None
+        entity_ids = cls._search_entity_ids(location_name, limit=3)
+        if not entity_ids:
+            cls.CACHE[cache_key] = None
             return None
 
-        country = cls._get_country_for_entity(entity_id)
-        cls.CACHE[key] = country
+        candidates_countries = []
+        for entity_id in entity_ids:
+            country = cls._get_country_for_entity(entity_id)
+            candidates_countries.append(country)
 
-        time.sleep(0.3)
-        return country
+            if hint_country and country and _countries_match(hint_country, country):
+                cls.CACHE[cache_key] = country
+                return country
+
+        result = next((c for c in candidates_countries if c), None)
+        cls.CACHE[cache_key] = result
+        return result
 
 
 def _normalize_country_text(text):
@@ -496,13 +555,9 @@ RETURNS JSON:
     # =================================================================
 
     def propose_real_case(self, topic):
-        """
-        Demande au LLM de proposer UN cas reel precis (nom exact d'un lieu,
-        evenement ou personnage) correspondant au sujet. On recupere ensuite
-        la VRAIE source Wikipedia pour ancrer la suite de la generation sur
-        des faits verifiables, au lieu de laisser le LLM inventer librement
-        les details du script final.
-        """
+        """Demande au LLM le nom exact du cas reel a developper, puis
+        recupere la source Wikipedia correspondante (avec hint_country
+        pour ameliorer la recherche sur des noms courts/ambigus)."""
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
 
@@ -523,7 +578,8 @@ RETURNS JSON:
         if not case_name:
             return {"case_name": None, "wiki_query": None, "source": None}
 
-        source = fetch_grounding_source(case_name)
+        hint_country = _guess_country_hint(topic)
+        source = fetch_grounding_source(case_name, hint_country=hint_country)
 
         return {
             "case_name": case_name,
@@ -541,7 +597,8 @@ RETURNS JSON:
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
-        # === Ancrage sur une source Wikipedia reelle (si disponible) ===
+        hint_country = _guess_country_hint(topic)
+
         grounding = self.propose_real_case(topic)
         source = grounding.get("source")
 
@@ -577,7 +634,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
 5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
-6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
+6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis et complet dans 'location_name' (ex: "Château de Chambord", "Église Saint-Pierre d'Oron" et non juste "Église Saint-Pierre") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
 9. {VERACITY_INSTRUCTION}
@@ -624,11 +681,10 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 
             self._validate_script(data, scene_count, topic)
 
-            # Passe 1 : coherence geo declarative (rapide, sans API)
             geo_issue = self._check_geography_consistency(topic, data["scenes"])
-            # Passe 2 : verification Wikidata (source externe objective)
-            wikidata_issues = self._check_wikidata_locations(data["scenes"])
-            # Passe 3 : fact-check LLM (ancre sur la source si disponible)
+            # CORRECTIF : passage du hint_country a la verification Wikidata
+            # pour desambiguiser les noms de lieux generiques.
+            wikidata_issues = self._check_wikidata_locations(data["scenes"], hint_country=hint_country)
             fact_check_result = self._fact_check_script(topic, data, grounding_source=source)
 
             issues = []
@@ -675,8 +731,6 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
     # =================================================================
 
     def _check_geography_consistency(self, topic, scenes):
-        """Heuristique rapide (sans API) : compare la zone geo annoncee dans
-        le sujet avec le location_country DECLARE PAR LE LLM lui-meme."""
         if not _topic_claims_french_location(topic):
             return None
 
@@ -691,14 +745,18 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
                 )
         return None
 
-    def _check_wikidata_locations(self, scenes):
+    def _check_wikidata_locations(self, scenes, hint_country=None):
         """
-        Pour chaque lieu nomme dans le script, interroge Wikidata (source
-        externe objective) pour connaitre son pays REEL, et le compare au
-        location_country declare par le LLM. Fail-open si Wikidata est
-        indisponible ou ne trouve pas le lieu.
+        CORRECTIF PRINCIPAL :
+        - hint_country transmis a WikidataChecker pour desambiguiser les
+          noms de lieux generiques (evite le faux positif type
+          'Eglise Saint-Pierre').
+        - Uniquement UN seul avertissement agrege affiche si plusieurs
+          lieux sont introuvables, au lieu de spammer les logs ligne par
+          ligne pour chaque scene.
         """
         issues = []
+        not_found_locations = []
 
         for scene in scenes:
             location_name = str(scene.get("location_name", "")).strip()
@@ -707,35 +765,39 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
             if not location_name or not declared_country:
                 continue
 
-            real_country = WikidataChecker.get_real_country(location_name)
+            real_country = WikidataChecker.get_real_country(location_name, hint_country=hint_country)
 
             if real_country is None:
-                print(f"ℹ️ Wikidata : lieu '{location_name}' introuvable, "
-                      f"verification ignoree pour cette scene.")
+                not_found_locations.append(location_name)
                 continue
 
             if not _countries_match(declared_country, real_country):
                 issues.append(
                     f"Wikidata indique que '{location_name}' se trouve reellement "
                     f"en '{real_country}', mais le script declare '{declared_country}'. "
-                    f"Corrige la localisation ou choisis un autre exemple reel."
+                    f"Utilise un nom de lieu plus specifique/complet ou corrige la "
+                    f"localisation."
                 )
                 print(f"❌ Wikidata mismatch : '{location_name}' est en '{real_country}' "
                       f"(declare : '{declared_country}')")
             else:
                 print(f"✅ Wikidata confirme : '{location_name}' est bien en '{real_country}'")
 
+        if not_found_locations:
+            print(f"ℹ️ Wikidata : {len(not_found_locations)} lieu(x) introuvable(s), "
+                  f"verification ignoree ({', '.join(not_found_locations)}).")
+
         return issues
 
     def _fact_check_script(self, topic, script_data, grounding_source=None):
         """
-        MODE ANCRE (grounding_source fourni) : compare le script genere au
-        VRAI extrait Wikipedia recupere en amont -- comparaison
-        texte-contre-source-externe, plus fiable qu'un jugement du LLM
-        sur lui-meme.
-
-        MODE LIBRE (pas de source) : fallback sur l'ancien comportement
-        (le LLM juge son propre script "a l'aveugle"), moins fiable.
+        CORRECTIF : le prompt en mode libre est desormais beaucoup plus
+        restrictif -- il ne doit signaler QUE des erreurs factuelles
+        objectives et actionnables (lieu/evenement/personnage invente,
+        date fausse, contradiction interne), et explicitement PAS des
+        critiques de style/vaguesse/manque de details, qui gaspillaient
+        les tentatives de correction sans jamais resoudre le vrai
+        probleme.
         """
         scenes_summary = "\n".join(
             f"- Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')} / "
@@ -746,9 +808,9 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
         if grounding_source:
             prompt = f"""
 Tu es un fact-checker rigoureux. Compare le SCRIPT ci-dessous a la SOURCE DE
-REFERENCE (extrait Wikipedia reel) et detecte toute affirmation du script
-qui CONTREDIT ou AJOUTE un fait absent de la source (date, nom, lieu,
-evenement invente).
+REFERENCE (extrait Wikipedia reel) et detecte UNIQUEMENT les affirmations du
+script qui CONTREDISENT ou AJOUTENT un fait absent de la source (date, nom,
+lieu, evenement invente).
 
 SOURCE DE REFERENCE ({grounding_source['title']}) :
 \"\"\"{grounding_source['extract']}\"\"\"
@@ -762,13 +824,13 @@ Retourne UNIQUEMENT du JSON valide :
   "issues": ["fait du script absent ou contradictoire avec la source : ..."]
 }}
 
-Sois strict : si un detail du script n'est pas dans la source et semble
-invente, signale-le. Si le script reste fidele a la source (meme reformule/
-dramatise), considere-le comme coherent.
+Ne signale PAS de simples reformulations/dramatisations fideles a la source.
 """
         else:
             prompt = f"""
-Tu es un fact-checker rigoureux specialise en histoire et geographie.
+Tu es un fact-checker STRICT. Tu ne signales QUE des erreurs factuelles
+objectives et verifiables, jamais des critiques de style ou de manque de
+details.
 
 SUJET DE LA VIDEO :
 {topic}
@@ -776,31 +838,38 @@ SUJET DE LA VIDEO :
 RESUME DES SCENES :
 {scenes_summary}
 
-Analyse ce script et detecte toute incoherence factuelle ou narrative :
-- Un lieu, un evenement ou un personnage invente (n'existe pas reellement)
-- Une date ou un detail historique manifestement faux
-- Un enchainement de faits contradictoire entre les scenes
+Signale UNIQUEMENT :
+- Un nom de lieu, personnage ou organisation manifestement invente (n'existe
+  pas du tout, pas juste "peu documente")
+- Une date historique explicitement fausse et verifiable comme telle
+- Une contradiction factuelle directe entre deux scenes (ex: un evenement
+  date differemment a deux endroits)
 
-Ne signale PAS les problemes de pays/localisation geographique (verifies
-separement). Concentre-toi sur la coherence narrative et factuelle.
+NE SIGNALE JAMAIS :
+- Le manque de details ou de precision ("les informations sont trop
+  generales", "pas assez de details sur X")
+- Le style narratif, le rythme, ou la construction du recit
+- L'absence de preuves pour des legendes/rumeurs (une legende reste une
+  legende, ce n'est pas une erreur factuelle si elle est presentee comme
+  telle)
+- Les problemes de geographie/pays (verifies separement par une autre methode)
 
 Retourne UNIQUEMENT du JSON valide :
 {{
   "is_consistent": true/false,
-  "issues": ["description precise du probleme 1", "..."]
+  "issues": ["description precise et actionnable du probleme 1", "..."]
 }}
 
-Si tu n'es pas certain qu'un element soit invente, ne le signale PAS
-(evite les faux positifs).
+Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
 """
 
         messages = [
-            {"role": "system", "content": "Tu produis uniquement du JSON valide, factuel et rigoureux."},
+            {"role": "system", "content": "Tu produis uniquement du JSON valide, factuel, rigoureux et minimaliste (peu de faux positifs)."},
             {"role": "user", "content": prompt},
         ]
 
         try:
-            data = self._call_json_with_retry(messages, temperature=0.2, max_json_retries=1)
+            data = self._call_json_with_retry(messages, temperature=0.1, max_json_retries=1)
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
             return {
