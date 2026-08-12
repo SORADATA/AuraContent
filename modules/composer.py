@@ -39,6 +39,20 @@ class Composer:
             "MarginV=115"
         )
 
+        # === CORRECTIF : chemin de police pour le watermark banner ===
+        # Necessite l'installation de fonts-dejavu-core dans le workflow
+        # GitHub Actions (etape ajoutee apres "Installer FFmpeg").
+        self.watermark_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+        # === CORRECTIF : position verticale du credit de source ===
+        # "h-40" (ancien) placait le texte a seulement 40px du bord
+        # inferieur, en pleine zone UI TikTok/Shorts (legende, pseudo,
+        # boutons like/partager occupent les ~480-500 derniers pixels
+        # d'une video 1080x1920). Le texte y etait quasi toujours masque.
+        # "h-520" reste visuellement "bas" et discret, tout en restant
+        # au-dessus de cette zone dangereuse.
+        self.source_credit_y = "h-520"
+
     def get_duration(self, filepath):
         try:
             probe = ffmpeg.probe(filepath)
@@ -63,20 +77,33 @@ class Composer:
         return None, None
 
     def add_watermark_text(self, input_video_path, output_video_path, channel_name="@MinuteMystere"):
-        """Incruste un filigrane texte élégant et épuré en haut à droite (style pro)."""
+        """
+        Incruste le nom de la chaine en haut de la video, dans un style
+        'banner' (texte gras, large, centre horizontalement, avec un fond
+        semi-opaque derriere pour une lisibilite maximale), tout en
+        restant positionne en haut de l'ecran (y=60).
+
+        CORRECTIF : ancien style = petit texte discret aligne a droite
+        (box=0, fontsize=32, x="w-text_w-40"). Nouveau style = banner
+        centre avec fond visible, proche d'un rendu "MADE IN AFRICA".
+        """
         try:
             stream = ffmpeg.input(input_video_path)
+
             v_stream = stream.video.filter(
                 "drawtext",
                 text=channel_name,
+                fontfile=self.watermark_font_path,
                 fontcolor="white",
-                fontsize=32,
-                box=0,
+                fontsize=46,
+                box=1,
+                boxcolor="black@0.45",
+                boxborderw=18,
                 shadowcolor="black",
                 shadowx=2,
                 shadowy=2,
-                x="w-text_w-40",
-                y="50"
+                x="(w-text_w)/2",
+                y="60"
             )
             a_stream = stream.audio
 
@@ -100,7 +127,7 @@ class Composer:
         scene_id = scene["id"]
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
-        
+
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
 
         try:
@@ -186,14 +213,15 @@ class Composer:
                 video_stream = video_stream.filter(
                     "drawtext",
                     text=source_text,
-                    fontcolor="white@0.6",  # 60% d'opacité
-                    fontsize=20,            # Texte discret
+                    fontcolor="white@0.6",
+                    fontsize=20,
                     box=0,
                     shadowcolor="black",
                     shadowx=1,
                     shadowy=1,
-                    x="30",                 # Marge à gauche
-                    y="h-40"                # Placé en bas
+                    x="30",
+                    # CORRECTIF : voir self.source_credit_y (hors zone UI)
+                    y=self.source_credit_y
                 )
             # ========================================================
 
@@ -448,7 +476,7 @@ class Composer:
                 shutil.copy2(stitched_path, raw_final_output_path)
 
         watermark_success = self.add_watermark_text(raw_final_output_path, output_path, channel_name="@MinuteMystere")
-        
+
         if not watermark_success:
             shutil.copy2(raw_final_output_path, output_path)
 
