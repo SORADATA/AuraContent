@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import requests
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -13,9 +14,17 @@ except ImportError:
     def get_latest_videos_stats():
         return None
 
+try:
+    from modules.utils.wikipedia_grounding import fetch_grounding_source
+    GROUNDING_AVAILABLE = True
+except ImportError:
+    GROUNDING_AVAILABLE = False
+
+    def fetch_grounding_source(query):
+        return None
+
 load_dotenv()
 
-# On utilise uniquement Groq car Gemini pose des problèmes de quota
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
@@ -25,16 +34,36 @@ ACCENT_INSTRUCTION = (
     "(é, è, ê, à, ù, ç, ô, î etc)."
 )
 
-# === CORRECTIF : consigne anti meta-IA ===
-# Empêche le LLM de faire référence à lui-même, à l'IA, à la technologie
-# de génération, etc. Le sujet/script doit rester 100% centré sur le
-# mystère/l'histoire racontée, jamais sur l'outil qui la produit.
+# === Consigne anti meta-IA ===
+# Empeche le LLM de faire reference a lui-meme, a l'IA, a la technologie
+# de generation, etc. Le sujet/script doit rester 100% centre sur le
+# mystere/l'histoire racontee, jamais sur l'outil qui la produit.
 NO_META_AI_INSTRUCTION = (
     "INTERDICTION ABSOLUE : ne jamais mentionner l'intelligence artificielle, "
     "l'IA, un algorithme, une technologie de generation de contenu, ou tout "
     "aspect meta concernant la creation de la video elle-meme. Le sujet et le "
     "texte doivent parler uniquement du mystere/de l'histoire reelle, jamais "
     "de l'outil ou de la methode utilisee pour le raconter."
+)
+
+# === Consigne de veracite historique et geographique ===
+VERACITY_INSTRUCTION = (
+    "EXIGENCE DE VERACITE HISTORIQUE : "
+    "1) N'utilise QUE des lieux, evenements et personnages REELS et documentes. "
+    "Interdiction absolue d'inventer un nom de lieu, un evenement ou un personnage. "
+    "2) Ne deplace JAMAIS geographiquement un fait reel. Si un evenement/lieu "
+    "s'est produit dans un pays ou une region precise, cette localisation doit "
+    "etre respectee EXACTEMENT dans le texte, le titre et le sujet. Ne jamais "
+    "presenter un fait etranger comme francais (ou inversement) meme si l'histoire "
+    "est fascinante. "
+    "3) Le sujet doit rester peu connu du grand public mais reel et verifiable, "
+    "jamais une invention presentee comme un fait. "
+    "4) Pour chaque lieu mentionne dans le champ 'location_name', precise aussi "
+    "le pays reel dans un champ 'location_country' (ex: 'France', 'Allemagne', "
+    "'Egypte'). Si le sujet annonce une zone geographique specifique (ex: 'cote "
+    "atlantique francaise'), TOUS les lieux du script doivent appartenir a cette "
+    "zone reelle -- sinon, corrige le sujet ou choisis d'autres exemples reels "
+    "qui correspondent vraiment a cette zone."
 )
 
 
@@ -51,9 +80,7 @@ def _has_missing_accents(text, min_hits=3):
     return hits >= min_hits and not has_any_accent
 
 
-# === CORRECTIF : filet de sécurité anti-IA après génération ===
-# Certains mots peuvent quand même passer malgré la consigne (le LLM
-# n'est jamais garanti à 100%). On les détecte et on nettoie/relance.
+# === Filet de securite anti-IA post-generation ===
 AI_MENTION_PATTERNS = [
     r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
     r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
@@ -106,6 +133,148 @@ def _clean_json_response(content):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
     return cleaned.strip()
+
+
+FRENCH_GEO_KEYWORDS = [
+    "france", "francaise", "francais", "bretagne", "normandie", "vendee",
+    "charente", "gironde", "aquitaine", "atlantique francaise",
+    "cote atlantique francaise", "cote d'azur", "provence", "occitanie",
+]
+
+
+def _topic_claims_french_location(topic):
+    topic_lower = topic.lower()
+    return any(kw in topic_lower for kw in FRENCH_GEO_KEYWORDS)
+
+
+# =====================================================================
+# --- VERIFICATION WIKIDATA (PAYS REEL D'UN LIEU) ---
+# =====================================================================
+
+class WikidataChecker:
+    """
+    Interroge l'API publique Wikidata pour verifier le pays reel d'un lieu.
+    Contrairement au fact-check LLM (qui peut valider ses propres
+    hallucinations), Wikidata est une source externe structuree : si le
+    lieu existe, on recupere son pays via la propriete P17 ("country").
+    Sert de garde-fou objectif en complement du fact-check LLM.
+    """
+
+    API_URL = "https://www.wikidata.org/w/api.php"
+    HEADERS = {
+        "User-Agent": os.getenv(
+            "WIKIMEDIA_CONTACT",
+            "AuraContentPipeline/1.0 (contact non configure)"
+        )
+    }
+    CACHE = {}
+
+    @classmethod
+    def _search_entity_id(cls, location_name):
+        params = {
+            "action": "wbsearchentities",
+            "search": location_name,
+            "language": "fr",
+            "format": "json",
+            "limit": 1,
+            "type": "item",
+        }
+        try:
+            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
+            r.raise_for_status()
+            results = r.json().get("search", [])
+            if results:
+                return results[0].get("id")
+        except Exception as e:
+            print(f"⚠️ Wikidata (recherche entite) erreur pour '{location_name}' : {e}")
+        return None
+
+    @classmethod
+    def _get_country_for_entity(cls, entity_id):
+        params = {
+            "action": "wbgetentities",
+            "ids": entity_id,
+            "props": "claims",
+            "format": "json",
+        }
+        try:
+            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
+            r.raise_for_status()
+            entities = r.json().get("entities", {})
+            entity = entities.get(entity_id, {})
+            claims = entity.get("claims", {})
+            country_claims = claims.get("P17")
+            if not country_claims:
+                return None
+            country_entity_id = (
+                country_claims[0]
+                .get("mainsnak", {})
+                .get("datavalue", {})
+                .get("value", {})
+                .get("id")
+            )
+            if not country_entity_id:
+                return None
+            return cls._resolve_entity_label(country_entity_id)
+        except Exception as e:
+            print(f"⚠️ Wikidata (recuperation pays) erreur pour '{entity_id}' : {e}")
+        return None
+
+    @classmethod
+    def _resolve_entity_label(cls, entity_id):
+        params = {
+            "action": "wbgetentities",
+            "ids": entity_id,
+            "props": "labels",
+            "languages": "fr|en",
+            "format": "json",
+        }
+        try:
+            r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
+            r.raise_for_status()
+            entities = r.json().get("entities", {})
+            entity = entities.get(entity_id, {})
+            labels = entity.get("labels", {})
+            label = labels.get("fr") or labels.get("en")
+            if label:
+                return label.get("value")
+        except Exception as e:
+            print(f"⚠️ Wikidata (resolution label pays) erreur : {e}")
+        return None
+
+    @classmethod
+    def get_real_country(cls, location_name):
+        """Retourne le pays reel d'un lieu selon Wikidata, ou None si
+        introuvable / echec (fail-open : pas de blocage du pipeline)."""
+        if not location_name:
+            return None
+
+        key = location_name.strip().lower()
+        if key in cls.CACHE:
+            return cls.CACHE[key]
+
+        entity_id = cls._search_entity_id(location_name)
+        if not entity_id:
+            cls.CACHE[key] = None
+            return None
+
+        country = cls._get_country_for_entity(entity_id)
+        cls.CACHE[key] = country
+
+        time.sleep(0.3)
+        return country
+
+
+def _normalize_country_text(text):
+    return re.sub(r"[^a-z]", "", str(text or "").lower())
+
+
+def _countries_match(declared, real):
+    if not declared or not real:
+        return True
+    d = _normalize_country_text(declared)
+    r = _normalize_country_text(real)
+    return d == r or d in r or r in d
 
 
 class ContentBrain:
@@ -167,14 +336,12 @@ class ContentBrain:
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
 
-                # 🛑 Pause de sécurité pour réguler les TPM (Tokens Per Minute) et éviter le Rate Limit
                 time.sleep(4)
                 return content
 
             except Exception as e:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                # Pause prolongée en cas d'erreur de connexion / surcharge
                 time.sleep(8)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
@@ -197,24 +364,29 @@ class ContentBrain:
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
+    # =================================================================
+    # SUJET / ANGLE / REQUETE VISUELLE
+    # =================================================================
+
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
         messages = [
             {"role": "system", "content": (
                 "Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre "
                 "en francais, une seule ligne, sans guillemets, maximum 18 mots. "
-                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
             {"role": "user", "content": (
                 "Donne un sujet viral totalement inédit et surprenant pour TikTok en français, "
-                "portant sur un mystere, un lieu ou un fait historique reel."
+                "portant sur un mystere, un lieu ou un fait historique REEL et verifiable, "
+                "peu connu du grand public. Ne pas annoncer une zone geographique precise "
+                "(ex: un pays, une region) si tu n'es pas certain que l'exemple developpe "
+                "ensuite s'y trouve reellement."
                 + stats_instruction
             )},
         ]
 
         last_topic = ""
-        # CORRECTIF : on passe de 2 à 3 tentatives pour laisser une marge
-        # supplémentaire si le filtre anti-IA rejette une génération.
         for attempt in range(3):
             content = self._call_with_fallback(messages, temperature=0.9)
             topic = _clean_single_line_title(content)
@@ -233,15 +405,16 @@ class ContentBrain:
     def refine_topic_angle(self, raw_topic):
         messages = [
             {"role": "system", "content": (
-                "Tu reformules le sujet en un titre accrocheur, sans changer le theme. "
-                f"Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+                "Tu reformules le sujet en un titre accrocheur, sans changer le theme "
+                "ni la localisation geographique reelle du fait evoque. "
+                f"Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION} "
+                f"{NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
         content = self._call_with_fallback(messages, temperature=0.8)
         refined = _clean_single_line_title(content)
 
-        # CORRECTIF : si la reformulation introduit une mention IA, on garde le sujet brut.
         if _contains_ai_mention(refined):
             print(f"⚠️ Reformulation rejetée (mention IA détectée) : {refined} → on garde le sujet brut.")
             return _clean_single_line_title(raw_topic)
@@ -255,6 +428,10 @@ class ContentBrain:
         ]
         content = self._call_with_fallback(messages, temperature=0.7)
         return _clean_single_line_title(content).replace('"', '')
+
+    # =================================================================
+    # HOOKS
+    # =================================================================
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
@@ -295,7 +472,6 @@ RETURNS JSON:
         for h in hooks:
             if isinstance(h, str):
                 text = h.strip()
-                # CORRECTIF : on filtre les hooks qui mentionnent l'IA malgré la consigne
                 if text and not _contains_ai_mention(text):
                     normalized_hooks.append({"text": text, "pattern": "question", "raison": ""})
             elif isinstance(h, dict):
@@ -315,17 +491,85 @@ RETURNS JSON:
             normalized_hooks = [{"text": topic, "pattern": "default", "raison": ""}]
         return normalized_hooks
 
+    # =================================================================
+    # ANCRAGE NARRATIF (GROUNDING WIKIPEDIA)
+    # =================================================================
+
+    def propose_real_case(self, topic):
+        """
+        Demande au LLM de proposer UN cas reel precis (nom exact d'un lieu,
+        evenement ou personnage) correspondant au sujet. On recupere ensuite
+        la VRAIE source Wikipedia pour ancrer la suite de la generation sur
+        des faits verifiables, au lieu de laisser le LLM inventer librement
+        les details du script final.
+        """
+        if not GROUNDING_AVAILABLE:
+            return {"case_name": None, "wiki_query": None, "source": None}
+
+        messages = [
+            {"role": "system", "content": (
+                "Tu proposes un cas historique REEL et verifiable, peu connu du "
+                "grand public, correspondant exactement au sujet donne. "
+                "Reponds UNIQUEMENT avec le nom propre exact du lieu/evenement/ "
+                "personnage principal (celui qui a un article Wikipedia), sans "
+                "phrase, sans guillemets, une seule ligne."
+            )},
+            {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
+        ]
+
+        content = self._call_with_fallback(messages, temperature=0.5)
+        case_name = _clean_single_line_title(content)
+
+        if not case_name:
+            return {"case_name": None, "wiki_query": None, "source": None}
+
+        source = fetch_grounding_source(case_name)
+
+        return {
+            "case_name": case_name,
+            "wiki_query": case_name,
+            "source": source,
+        }
+
+    # =================================================================
+    # SCRIPT
+    # =================================================================
+
     def generate_script(self, topic, chosen_hook=None):
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
-    def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None):
+    def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
-        prompt = f"""
+        # === Ancrage sur une source Wikipedia reelle (si disponible) ===
+        grounding = self.propose_real_case(topic)
+        source = grounding.get("source")
+
+        if source:
+            grounding_block = f"""
+
+SOURCE VERIFIEE OBLIGATOIRE (Wikipedia, {source['lang']}) :
+Titre reel : {source['title']}
+Extrait de reference : \"\"\"{source['extract']}\"\"\"
+
+REGLE ABSOLUE : tu dois baser TOUS les faits du script (dates, lieux, noms,
+deroule des evenements) UNIQUEMENT sur cet extrait. Interdiction d'ajouter
+un fait, un detail chiffre ou un nom qui n'apparait pas dans cet extrait.
+Tu peux reformuler et dramatiser le style, mais pas inventer de contenu
+factuel supplementaire.
+"""
+            print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
+        else:
+            grounding_block = ""
+            print("⚠️ Aucune source Wikipedia trouvee, generation en mode libre "
+                  "(fact-check LLM seul, moins fiable sur la veracite narrative).")
+
+        base_prompt = f"""
 SUJET:
 {topic}
 
 {hook_instruction}
+{grounding_block}
 
 REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
 1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
@@ -333,46 +577,239 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
 5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
-6. Si la scène se déroule dans un vrai lieu en France (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado"). Si c'est juste de l'ambiance ou abstrait, laisse vide ("").
+6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
+9. {VERACITY_INSTRUCTION}
 
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, voice_type, mood, role.
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role.
+"""
+
+        correction_feedback = ""
+
+        for fact_check_attempt in range(max_fact_check_retries + 1):
+            prompt = base_prompt + correction_feedback
+
+            messages = [
+                {"role": "system", "content": (
+                    f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. "
+                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
+                )},
+                {"role": "user", "content": prompt},
+            ]
+
+            data = self._call_json_with_retry(messages, temperature=0.7)
+
+            scenes = data.get("scenes", [])
+            if not isinstance(scenes, list):
+                raise ValueError("La reponse ne contient pas de tableau scenes.")
+
+            for idx, scene in enumerate(scenes, start=1):
+                if isinstance(scene, dict):
+                    scene.setdefault("id", idx)
+                    scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
+                    scene.setdefault("pause_after_ms", 300)
+                    scene.setdefault("stock_search", "cinematic vertical background")
+                    scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
+                    scene.setdefault("location_name", "")
+                    scene.setdefault("location_country", "")
+                    scene.setdefault("voice_type", "narrator")
+                    scene.setdefault("mood", "intriguing")
+                    scene.setdefault("role", "value")
+
+            self._validate_script(data, scene_count, topic)
+
+            # Passe 1 : coherence geo declarative (rapide, sans API)
+            geo_issue = self._check_geography_consistency(topic, data["scenes"])
+            # Passe 2 : verification Wikidata (source externe objective)
+            wikidata_issues = self._check_wikidata_locations(data["scenes"])
+            # Passe 3 : fact-check LLM (ancre sur la source si disponible)
+            fact_check_result = self._fact_check_script(topic, data, grounding_source=source)
+
+            issues = []
+            if geo_issue:
+                issues.append(geo_issue)
+            issues.extend(wikidata_issues)
+            issues.extend(fact_check_result.get("issues", []))
+
+            all_consistent = (
+                not geo_issue
+                and not wikidata_issues
+                and fact_check_result.get("is_consistent", True)
+            )
+
+            if all_consistent:
+                if fact_check_attempt > 0:
+                    print(f"✅ Script valide apres correction (tentative {fact_check_attempt + 1}).")
+                return data
+
+            if fact_check_attempt < max_fact_check_retries:
+                print(f"⚠️ Incoherences factuelles/geographiques detectees (tentative {fact_check_attempt + 1}) :")
+                for issue in issues:
+                    print(f"   - {issue}")
+
+                correction_feedback = f"""
+
+CORRECTION OBLIGATOIRE :
+Le script precedent contenait les incoherences suivantes, a corriger imperativement :
+{chr(10).join(f"- {i}" for i in issues)}
+Regenere un script totalement coherent avec des faits REELS et bien localises,
+en respectant strictement les memes regles{" et la source verifiee fournie" if source else ""}.
+"""
+            else:
+                print(f"❌ Incoherences factuelles persistantes apres {max_fact_check_retries + 1} tentatives, "
+                      f"video generee malgre tout (verification manuelle recommandee) :")
+                for issue in issues:
+                    print(f"   - {issue}")
+                return data
+
+        return data
+
+    # =================================================================
+    # VERIFICATIONS
+    # =================================================================
+
+    def _check_geography_consistency(self, topic, scenes):
+        """Heuristique rapide (sans API) : compare la zone geo annoncee dans
+        le sujet avec le location_country DECLARE PAR LE LLM lui-meme."""
+        if not _topic_claims_french_location(topic):
+            return None
+
+        for scene in scenes:
+            country = str(scene.get("location_country", "")).strip().lower()
+            location = str(scene.get("location_name", "")).strip()
+            if country and "france" not in country and "français" not in country:
+                return (
+                    f"Le sujet annonce une localisation francaise, mais la scene "
+                    f"mentionnant '{location}' indique le pays '{country}', ce qui "
+                    f"est incoherent avec le sujet annonce."
+                )
+        return None
+
+    def _check_wikidata_locations(self, scenes):
+        """
+        Pour chaque lieu nomme dans le script, interroge Wikidata (source
+        externe objective) pour connaitre son pays REEL, et le compare au
+        location_country declare par le LLM. Fail-open si Wikidata est
+        indisponible ou ne trouve pas le lieu.
+        """
+        issues = []
+
+        for scene in scenes:
+            location_name = str(scene.get("location_name", "")).strip()
+            declared_country = str(scene.get("location_country", "")).strip()
+
+            if not location_name or not declared_country:
+                continue
+
+            real_country = WikidataChecker.get_real_country(location_name)
+
+            if real_country is None:
+                print(f"ℹ️ Wikidata : lieu '{location_name}' introuvable, "
+                      f"verification ignoree pour cette scene.")
+                continue
+
+            if not _countries_match(declared_country, real_country):
+                issues.append(
+                    f"Wikidata indique que '{location_name}' se trouve reellement "
+                    f"en '{real_country}', mais le script declare '{declared_country}'. "
+                    f"Corrige la localisation ou choisis un autre exemple reel."
+                )
+                print(f"❌ Wikidata mismatch : '{location_name}' est en '{real_country}' "
+                      f"(declare : '{declared_country}')")
+            else:
+                print(f"✅ Wikidata confirme : '{location_name}' est bien en '{real_country}'")
+
+        return issues
+
+    def _fact_check_script(self, topic, script_data, grounding_source=None):
+        """
+        MODE ANCRE (grounding_source fourni) : compare le script genere au
+        VRAI extrait Wikipedia recupere en amont -- comparaison
+        texte-contre-source-externe, plus fiable qu'un jugement du LLM
+        sur lui-meme.
+
+        MODE LIBRE (pas de source) : fallback sur l'ancien comportement
+        (le LLM juge son propre script "a l'aveugle"), moins fiable.
+        """
+        scenes_summary = "\n".join(
+            f"- Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')} / "
+            f"{s.get('location_country', 'pays non precise')}] : {s.get('text', '')[:200]}"
+            for s in script_data.get("scenes", [])
+        )
+
+        if grounding_source:
+            prompt = f"""
+Tu es un fact-checker rigoureux. Compare le SCRIPT ci-dessous a la SOURCE DE
+REFERENCE (extrait Wikipedia reel) et detecte toute affirmation du script
+qui CONTREDIT ou AJOUTE un fait absent de la source (date, nom, lieu,
+evenement invente).
+
+SOURCE DE REFERENCE ({grounding_source['title']}) :
+\"\"\"{grounding_source['extract']}\"\"\"
+
+RESUME DU SCRIPT GENERE :
+{scenes_summary}
+
+Retourne UNIQUEMENT du JSON valide :
+{{
+  "is_consistent": true/false,
+  "issues": ["fait du script absent ou contradictoire avec la source : ..."]
+}}
+
+Sois strict : si un detail du script n'est pas dans la source et semble
+invente, signale-le. Si le script reste fidele a la source (meme reformule/
+dramatise), considere-le comme coherent.
+"""
+        else:
+            prompt = f"""
+Tu es un fact-checker rigoureux specialise en histoire et geographie.
+
+SUJET DE LA VIDEO :
+{topic}
+
+RESUME DES SCENES :
+{scenes_summary}
+
+Analyse ce script et detecte toute incoherence factuelle ou narrative :
+- Un lieu, un evenement ou un personnage invente (n'existe pas reellement)
+- Une date ou un detail historique manifestement faux
+- Un enchainement de faits contradictoire entre les scenes
+
+Ne signale PAS les problemes de pays/localisation geographique (verifies
+separement). Concentre-toi sur la coherence narrative et factuelle.
+
+Retourne UNIQUEMENT du JSON valide :
+{{
+  "is_consistent": true/false,
+  "issues": ["description precise du probleme 1", "..."]
+}}
+
+Si tu n'es pas certain qu'un element soit invente, ne le signale PAS
+(evite les faux positifs).
 """
 
         messages = [
-            {"role": "system", "content": (
-                f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. "
-                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
-            )},
+            {"role": "system", "content": "Tu produis uniquement du JSON valide, factuel et rigoureux."},
             {"role": "user", "content": prompt},
         ]
 
-        data = self._call_json_with_retry(messages, temperature=0.7)
-
-        scenes = data.get("scenes", [])
-        if not isinstance(scenes, list):
-            raise ValueError("La reponse ne contient pas de tableau scenes.")
-
-        for idx, scene in enumerate(scenes, start=1):
-            if isinstance(scene, dict):
-                scene.setdefault("id", idx)
-                scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
-                scene.setdefault("pause_after_ms", 300)
-                scene.setdefault("stock_search", "cinematic vertical background")
-                scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
-                scene.setdefault("location_name", "")
-                scene.setdefault("voice_type", "narrator")  # Valeur par défaut
-                scene.setdefault("mood", "intriguing")
-                scene.setdefault("role", "value")
-
-        self._validate_script(data, scene_count, topic)
-        return data
+        try:
+            data = self._call_json_with_retry(messages, temperature=0.2, max_json_retries=1)
+            if not isinstance(data, dict):
+                return {"is_consistent": True, "issues": []}
+            return {
+                "is_consistent": bool(data.get("is_consistent", True)),
+                "issues": data.get("issues", []) if isinstance(data.get("issues"), list) else [],
+            }
+        except Exception as e:
+            print(f"⚠️ Fact-check LLM impossible (erreur technique), on continue sans blocage : {e}")
+            return {"is_consistent": True, "issues": []}
 
     def _validate_script(self, data, scene_count, topic):
         scenes = data.get("scenes")
@@ -390,8 +827,6 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
             if not scene.get("text"):
                 raise ValueError(f"Scene {scene.get('id')} : text manquant.")
 
-            # CORRECTIF : on nettoie/rejette toute scène qui a quand même glissé
-            # une mention d'IA malgré les consignes du prompt.
             if _contains_ai_mention(scene.get("text", "")):
                 raise ValueError(
                     f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
@@ -413,6 +848,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 scene["image_prompt"] = "Vertical 9:16 cinematic scene"
             if "location_name" not in scene:
                 scene["location_name"] = ""
+            if "location_country" not in scene:
+                scene["location_country"] = ""
             if scene.get("voice_type") not in {"narrator", "witness"}:
                 scene["voice_type"] = "narrator"
 
