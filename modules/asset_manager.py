@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import urllib.parse
+import random
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -38,13 +39,11 @@ class AssetManager:
 
     def _pollinations(self, prompt, output_path):
         """Génère une image via Pollinations.ai avec un style sombre forcé et un seed aléatoire."""
-        import random
-        
         # On force un style sombre, réaliste et cinématique pour éviter les hallucinations abstraites de Pollinations
         forced_style = ", dark cinematic moody lighting, mysterious historical documentary style, photorealistic, high detail"
         clean_prompt = prompt.replace(forced_style, "") + forced_style
         
-        # Ajout d'un seed aléatoire pour forcer l'IA à générer une nouvelle image à chaque fois et éviter l'image par défaut en cache
+        # Ajout d'un seed aléatoire pour forcer l'IA à générer une nouvelle image
         seed = random.randint(1, 1000000)
         
         url = self.pollinations_url + urllib.parse.quote(clean_prompt) + f"?seed={seed}&nologo=true"
@@ -56,10 +55,6 @@ class AssetManager:
 
         with open(output_path, "wb") as f:
             f.write(r.content)
-            
-        # Sécurité supplémentaire : si le fichier récupéré est l'image par défaut connue de Pollinations, on déclenche une erreur
-        if os.path.getsize(output_path) < 15000: # Les images par défaut de fallback font souvent une taille spécifique
-            pass # Tu pourrais ajouter un contrôle ici si besoin
             
         return self._file_ok(output_path)
 
@@ -82,6 +77,55 @@ class AssetManager:
         return self._save_text_fallback(full_prompt, output_path)
 
     # ==========================================
+    # 🏛️ PARTIE ARCHIVES (WIKIMEDIA COMMONS)
+    # ==========================================
+
+    def fetch_wikimedia_image(self, query, output_path):
+        """Recherche et télécharge une photo exacte d'un lieu (ex: 'Saint-Cado')."""
+        print(f"🏛️ Recherche Wikimedia pour le lieu : '{query}'...")
+        url = "https://commons.wikimedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "format": "json",
+            "generator": "search",
+            "gsrsearch": query,
+            "gsrnamespace": "6",  # Fichiers média
+            "gsrlimit": "3",
+            "prop": "imageinfo",
+            "iiprop": "url|mime"
+        }
+        headers = {"User-Agent": "MinuteMysterePipeline/1.0"}
+        
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_info in pages.items():
+                    image_info_list = page_info.get("imageinfo", [])
+                    if not image_info_list:
+                        continue
+                        
+                    info = image_info_list[0]
+                    mime_type = info.get("mime", "")
+                    img_url = info.get("url", "")
+                    
+                    if img_url and ("jpeg" in mime_type or "png" in mime_type):
+                        print("⬇️ Téléchargement de l'archive Wikimedia...")
+                        img_data = requests.get(img_url, headers=headers, timeout=15).content
+                        with open(output_path, "wb") as f:
+                            f.write(img_data)
+                        
+                        if self._file_ok(output_path):
+                            print("✅ Image historique sauvegardée avec succès !")
+                            return True
+        except Exception as e:
+            print(f"❌ Exception Wikimedia : {e}")
+            
+        print("⚠️ Aucun lieu exact trouvé sur Wikimedia.")
+        return False
+
+    # ==========================================
     # 🎥 PARTIE VIDÉOS (PIXABAY & PEXELS)
     # ==========================================
 
@@ -98,7 +142,6 @@ class AssetManager:
                 data = r.json()
                 if data.get("totalHits", 0) > 0:
                     for hit in data["hits"]:
-                        # On teste plusieurs formats, pas seulement "medium"
                         for size in ("large", "medium", "small", "tiny"):
                             stream = hit["videos"].get(size)
                             if stream and stream["height"] > stream["width"]:
@@ -127,7 +170,6 @@ class AssetManager:
                         ]
                         if not mp4_files:
                             continue
-                        # Priorité au HD, sinon on prend le premier mp4 valide
                         selected = next(
                             (f for f in mp4_files if f.get("quality") == "hd"),
                             mp4_files[0],
@@ -137,8 +179,8 @@ class AssetManager:
             print(f"❌ Exception Pexels : {e}")
         return None
 
-    def fetch_background_video(self, query, output_path):
-        """Fonction principale pour télécharger le fond vidéo en cascade."""
+    def fetch_background_video(self, query, output_path, is_fallback=False):
+        """Fonction principale pour télécharger le fond vidéo en cascade avec filet de sécurité."""
         print(f"📡 Recherche du fond vidéo pour : '{query}'...")
 
         # 1. Pixabay
@@ -146,14 +188,31 @@ class AssetManager:
         if video_url:
             print("✅ Vidéo trouvée sur Pixabay !")
 
-        # 2. Pexels (Fallback)
+        # 2. Pexels (Fallback API)
         if not video_url:
             print("🔄 Basculement vers Pexels...")
             video_url = self._get_pexels_video(query)
             if video_url:
                 print("✅ Vidéo trouvée sur Pexels !")
 
-        # 3. Téléchargement
+        # 3. Roue de secours (Fallback Ambiance "Minute Mystère")
+        if not video_url:
+            if not is_fallback:
+                fallback_keywords = [
+                    "dark ocean waves", "foggy rocky coast", 
+                    "creepy dark forest", "old stone ruins", 
+                    "dark rainy night", "ancient stone bridge"
+                ]
+                fallback_query = random.choice(fallback_keywords)
+                print(f"⚠️ Aucun résultat pour '{query}'.")
+                print(f"🔄 Déclenchement de la roue de secours avec : '{fallback_query}'...")
+                # On relance la fonction avec le mot-clé de secours
+                return self.fetch_background_video(fallback_query, output_path, is_fallback=True)
+            else:
+                print("❌ Impossible de récupérer un fond vidéo même avec la roue de secours.")
+                return False
+
+        # 4. Téléchargement
         if video_url:
             print("📥 Téléchargement en cours...")
             try:
@@ -170,5 +229,4 @@ class AssetManager:
             except Exception as e:
                 print(f"❌ Erreur de téléchargement : {e}")
 
-        print("❌ Impossible de récupérer un fond vidéo via les API.")
         return False
