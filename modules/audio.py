@@ -50,7 +50,7 @@ class AudioEngine:
                     lang_code="f",
                     repo_id="hexgrad/Kokoro-82M"
                 )
-                print("      Kokoro initialise")
+                print("      Kokoro initialise avec succès")
             except Exception as e:
                 print(f"      Kokoro indisponible: {e}")
                 self.use_kokoro = False
@@ -82,6 +82,29 @@ class AudioEngine:
             wf.setsampwidth(sampwidth)
             wf.setframerate(sample_rate)
             wf.writeframes(pcm_bytes)
+
+    def _try_kokoro(self, text, output_path_wav):
+        if not self.use_kokoro or self._kokoro_pipeline is None:
+            return False
+
+        try:
+            generator = self._kokoro_pipeline(
+                self.clean_text(text),
+                voice=self.KOKORO_FRENCH_VOICE
+            )
+            for _, _, audio in generator:
+                sf.write(output_path_wav, audio, 24000)
+                break
+
+            if self._file_ready(output_path_wav):
+                print("      Voix Kokoro utilisée (Fluide & Stable)")
+                return True
+
+            return False
+
+        except Exception as e:
+            print(f"      Kokoro erreur: {e}")
+            return False
 
     def _try_gemini(self, text, output_path_wav):
         if not self.use_gemini:
@@ -121,7 +144,6 @@ class AudioEngine:
                     break
 
             if not inline_data:
-                print("      Gemini TTS: aucune donnee audio")
                 return False
 
             audio_bytes = base64.b64decode(inline_data["data"])
@@ -134,36 +156,13 @@ class AudioEngine:
                 self._save_pcm_wav(audio_bytes, output_path_wav)
 
             if self._file_ready(output_path_wav):
-                print("      Voix Gemini TTS utilisee")
+                print("      Voix Gemini TTS utilisée")
                 return True
 
             return False
 
         except Exception as e:
-            print(f"      Gemini TTS indisponible: {e}")
-            return False
-
-    def _try_kokoro(self, text, output_path_wav):
-        if not self.use_kokoro or self._kokoro_pipeline is None:
-            return False
-
-        try:
-            generator = self._kokoro_pipeline(
-                self.clean_text(text),
-                voice=self.KOKORO_FRENCH_VOICE
-            )
-            for _, _, audio in generator:
-                sf.write(output_path_wav, audio, 24000)
-                break
-
-            if self._file_ready(output_path_wav):
-                print("      Voix Kokoro utilisee")
-                return True
-
-            return False
-
-        except Exception as e:
-            print(f"      Kokoro indisponible: {e}")
+            # On log en simplicitė pour ne pas polluer la console avec les erreurs 429
             return False
 
     async def _try_edge(self, text, output_path_mp3):
@@ -184,12 +183,15 @@ class AudioEngine:
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
-        if self._try_gemini(text, wav_path):
-            return wav_path, "gemini-tts"
-
+        # 1. PRIORITÉ KOKORO : Ultra stable, agréable et sans quota restrictif
         if self._try_kokoro(text, wav_path):
             return wav_path, "kokoro"
 
+        # 2. SECONDAIRE : Tentative Gemini si Kokoro échoue
+        if self._try_gemini(text, wav_path):
+            return wav_path, "gemini-tts"
+
+        # 3. DERNIER RECOURS : Edge-TTS
         try:
             await self._try_edge(text, mp3_path)
             if self._file_ready(mp3_path):
@@ -200,7 +202,7 @@ class AudioEngine:
         raise RuntimeError("Aucun moteur TTS disponible")
 
     async def process_script(self, script_data):
-        print("Generation audio (Gemini TTS, fallback Kokoro, puis Edge-TTS)...")
+        print("Génération audio fluide (Priorité Kokoro, puis secours Cloud)...")
 
         for scene in script_data:
             scene_id = scene["id"]
@@ -216,7 +218,7 @@ class AudioEngine:
             scene["duration"] = max(duration, self.min_scene_duration)
 
             print(
-                f"      Scene {scene_id}: audio genere via {engine_used} "
+                f"     Scene {scene_id}: audio genere via {engine_used} "
                 f"({scene['duration']:.2f}s)"
             )
 
