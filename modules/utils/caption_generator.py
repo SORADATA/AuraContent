@@ -1,8 +1,9 @@
 import os
 import requests
 
-GEMINI_CAPTION_MODEL = "gemini-2.0-flash"
-GROQ_CAPTION_MODEL = "openai/gpt-oss-120b"
+# 🛠️  NOMS DE MODÈLES
+GEMINI_CAPTION_MODEL = "gemini-1.5-flash"
+GROQ_CAPTION_MODEL = "llama-3.3-70b-versatile"
 
 
 def generate_caption_with_gemini(prompt_legende):
