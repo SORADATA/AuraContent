@@ -84,7 +84,7 @@ class ContentBrain:
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
             raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        return OpenAI(base_url="[https://api.groq.com/openai/v1](https://api.groq.com/openai/v1)", api_key=groq_key)
 
     def _extract_content(self, response):
         choices = getattr(response, "choices", None)
@@ -275,13 +275,14 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
 5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
+6. NOUVEAU : Si la scène se déroule dans un vrai lieu en France (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado"). Si c'est juste de l'ambiance ou abstrait, laisse vide ("").
 
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, role.
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, mood, role.
 """
 
         messages = [
@@ -302,6 +303,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
                 scene.setdefault("pause_after_ms", 300)
                 scene.setdefault("stock_search", "cinematic vertical background")
                 scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
+                scene.setdefault("location_name", "")  # Ajout de la clé par défaut
                 scene.setdefault("mood", "intriguing")
                 scene.setdefault("role", "value")
 
@@ -336,6 +338,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, mood, rol
                 scene["stock_search"] = "cinematic vertical background"
             if not scene.get("image_prompt"):
                 scene["image_prompt"] = "Vertical 9:16 cinematic scene"
+            if "location_name" not in scene:
+                scene["location_name"] = ""
 
         if not str(data.get("title", "")).strip():
             data["title"] = topic
