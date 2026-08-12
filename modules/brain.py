@@ -25,6 +25,18 @@ ACCENT_INSTRUCTION = (
     "(é, è, ê, à, ù, ç, ô, î etc)."
 )
 
+# === CORRECTIF : consigne anti meta-IA ===
+# Empêche le LLM de faire référence à lui-même, à l'IA, à la technologie
+# de génération, etc. Le sujet/script doit rester 100% centré sur le
+# mystère/l'histoire racontée, jamais sur l'outil qui la produit.
+NO_META_AI_INSTRUCTION = (
+    "INTERDICTION ABSOLUE : ne jamais mentionner l'intelligence artificielle, "
+    "l'IA, un algorithme, une technologie de generation de contenu, ou tout "
+    "aspect meta concernant la creation de la video elle-meme. Le sujet et le "
+    "texte doivent parler uniquement du mystere/de l'histoire reelle, jamais "
+    "de l'outil ou de la methode utilisee pour le raconter."
+)
+
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -37,6 +49,23 @@ def _has_missing_accents(text, min_hits=3):
     hits = sum(1 for p in suspicious_patterns if re.search(p, text_lower))
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
+
+
+# === CORRECTIF : filet de sécurité anti-IA après génération ===
+# Certains mots peuvent quand même passer malgré la consigne (le LLM
+# n'est jamais garanti à 100%). On les détecte et on nettoie/relance.
+AI_MENTION_PATTERNS = [
+    r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
+    r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
+    r"\bgroq\b", r"\bgemini\b", r"genere[e]?\s+par\s+l'?ia",
+]
+
+
+def _contains_ai_mention(text):
+    if not text:
+        return False
+    text_lower = text.lower()
+    return any(re.search(p, text_lower) for p in AI_MENTION_PATTERNS)
 
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
@@ -171,28 +200,53 @@ class ContentBrain:
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
         messages = [
-            {"role": "system", "content": f"Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre en francais, une seule ligne, sans guillemets, maximum 18 mots. {ACCENT_INSTRUCTION}"},
-            {"role": "user", "content": "Donne un sujet viral totalement inédit et surprenant pour TikTok en français." + stats_instruction},
+            {"role": "system", "content": (
+                "Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre "
+                "en francais, une seule ligne, sans guillemets, maximum 18 mots. "
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+            )},
+            {"role": "user", "content": (
+                "Donne un sujet viral totalement inédit et surprenant pour TikTok en français, "
+                "portant sur un mystere, un lieu ou un fait historique reel."
+                + stats_instruction
+            )},
         ]
 
         last_topic = ""
-        for attempt in range(2):
+        # CORRECTIF : on passe de 2 à 3 tentatives pour laisser une marge
+        # supplémentaire si le filtre anti-IA rejette une génération.
+        for attempt in range(3):
             content = self._call_with_fallback(messages, temperature=0.9)
             topic = _clean_single_line_title(content)
             last_topic = topic
+
+            if _contains_ai_mention(topic):
+                print(f"⚠️ Sujet rejeté (mention IA détectée, tentative {attempt + 1}) : {topic}")
+                continue
+
             if topic and 4 <= len(topic.split()) <= 18:
                 return topic
             print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
 
-        raise ValueError(f"Impossible d'obtenir un sujet valide apres 2 tentatives : {last_topic}")
+        raise ValueError(f"Impossible d'obtenir un sujet valide apres 3 tentatives : {last_topic}")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
-            {"role": "system", "content": f"Tu reformules le sujet en un titre accrocheur, sans changer le theme. Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION}"},
+            {"role": "system", "content": (
+                "Tu reformules le sujet en un titre accrocheur, sans changer le theme. "
+                f"Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+            )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
         content = self._call_with_fallback(messages, temperature=0.8)
-        return _clean_single_line_title(content)
+        refined = _clean_single_line_title(content)
+
+        # CORRECTIF : si la reformulation introduit une mention IA, on garde le sujet brut.
+        if _contains_ai_mention(refined):
+            print(f"⚠️ Reformulation rejetée (mention IA détectée) : {refined} → on garde le sujet brut.")
+            return _clean_single_line_title(raw_topic)
+
+        return refined
 
     def generate_video_search_query(self, topic):
         messages = [
@@ -224,7 +278,10 @@ RETURNS JSON:
 {stats_instruction}
 """
         messages = [
-            {"role": "system", "content": f"Tu produis uniquement du JSON valide avec exactement {n} hooks. {ACCENT_INSTRUCTION}"},
+            {"role": "system", "content": (
+                f"Tu produis uniquement du JSON valide avec exactement {n} hooks. "
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+            )},
             {"role": "user", "content": prompt},
         ]
 
@@ -238,11 +295,12 @@ RETURNS JSON:
         for h in hooks:
             if isinstance(h, str):
                 text = h.strip()
-                if text:
+                # CORRECTIF : on filtre les hooks qui mentionnent l'IA malgré la consigne
+                if text and not _contains_ai_mention(text):
                     normalized_hooks.append({"text": text, "pattern": "question", "raison": ""})
             elif isinstance(h, dict):
                 text = str(h.get("text", "")).strip()
-                if text:
+                if text and not _contains_ai_mention(text):
                     normalized_hooks.append({
                         "text": text,
                         "pattern": str(h.get("pattern", "question")).strip(),
@@ -277,6 +335,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
 6. Si la scène se déroule dans un vrai lieu en France (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado"). Si c'est juste de l'ambiance ou abstrait, laisse vide ("").
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
+8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
 
 GENERE EXACTEMENT {scene_count} scenes.
 
@@ -287,7 +346,10 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 """
 
         messages = [
-            {"role": "system", "content": f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. {ACCENT_INSTRUCTION}"},
+            {"role": "system", "content": (
+                f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. "
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+            )},
             {"role": "user", "content": prompt},
         ]
 
@@ -327,6 +389,15 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 raise ValueError("Une scène n'est pas un dictionnaire valide.")
             if not scene.get("text"):
                 raise ValueError(f"Scene {scene.get('id')} : text manquant.")
+
+            # CORRECTIF : on nettoie/rejette toute scène qui a quand même glissé
+            # une mention d'IA malgré les consignes du prompt.
+            if _contains_ai_mention(scene.get("text", "")):
+                raise ValueError(
+                    f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
+                    f"('{scene['text'][:80]}...'), regeneration necessaire."
+                )
+
             if not scene.get("voice_direction"):
                 scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
             pause_after_ms = scene.get("pause_after_ms")
