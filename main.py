@@ -11,6 +11,13 @@ from modules.utils.subtitles import generate_grouped_srt
 from modules.utils.caption_generator import generate_caption, save_caption
 from modules.utils.helpers import estimate_scene_count, validate_script_payload
 
+from modules.utils.hook_tracker import (
+    load_hook_history,
+    record_hook_usage,
+    compute_pattern_scores,
+    select_hook,
+)
+
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
@@ -62,9 +69,11 @@ async def main():
         print(f"❌ Brain Error (Sujet/Requête): {e}")
         return
 
-    # --- 2. GÉNÉRATION DU SCRIPT ET HOOKS ---
+    # --- 2. GÉNÉRATION DU SCRIPT ET HOOKS (SCORING PAR BANDIT) ---
     try:
         chosen_hook = None
+        chosen_hook_pattern = None
+
         if use_hooks_ab_test:
             try:
                 hooks = brain.generate_hook_variants(
@@ -72,8 +81,23 @@ async def main():
                     n=5,
                     previous_stats_list=stats_historique,
                 )
-                chosen_hook = hooks[0]["text"]
-                print(f"🧠 Hook retenu ({hooks[0]['pattern']}): {chosen_hook}")
+
+                # CORRECTIF : on recupere l'historique des patterns utilises,
+                # on le recroise avec les stats Zernio pour scorer chaque
+                # pattern, puis on selectionne via epsilon-greedy (80%
+                # exploitation du meilleur pattern connu, 20% exploration).
+                hook_history = load_hook_history()
+                pattern_scores = compute_pattern_scores(stats_historique, hook_history)
+
+                if pattern_scores:
+                    print(f"📈 Scores de patterns connus : {pattern_scores}")
+
+                selected = select_hook(hooks, pattern_scores=pattern_scores)
+                if selected:
+                    chosen_hook = selected["text"]
+                    chosen_hook_pattern = selected.get("pattern", "?")
+                    print(f"🧠 Hook retenu ({chosen_hook_pattern}): {chosen_hook}")
+
             except Exception as e:
                 print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
 
@@ -89,6 +113,7 @@ async def main():
         validate_script_payload(script_payload)
         script = script_payload["scenes"]
         video_title = script_payload.get("title", topic)
+        script_payload["hook_pattern_used"] = chosen_hook_pattern
 
     except Exception as e:
         print(f"❌ Brain Error (Script): {e}")
@@ -101,7 +126,7 @@ async def main():
     # --- 3. MODE HYBRIDE : ARCHIVES + VIDÉOS DE STOCK + IMAGES IA ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
-    
+
     bg_video_path = None
     video_pairs = []
 
@@ -111,43 +136,37 @@ async def main():
     for index, scene in enumerate(script):
         role = scene.get("role", "value")
         scene_id = scene['id']
-        
-        asset_path = None
 
-        # On vérifie si l'IA a défini un lieu historique exact pour cette scène
+        asset_path = None
         location_name = scene.get("location_name")
 
-        # 1. TENTATIVE WIKIMEDIA COMMONS (Priorité absolue)
         if location_name:
             wiki_path = os.path.join(temp_dir, f"scene_{scene_id}_wiki.jpg")
             print(f"   🏛️ Scène {scene_id} : Recherche du lieu exact '{location_name}' sur Wikimedia...")
             if asset_manager.fetch_wikimedia_image(location_name, wiki_path):
                 asset_path = wiki_path
 
-        # 2. TENTATIVE VIDÉO DE STOCK (Si pas d'archive et pas d'image IA forcée)
         force_ai_image = (role == "cta") or (index % 2 != 0)
-        
+
         if not asset_path and not force_ai_image:
             scene_query = scene.get("stock_search", dynamic_query) + " vertical 9:16"
             video_path = os.path.join(temp_dir, f"scene_video_{scene_id}.mp4")
             print(f"   🎬 Scène {scene_id} ({role}) : Recherche vidéo stock pour '{scene_query}'...")
-            
+
             try:
                 if asset_manager.fetch_background_video(scene_query, video_path):
                     asset_path = video_path
             except Exception as e:
                 print(f"   ⚠️ Erreur stock vidéo scène {scene_id} : {e}")
 
-        # 3. FALLBACK OU FORÇAGE IMAGE IA (Pollinations)
         if not asset_path:
             label = "Génération" if force_ai_image else "Fallback"
             print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
             img_path = os.path.join(temp_dir, f"scene_{scene_id}.jpg")
-            
-            # Sécurisation du prompt IA pour forcer un rendu réaliste/documentaire
+
             base_prompt = scene.get("image_prompt", dynamic_query)
             safe_thematic_prompt = f"{base_prompt}, photorealistic historical documentary style, dark cinematic lighting, mysterious, highly detailed, real photography, 8k, no 3d render, no abstract patterns"
-            
+
             asset_manager.generate_image(safe_thematic_prompt, img_path, visual_id)
             asset_path = img_path
 
@@ -209,6 +228,13 @@ async def main():
     if final_path:
         print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)
+
+        # CORRECTIF : on enregistre quel pattern de hook a ete utilise pour
+        # ce titre, afin de pouvoir le recroiser avec les stats Zernio
+        # (vues/likes) au prochain run et affiner le scoring du bandit.
+        if chosen_hook_pattern:
+            record_hook_usage(video_title, chosen_hook_pattern)
+
         clean_cache()
     else:
         print("❌ L'assemblage final a échoué, upload annulé.")
