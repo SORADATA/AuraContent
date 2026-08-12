@@ -213,11 +213,11 @@ GENERE {n} hooks viraux en francais.
 RETURNS JSON:
 {{
   "hooks": [
-    {{
+    {
       "text": "hook",
       "pattern": "question",
       "raison": "..."
-    }}
+    }
   ]
 }}
 
@@ -275,14 +275,15 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
 5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
-6. NOUVEAU : Si la scène se déroule dans un vrai lieu en France (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado"). Si c'est juste de l'ambiance ou abstrait, laisse vide ("").
+6. Si la scène se déroule dans un vrai lieu en France (monument, ville, château, île, etc.), donne le nom précis dans 'location_name' (ex: "Château de Chambord", "Île de Saint-Cado"). Si c'est juste de l'ambiance ou abstrait, laisse vide ("").
+7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, mood, role.
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, voice_type, mood, role.
 """
 
         messages = [
@@ -303,7 +304,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 scene.setdefault("pause_after_ms", 300)
                 scene.setdefault("stock_search", "cinematic vertical background")
                 scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
-                scene.setdefault("location_name", "")  # Ajout de la clé par défaut
+                scene.setdefault("location_name", "")
+                scene.setdefault("voice_type", "narrator")  # Valeur par défaut
                 scene.setdefault("mood", "intriguing")
                 scene.setdefault("role", "value")
 
@@ -340,6 +342,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 scene["image_prompt"] = "Vertical 9:16 cinematic scene"
             if "location_name" not in scene:
                 scene["location_name"] = ""
+            if scene.get("voice_type") not in {"narrator", "witness"}:
+                scene["voice_type"] = "narrator"
 
         if not str(data.get("title", "")).strip():
             data["title"] = topic
