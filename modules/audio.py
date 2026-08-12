@@ -27,12 +27,26 @@ class AudioEngine:
         "cinematic but not theatrical."
     )
 
-    EDGE_FALLBACK_VOICE = "fr-FR-HenriNeural"
-    EDGE_FALLBACK_RATE = "-8%"
-    EDGE_FALLBACK_PITCH = "-1Hz"
-    EDGE_FALLBACK_VOLUME = "+0%"
+    # === CORRECTIF : deux profils Edge distincts selon le voice_type ===
+    # NARRATOR : voix féminine calme, cohérente avec Kokoro (ff_siwis) en repli.
+    EDGE_NARRATOR_VOICE = "fr-FR-DeniseNeural"
+    EDGE_NARRATOR_RATE = "-8%"
+    EDGE_NARRATOR_PITCH = "-1Hz"
+    EDGE_NARRATOR_VOLUME = "+0%"
+
+    # WITNESS : voix masculine, un peu plus rythmée/punchy pour dynamiser
+    # les citations/phrases choc, en contraste volontaire avec le narrator.
+    EDGE_WITNESS_VOICE = "fr-FR-HenriNeural"
+    EDGE_WITNESS_RATE = "+4%"
+    EDGE_WITNESS_PITCH = "+2Hz"
+    EDGE_WITNESS_VOLUME = "+0%"
 
     KOKORO_FRENCH_VOICE = "ff_siwis"
+    # Vitesse Kokoro légèrement augmentée pour les scènes "witness" quand
+    # Kokoro est utilisé en dernier recours, afin de garder un minimum
+    # de contraste même sans changer de voix.
+    KOKORO_WITNESS_SPEED = 1.08
+    KOKORO_NARRATOR_SPEED = 1.0
 
     def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
@@ -60,9 +74,17 @@ class AudioEngine:
         text = text.replace("...", ". ")
         return " ".join(text.split()).strip()
 
-    def stylize_for_gemini(self, text):
+    def stylize_for_gemini(self, text, voice_type="narrator"):
         cleaned = self.clean_text(text)
-        return f"{self.GEMINI_STYLE_PROMPT} [short pause] {cleaned}"
+        # CORRECTIF : on adapte le prompt de style Gemini selon le voice_type
+        if voice_type == "witness":
+            style = (
+                "French voice, punchy, more energetic and expressive, slightly "
+                "faster pacing, like a striking quote or testimony."
+            )
+        else:
+            style = self.GEMINI_STYLE_PROMPT
+        return f"{style} [short pause] {cleaned}"
 
     def get_audio_duration(self, file_path):
         try:
@@ -83,21 +105,26 @@ class AudioEngine:
             wf.setframerate(sample_rate)
             wf.writeframes(pcm_bytes)
 
-    def _try_kokoro(self, text, output_path_wav):
+    def _try_kokoro(self, text, output_path_wav, voice_type="narrator"):
         if not self.use_kokoro or self._kokoro_pipeline is None:
             return False
+
+        # CORRECTIF : légère variation de vitesse selon le voice_type,
+        # seul levier disponible puisque Kokoro n'a qu'une voix FR.
+        speed = self.KOKORO_WITNESS_SPEED if voice_type == "witness" else self.KOKORO_NARRATOR_SPEED
 
         try:
             generator = self._kokoro_pipeline(
                 self.clean_text(text),
-                voice=self.KOKORO_FRENCH_VOICE
+                voice=self.KOKORO_FRENCH_VOICE,
+                speed=speed
             )
             for _, _, audio in generator:
                 sf.write(output_path_wav, audio, 24000)
                 break
 
             if self._file_ready(output_path_wav):
-                print("      Voix Kokoro utilisée (Fluide & Stable)")
+                print(f"      Voix Kokoro utilisée ({voice_type}, speed={speed})")
                 return True
 
             return False
@@ -106,7 +133,7 @@ class AudioEngine:
             print(f"      Kokoro erreur: {e}")
             return False
 
-    def _try_gemini(self, text, output_path_wav):
+    def _try_gemini(self, text, output_path_wav, voice_type="narrator"):
         if not self.use_gemini:
             return False
 
@@ -120,7 +147,7 @@ class AudioEngine:
                 {
                     "parts": [
                         {
-                            "text": self.stylize_for_gemini(text)
+                            "text": self.stylize_for_gemini(text, voice_type=voice_type)
                         }
                     ]
                 }
@@ -156,7 +183,7 @@ class AudioEngine:
                 self._save_pcm_wav(audio_bytes, output_path_wav)
 
             if self._file_ready(output_path_wav):
-                print("      Voix Gemini TTS utilisée")
+                print(f"      Voix Gemini TTS utilisée ({voice_type})")
                 return True
 
             return False
@@ -165,51 +192,86 @@ class AudioEngine:
             # On log en simplicitė pour ne pas polluer la console avec les erreurs 429
             return False
 
-    async def _try_edge(self, text, output_path_mp3):
+    async def _try_edge(self, text, output_path_mp3, voice_type="narrator"):
         if not EDGE_AVAILABLE:
             raise RuntimeError("edge_tts non installe")
 
+        # CORRECTIF : choix de la voix/réglages Edge selon le voice_type
+        if voice_type == "witness":
+            voice = self.EDGE_WITNESS_VOICE
+            rate = self.EDGE_WITNESS_RATE
+            pitch = self.EDGE_WITNESS_PITCH
+            volume = self.EDGE_WITNESS_VOLUME
+        else:
+            voice = self.EDGE_NARRATOR_VOICE
+            rate = self.EDGE_NARRATOR_RATE
+            pitch = self.EDGE_NARRATOR_PITCH
+            volume = self.EDGE_NARRATOR_VOLUME
+
         communicate = edge_tts.Communicate(
             text=self.clean_text(text),
-            voice=self.EDGE_FALLBACK_VOICE,
-            rate=self.EDGE_FALLBACK_RATE,
-            volume=self.EDGE_FALLBACK_VOLUME,
-            pitch=self.EDGE_FALLBACK_PITCH,
+            voice=voice,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
         )
         await communicate.save(output_path_mp3)
 
-    async def generate_audio(self, text, output_filename):
+    async def generate_audio(self, text, output_filename, voice_type="narrator"):
         base_name = output_filename.rsplit(".", 1)[0]
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
 
-        # 1. PRIORITÉ KOKORO : Ultra stable, agréable et sans quota restrictif
-        if self._try_kokoro(text, wav_path):
-            return wav_path, "kokoro"
+        # === CORRECTIF : ordre des moteurs adapté selon voice_type ===
+        # narrator -> Kokoro (voix dédiée) prioritaire, cohérent avec le style calme.
+        # witness  -> Edge-TTS (voix masculine punchy) prioritaire pour un vrai
+        #             contraste vocal, Kokoro n'ayant qu'une seule voix FR.
+        if voice_type == "witness":
+            try:
+                await self._try_edge(text, mp3_path, voice_type=voice_type)
+                if self._file_ready(mp3_path):
+                    return mp3_path, "edge-tts"
+            except Exception as e:
+                print(f"      Edge indisponible: {e}")
 
-        # 2. SECONDAIRE : Tentative Gemini si Kokoro échoue
-        if self._try_gemini(text, wav_path):
-            return wav_path, "gemini-tts"
+            if self._try_gemini(text, wav_path, voice_type=voice_type):
+                return wav_path, "gemini-tts"
 
-        # 3. DERNIER RECOURS : Edge-TTS
-        try:
-            await self._try_edge(text, mp3_path)
-            if self._file_ready(mp3_path):
-                return mp3_path, "edge-tts"
-        except Exception as e:
-            print(f"      Edge indisponible: {e}")
+            if self._try_kokoro(text, wav_path, voice_type=voice_type):
+                return wav_path, "kokoro"
+
+        else:
+            if self._try_kokoro(text, wav_path, voice_type=voice_type):
+                return wav_path, "kokoro"
+
+            if self._try_gemini(text, wav_path, voice_type=voice_type):
+                return wav_path, "gemini-tts"
+
+            try:
+                await self._try_edge(text, mp3_path, voice_type=voice_type)
+                if self._file_ready(mp3_path):
+                    return mp3_path, "edge-tts"
+            except Exception as e:
+                print(f"      Edge indisponible: {e}")
 
         raise RuntimeError("Aucun moteur TTS disponible")
 
     async def process_script(self, script_data):
-        print("Génération audio fluide (Priorité Kokoro, puis secours Cloud)...")
+        print("Génération audio fluide (Priorité Kokoro/Edge selon voice_type)...")
 
         for scene in script_data:
             scene_id = scene["id"]
             text = scene["text"]
+            # CORRECTIF : on lit le voice_type défini par ContentBrain
+            voice_type = scene.get("voice_type", "narrator")
+            if voice_type not in ("narrator", "witness"):
+                voice_type = "narrator"
+
             output_filename = f"scene_{scene_id}.wav"
 
-            audio_path, engine_used = await self.generate_audio(text, output_filename)
+            audio_path, engine_used = await self.generate_audio(
+                text, output_filename, voice_type=voice_type
+            )
 
             scene["audio_path"] = audio_path
             scene["tts_engine"] = engine_used
@@ -218,7 +280,7 @@ class AudioEngine:
             scene["duration"] = max(duration, self.min_scene_duration)
 
             print(
-                f"     Scene {scene_id}: audio genere via {engine_used} "
+                f"     Scene {scene_id} [{voice_type}]: audio genere via {engine_used} "
                 f"({scene['duration']:.2f}s)"
             )
 
