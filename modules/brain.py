@@ -137,9 +137,6 @@ FRENCH_GEO_KEYWORDS = [
     "cote atlantique francaise", "cote d'azur", "provence", "occitanie",
 ]
 
-# CORRECTIF : detection generique du pays annonce dans le sujet, pas
-# seulement la France -- utile pour construire un hint_country pour la
-# recherche Wikipedia/Wikidata (ex: sujet suisse -> hint "Suisse").
 COUNTRY_KEYWORDS = {
     "france": ["france", "francaise", "francais", "bretagne", "normandie",
                "vendee", "charente", "gironde", "aquitaine", "provence", "occitanie"],
@@ -157,9 +154,6 @@ def _topic_claims_french_location(topic):
 
 
 def _guess_country_hint(topic):
-    """CORRECTIF : devine le pays probable evoque dans le sujet, pour
-    orienter a la fois la recherche Wikipedia (grounding) et fournir un
-    contexte de desambiguisation a Wikidata."""
     topic_lower = topic.lower()
     for country, keywords in COUNTRY_KEYWORDS.items():
         if any(kw in topic_lower for kw in keywords):
@@ -172,16 +166,6 @@ def _guess_country_hint(topic):
 # =====================================================================
 
 class WikidataChecker:
-    """
-    Interroge l'API publique Wikidata pour verifier le pays reel d'un lieu.
-    CORRECTIF : throttling renforce (delai systematique avant CHAQUE appel,
-    succes ou echec) pour eviter le rate limit 429 en cascade observe sur
-    des scripts a nombreux lieux. Ajoute aussi un retry avec backoff sur 429.
-    CORRECTIF : desambiguisation via hint_country pour les noms generiques
-    (ex: 'Eglise Saint-Pierre') -- si plusieurs resultats de recherche sont
-    disponibles, on privilegie celui dont le pays correspond au hint.
-    """
-
     API_URL = "https://www.wikidata.org/w/api.php"
     HEADERS = {
         "User-Agent": os.getenv(
@@ -289,15 +273,6 @@ class WikidataChecker:
 
     @classmethod
     def get_real_country(cls, location_name, hint_country=None):
-        """
-        Retourne le pays reel d'un lieu selon Wikidata, ou None si
-        introuvable / echec (fail-open). CORRECTIF : si plusieurs entites
-        correspondent au nom (cas des noms generiques comme 'Eglise
-        Saint-Pierre'), on parcourt les candidats et on privilegie celui
-        dont le pays correspond au hint_country fourni, au lieu de
-        prendre systematiquement le premier resultat (souvent le plus
-        "notoire", pas forcement le bon).
-        """
         if not location_name:
             return None
 
@@ -555,9 +530,6 @@ RETURNS JSON:
     # =================================================================
 
     def propose_real_case(self, topic):
-        """Demande au LLM le nom exact du cas reel a developper, puis
-        recupere la source Wikipedia correspondante (avec hint_country
-        pour ameliorer la recherche sur des noms courts/ambigus)."""
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
 
@@ -638,13 +610,15 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
 9. {VERACITY_INSTRUCTION}
+10. Pour la clé 'scene_type', choisis "specific" si la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
+11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role.
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type.
 """
 
         correction_feedback = ""
@@ -682,8 +656,6 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
             self._validate_script(data, scene_count, topic)
 
             geo_issue = self._check_geography_consistency(topic, data["scenes"])
-            # CORRECTIF : passage du hint_country a la verification Wikidata
-            # pour desambiguiser les noms de lieux generiques.
             wikidata_issues = self._check_wikidata_locations(data["scenes"], hint_country=hint_country)
             fact_check_result = self._fact_check_script(topic, data, grounding_source=source)
 
@@ -746,15 +718,6 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
         return None
 
     def _check_wikidata_locations(self, scenes, hint_country=None):
-        """
-        CORRECTIF PRINCIPAL :
-        - hint_country transmis a WikidataChecker pour desambiguiser les
-          noms de lieux generiques (evite le faux positif type
-          'Eglise Saint-Pierre').
-        - Uniquement UN seul avertissement agrege affiche si plusieurs
-          lieux sont introuvables, au lieu de spammer les logs ligne par
-          ligne pour chaque scene.
-        """
         issues = []
         not_found_locations = []
 
@@ -790,15 +753,6 @@ en respectant strictement les memes regles{" et la source verifiee fournie" if s
         return issues
 
     def _fact_check_script(self, topic, script_data, grounding_source=None):
-        """
-        CORRECTIF : le prompt en mode libre est desormais beaucoup plus
-        restrictif -- il ne doit signaler QUE des erreurs factuelles
-        objectives et actionnables (lieu/evenement/personnage invente,
-        date fausse, contradiction interne), et explicitement PAS des
-        critiques de style/vaguesse/manque de details, qui gaspillaient
-        les tentatives de correction sans jamais resoudre le vrai
-        probleme.
-        """
         scenes_summary = "\n".join(
             f"- Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')} / "
             f"{s.get('location_country', 'pays non precise')}] : {s.get('text', '')[:200]}"
@@ -921,6 +875,8 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
                 scene["location_country"] = ""
             if scene.get("voice_type") not in {"narrator", "witness"}:
                 scene["voice_type"] = "narrator"
+            if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
+                scene["scene_type"] = "generic"
 
         if not str(data.get("title", "")).strip():
             data["title"] = topic
