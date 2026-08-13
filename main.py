@@ -1,3 +1,4 @@
+
 import asyncio
 import os
 
@@ -10,7 +11,6 @@ from modules.utils.cache import clean_cache
 from modules.utils.subtitles import generate_grouped_srt
 from modules.utils.caption_generator import generate_caption, save_caption
 from modules.utils.helpers import estimate_scene_count, validate_script_payload
-
 from modules.utils.hook_tracker import (
     load_hook_history,
     record_hook_usage,
@@ -82,10 +82,6 @@ async def main():
                     previous_stats_list=stats_historique,
                 )
 
-                # CORRECTIF : on recupere l'historique des patterns utilises,
-                # on le recroise avec les stats Zernio pour scorer chaque
-                # pattern, puis on selectionne via epsilon-greedy (80%
-                # exploitation du meilleur pattern connu, 20% exploration).
                 hook_history = load_hook_history()
                 pattern_scores = compute_pattern_scores(stats_historique, hook_history)
 
@@ -123,54 +119,39 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # --- 3. MODE HYBRIDE : ARCHIVES + VIDÉOS DE STOCK + IMAGES IA ---
+    # --- 3. RECHERCHE D'ASSETS (NOUVELLE LOGIQUE V2.0) ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
 
     bg_video_path = None
     video_pairs = []
 
-    print("🔄 Génération du mix hybride dynamique (Archives + Vidéos + Images IA)...")
-    visual_id = script_payload.get("visual_identity", "Cinematic documentary")
+    print("🔄 Recherche des meilleurs assets (Archives / Vidéos / IA)...")
 
     for index, scene in enumerate(script):
-        role = scene.get("role", "value")
         scene_id = scene['id']
+        # Détermine si on doit cibler un lieu précis ou une ambiance
+        search_query = scene.get("location_name") or scene.get("image_prompt") or dynamic_query
+        scene_type = scene.get("scene_type", "generic")
+        
+        # On définit le nom du fichier de sortie temporaire
+        output_asset_path = os.path.join(temp_dir, f"scene_media_{scene_id}.mp4")
 
-        asset_path = None
-        location_name = scene.get("location_name")
-
-        if location_name:
-            wiki_path = os.path.join(temp_dir, f"scene_{scene_id}_wiki.jpg")
-            print(f"   🏛️ Scène {scene_id} : Recherche du lieu exact '{location_name}' sur Wikimedia...")
-            if asset_manager.fetch_wikimedia_image(location_name, wiki_path):
-                asset_path = wiki_path
-
-        force_ai_image = (role == "cta") or (index % 2 != 0)
-
-        if not asset_path and not force_ai_image:
-            scene_query = scene.get("stock_search", dynamic_query) + " vertical 9:16"
-            video_path = os.path.join(temp_dir, f"scene_video_{scene_id}.mp4")
-            print(f"   🎬 Scène {scene_id} ({role}) : Recherche vidéo stock pour '{scene_query}'...")
-
-            try:
-                if asset_manager.fetch_background_video(scene_query, video_path):
-                    asset_path = video_path
-            except Exception as e:
-                print(f"   ⚠️ Erreur stock vidéo scène {scene_id} : {e}")
-
-        if not asset_path:
-            label = "Génération" if force_ai_image else "Fallback"
-            print(f"   🎨 Scène {scene_id} ({role}) : {label} image IA contextuelle...")
-            img_path = os.path.join(temp_dir, f"scene_{scene_id}.jpg")
-
-            base_prompt = scene.get("image_prompt", dynamic_query)
-            safe_thematic_prompt = f"{base_prompt}, photorealistic historical documentary style, dark cinematic lighting, mysterious, highly detailed, real photography, 8k, no 3d render, no abstract patterns"
-
-            asset_manager.generate_image(safe_thematic_prompt, img_path, visual_id)
-            asset_path = img_path
-
-        video_pairs.append(asset_path)
+        print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{search_query}'...")
+        
+        # Appel unique au nouveau gestionnaire d'assets intelligent !
+        success = asset_manager.get_best_asset(
+            query=search_query, 
+            output_path=output_asset_path, 
+            scene_type=scene_type
+        )
+        
+        if success and os.path.exists(output_asset_path):
+            video_pairs.append(output_asset_path)
+        else:
+            print(f"  ❌ Impossible de trouver un asset pour la scène {scene_id}. La vidéo pourrait être tronquée.")
+            # En cas de crash total ultime, on pourrait générer une image noire ici, 
+            # mais l'AssetManager est censé toujours réussir avec ses fallbacks.
 
     # --- 4. LÉGENDE, AUDIO ET SOUS-TITRES ---
     print("📝 Demande de légende à l'IA basée sur le script complet...")
@@ -229,9 +210,6 @@ async def main():
         print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)
 
-        # CORRECTIF : on enregistre quel pattern de hook a ete utilise pour
-        # ce titre, afin de pouvoir le recroiser avec les stats Zernio
-        # (vues/likes) au prochain run et affiner le scoring du bandit.
         if chosen_hook_pattern:
             record_hook_usage(video_title, chosen_hook_pattern)
 
@@ -242,3 +220,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
