@@ -435,6 +435,6 @@ class AudioEngine:
             # On met le script en pause pendant 7 secondes après chaque scène.
             # Cela empêche l'erreur 429 de Gemini (limite de 10 requêtes par minute)
             # et garantit que tes voix "Charon" et "Orus" fonctionneront jusqu'à la fin !
-            await asyncio.sleep(7)
+            await asyncio.sleep(12)
 
         return script_data

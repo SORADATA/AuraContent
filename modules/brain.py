@@ -612,6 +612,8 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 9. {VERACITY_INSTRUCTION}
 10. Pour la clé 'scene_type', choisis "specific" si la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
+12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
+13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
 
 GENERE EXACTEMENT {scene_count} scenes.
 
