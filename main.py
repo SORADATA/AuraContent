@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 
@@ -119,7 +118,7 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # --- 3. RECHERCHE D'ASSETS (NOUVELLE LOGIQUE V2.0) ---
+    # --- 3. RECHERCHE D'ASSETS (NOUVELLE LOGIQUE V2.0 AVEC ATTRIBUTION) ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
 
@@ -130,28 +129,28 @@ async def main():
 
     for index, scene in enumerate(script):
         scene_id = scene['id']
-        # Détermine si on doit cibler un lieu précis ou une ambiance
         search_query = scene.get("location_name") or scene.get("image_prompt") or dynamic_query
         scene_type = scene.get("scene_type", "generic")
         
-        # On définit le nom du fichier de sortie temporaire
-        output_asset_path = os.path.join(temp_dir, f"scene_media_{scene_id}.mp4")
+        # On passe un chemin temporaire générique à l'AssetManager
+        temp_asset_path = os.path.join(temp_dir, f"temp_media_{scene_id}.mp4")
 
         print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{search_query}'...")
         
-        # Appel unique au nouveau gestionnaire d'assets intelligent !
-        success = asset_manager.get_best_asset(
+        # L'AssetManager nous dit quelle source a gagné via source_type
+        success, source_type = asset_manager.get_best_asset(
             query=search_query, 
-            output_path=output_asset_path, 
+            output_path=temp_asset_path, 
             scene_type=scene_type
         )
         
-        if success and os.path.exists(output_asset_path):
-            video_pairs.append(output_asset_path)
+        if success and os.path.exists(temp_asset_path):
+            # On renomme le fichier avec la source pour que le Composer puisse la lire
+            final_asset_path = os.path.join(temp_dir, f"scene_{source_type}_{scene_id}.mp4")
+            os.rename(temp_asset_path, final_asset_path)
+            video_pairs.append(final_asset_path)
         else:
             print(f"  ❌ Impossible de trouver un asset pour la scène {scene_id}. La vidéo pourrait être tronquée.")
-            # En cas de crash total ultime, on pourrait générer une image noire ici, 
-            # mais l'AssetManager est censé toujours réussir avec ses fallbacks.
 
     # --- 4. LÉGENDE, AUDIO ET SOUS-TITRES ---
     print("📝 Demande de légende à l'IA basée sur le script complet...")
@@ -220,4 +219,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
