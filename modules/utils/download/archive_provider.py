@@ -31,7 +31,8 @@ class ArchiveProvider:
                         
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 if candidates and candidates[0][0] >= min_relevance:
-                    if download_file(candidates[0][2], output_path):
+                    #  Ajout de headers=self.wiki_headers
+                    if download_file(candidates[0][2], output_path, headers=self.wiki_headers):
                         mark_used(self.history, "openverse", candidates[0][1])
                         print(f"✅ Openverse OK (Score {candidates[0][0]:.2f})")
                         return True
