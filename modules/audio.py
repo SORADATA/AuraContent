@@ -3,6 +3,7 @@ import wave
 import base64
 import asyncio
 import re
+import time
 import requests
 from mutagen.mp3 import MP3
 
@@ -233,12 +234,10 @@ class AudioEngine:
 
     def _try_gemini(self, text, output_path_wav, voice_type="narrator"):
         """
-        Gemini TTS principal.
-        Retourne False proprement en cas de quota, modèle indisponible,
-        réponse sans audio ou format inattendu afin de permettre le fallback.
+        Gemini TTS principal avec système de Retry anti-blocage (429).
         """
         if not self.use_gemini:
-            print("      Gemini TTS désactivé (GEMINI_API_KEY absente ou use_gemini=False)")
+            print("       Gemini TTS désactivé (GEMINI_API_KEY absente ou use_gemini=False)")
             return False
 
         voice_name = (
@@ -276,72 +275,77 @@ class AudioEngine:
             }
         }
 
-        try:
-            response = requests.post(url, json=payload, timeout=90)
+        # Boucle de 3 tentatives maximum
+        for attempt in range(3):
+            try:
+                response = requests.post(url, json=payload, timeout=90)
 
-            if response.status_code != 200:
-                # On affiche le statut sans exposer la clé API.
-                try:
-                    error_data = response.json()
-                    error_msg = error_data.get("error", {}).get("message", "")
-                except Exception:
-                    error_msg = response.text[:300]
+                # Si l'API nous bloque pour cause de quota (429)
+                if response.status_code == 429:
+                    attente = 25 * (attempt + 1) # Attend 25s, puis 50s si ça bloque encore
+                    print(f"       Gemini TTS saturé (429). Pause automatique de {attente}s avant de réessayer (Tentative {attempt + 1}/3)...")
+                    time.sleep(attente)
+                    continue # On relance la boucle pour réessayer
 
-                print(
-                    f"      Gemini TTS indisponible "
-                    f"(HTTP {response.status_code}): {error_msg}"
+                if response.status_code != 200:
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("error", {}).get("message", "")
+                    except Exception:
+                        error_msg = response.text[:300]
+
+                    print(f"       Gemini TTS indisponible (HTTP {response.status_code}): {error_msg}")
+                    return False
+
+                data = response.json()
+                parts = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [])
                 )
+
+                inline_data = None
+                for part in parts:
+                    if "inlineData" in part:
+                        inline_data = part["inlineData"]
+                        break
+
+                if not inline_data or not inline_data.get("data"):
+                    print("       Gemini TTS : aucune donnée audio dans la réponse")
+                    return False
+
+                audio_bytes = base64.b64decode(inline_data["data"])
+                mime_type = inline_data.get("mimeType", "").lower()
+
+                if "wav" in mime_type:
+                    with open(output_path_wav, "wb") as f:
+                        f.write(audio_bytes)
+                else:
+                    self._save_pcm_wav(
+                        audio_bytes,
+                        output_path_wav,
+                        sample_rate=24000,
+                        channels=1,
+                        sampwidth=2,
+                    )
+
+                if self._file_ready(output_path_wav):
+                    print(f"       Voix Gemini TTS utilisée ({voice_type}, voice={voice_name})")
+                    return True
+
+                print("       Gemini TTS : fichier audio invalide")
                 return False
 
-            data = response.json()
-            parts = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [])
-            )
-
-            inline_data = None
-            for part in parts:
-                if "inlineData" in part:
-                    inline_data = part["inlineData"]
-                    break
-
-            if not inline_data or not inline_data.get("data"):
-                print("      Gemini TTS : aucune donnée audio dans la réponse")
+            except requests.RequestException as e:
+                print(f"       Gemini TTS réseau indisponible: {e}")
                 return False
-
-            audio_bytes = base64.b64decode(inline_data["data"])
-            mime_type = inline_data.get("mimeType", "").lower()
-
-            # Gemini peut retourner du PCM brut ou un WAV.
-            if "wav" in mime_type:
-                with open(output_path_wav, "wb") as f:
-                    f.write(audio_bytes)
-            else:
-                self._save_pcm_wav(
-                    audio_bytes,
-                    output_path_wav,
-                    sample_rate=24000,
-                    channels=1,
-                    sampwidth=2,
-                )
-
-            if self._file_ready(output_path_wav):
-                print(
-                    f"      Voix Gemini TTS utilisée "
-                    f"({voice_type}, voice={voice_name})"
-                )
-                return True
-
-            print("      Gemini TTS : fichier audio invalide")
-            return False
-
-        except requests.RequestException as e:
-            print(f"      Gemini TTS réseau indisponible: {e}")
-            return False
-        except Exception as e:
-            print(f"      Gemini TTS erreur: {e}")
-            return False
+            except Exception as e:
+                print(f"       Gemini TTS erreur: {e}")
+                return False
+                
+        # Si après les 3 tentatives ça bloque toujours
+        print("       Gemini TTS a échoué après 3 tentatives de contournement de quota.")
+        return False
 
     async def _try_edge(self, text, output_path_mp3, voice_type="narrator"):
         if not EDGE_AVAILABLE:
@@ -427,5 +431,10 @@ class AudioEngine:
                 f"     Scene {scene_id} [{voice_type}]: audio genere via {engine_used} "
                 f"({scene['duration']:.2f}s)"
             )
+
+            # On met le script en pause pendant 7 secondes après chaque scène.
+            # Cela empêche l'erreur 429 de Gemini (limite de 10 requêtes par minute)
+            # et garantit que tes voix "Charon" et "Orus" fonctionneront jusqu'à la fin !
+            await asyncio.sleep(7)
 
         return script_data
