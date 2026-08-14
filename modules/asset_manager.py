@@ -22,20 +22,24 @@ class AssetManager:
         if scene_type == "specific":
             print(f"🧠 Sujet spécifique : '{query}'. Tentative IA-First.")
             if self.ai.generate_image(query, output_path):
-                return True 
+                return True, "ai"
+                
         # RECHERCHE DE STOCK STANDARD
         print(f"🔍 Recherche de contenu existant : '{query}'...")
+        
         # 1. Vidéos d'ambiance
         if self.videos.fetch_background(query, output_path):
-            return True 
+            return True, "video"
+            
         # 2. Photos documentaires/historiques
         if self.archives.get_wikimedia(query, output_path):
-            return True
+            return True, "wiki"
 
         # FALLBACK ULTIME (IA si ça n'a pas encore été fait)
         if scene_type != "specific":
             print(f"🎨 Génération IA de secours : '{query}'...")
             if self.ai.generate_image(query, output_path):
-                return True
+                return True, "ai"
+                
         print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
-        return False
+        return False, "none"
