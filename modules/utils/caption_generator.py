@@ -2,7 +2,7 @@ import os
 import requests
 
 # 🛠️ NOMS DE MODÈLES CORRIGÉS
-GEMINI_CAPTION_MODEL = "gemini-2.5-flash"
+GEMINI_CAPTION_MODEL = "gemini-1.5-flash"
 GROQ_CAPTION_MODEL = "llama-3.3-70b-versatile"
 
 
