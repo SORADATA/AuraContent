@@ -18,28 +18,35 @@ class AssetManager:
         Orchestrateur principal.
         scene_type: 'generic' (vagues, ambiance) ou 'specific' (personnage, événement précis).
         """
-        # LOGIQUE IA-FIRST (Si c'est trop pointu, on ne perd pas de temps avec des vidéos génériques)
-        if scene_type == "specific":
-            print(f"🧠 Sujet spécifique : '{query}'. Tentative IA-First.")
-            if self.ai.generate_image(query, output_path):
-                return True, "ai"
-                
-        # RECHERCHE DE STOCK STANDARD
-        print(f"🔍 Recherche de contenu existant : '{query}'...")
         
-        # 1. Vidéos d'ambiance
-        if self.videos.fetch_background(query, output_path):
-            return True, "video"
-            
-        # 2. Photos documentaires/historiques
-        if self.archives.get_wikimedia(query, output_path):
-            return True, "wiki"
-
-        # FALLBACK ULTIME (IA si ça n'a pas encore été fait)
-        if scene_type != "specific":
-            print(f"🎨 Génération IA de secours : '{query}'...")
+        # ---------------------------------------------------------
+        # SCÈNES SPÉCIFIQUES (Lieux réels, personnages, objets)
+        # ---------------------------------------------------------
+        if scene_type == "specific":
+            # 1. On cherche d'ABORD la vraie photo dans les archives !
+            print(f"🔍 Recherche de la vraie photo historique : '{query}'...")
+            if self.archives.get_wikimedia(query, output_path):
+                print("🏛️ Vraie archive trouvée !")
+                return True, "wiki"
+                
+            # 2. Si Wikipédia n'a rien, on demande à l'IA de l'imaginer
+            print(f"🧠 Archive introuvable. Tentative IA-First pour : '{query}'.")
             if self.ai.generate_image(query, output_path):
                 return True, "ai"
                 
+        # ---------------------------------------------------------
+        # SCÈNES GÉNÉRIQUES (Ambiance, paysages, émotions)
+        # ---------------------------------------------------------
+        else:
+            # 3. Vidéos d'ambiance Pexels
+            print(f"🔍 Recherche vidéo d'ambiance : '{query}'...")
+            if self.videos.fetch_background(query, output_path):
+                return True, "video"
+
+        # 4. FALLBACK ULTIME POUR TOUT LE MONDE
+        print(f"🎨 Génération IA de secours : '{query}'...")
+        if self.ai.generate_image(query, output_path):
+            return True, "ai"
+            
         print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
         return False, "none"
