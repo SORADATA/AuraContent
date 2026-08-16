@@ -25,7 +25,7 @@ except ImportError:
 
 load_dotenv()
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
