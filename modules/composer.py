@@ -1,4 +1,3 @@
-
 import os
 import random
 import shutil
@@ -84,6 +83,25 @@ class Composer:
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         )
 
+        # === CORRECTIF : mapping explicite source_type -> texte credit ===
+        # Aligne enfin la detection sur les vraies valeurs retournees par
+        # AssetManager.get_best_asset() ("wiki", "openverse", "video", "ai"),
+        # utilisees par main.py pour nommer les fichiers
+        # (scene_{source_type}_{scene_id}.mp4). Avant ce correctif,
+        # "openverse" ne matchait aucune condition et retombait sur le
+        # libelle generique "Illustration", ce qui rendait le credit
+        # incorrect pour toutes les images trouvees via Openverse.
+        self.source_credit_labels = {
+            "wiki": "Source : Wikimedia Commons",
+            "wikimedia": "Source : Wikimedia Commons",
+            "openverse": "Source : Openverse",
+            "video": "Illustration : Pexels / Pixabay",
+            "pexels": "Illustration : Pexels / Pixabay",
+            "pixabay": "Illustration : Pexels / Pixabay",
+            "videvo": "Illustration : Pexels / Pixabay",
+            "ai": "Illustration générée par IA",
+        }
+
     # ------------------------------------------------------------------
     # Utilitaires
     # ------------------------------------------------------------------
@@ -132,6 +150,33 @@ class Composer:
             (".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")
         )
 
+    def _resolve_source_credit(self, path_a):
+        """
+        CORRECTIF : detection du credit de source basee sur le
+        source_type explicite injecte dans le nom de fichier par
+        main.py ("scene_{source_type}_{scene_id}.mp4"), avec fallback
+        sur l'ancienne heuristique par mots-cles pour compatibilite si
+        jamais un fichier ne suit pas cette convention de nommage.
+        """
+        file_name = str(path_a).lower()
+
+        # 1. Detection exacte via le token source_type present dans le nom
+        for token, label in self.source_credit_labels.items():
+            if f"_{token}_" in file_name or file_name.startswith(f"{token}_"):
+                return label
+
+        # 2. Fallback heuristique (ancien comportement, compatibilite)
+        if "wiki" in file_name or "wikimedia" in file_name:
+            return "Source : Wikimedia Commons"
+        if "openverse" in file_name:
+            return "Source : Openverse"
+        if any(token in file_name for token in ("pexels", "pixabay", "videvo", "video")):
+            return "Illustration : Pexels / Pixabay"
+        if any(token in file_name for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")):
+            return "Illustration générée par IA"
+
+        return "Illustration"
+
     # ------------------------------------------------------------------
     # FILIGRANE PREMIUM
     # ------------------------------------------------------------------
@@ -153,7 +198,6 @@ class Composer:
         try:
             video = ffmpeg.input(input_video_path)
 
-            # Image statique transformée en flux vidéo.
             logo = ffmpeg.input(
                 self.watermark_path,
                 loop=1,
@@ -220,7 +264,6 @@ class Composer:
             print(f"⚠️ Watermark failed: {e}")
             return False
 
-    # Compatibilité avec l'ancien appel.
     def add_watermark_text(
         self,
         input_video_path,
@@ -262,9 +305,6 @@ class Composer:
         try:
             input_audio = ffmpeg.input(audio_path)
 
-            # ----------------------------------------------------------
-            # Fond vidéo continu
-            # ----------------------------------------------------------
             if bg_video_path and os.path.exists(bg_video_path):
                 source_duration = self.get_duration(bg_video_path)
                 start_offset = (
@@ -295,9 +335,6 @@ class Composer:
                 )
 
             else:
-                # ------------------------------------------------------
-                # Images / vidéos par scène
-                # ------------------------------------------------------
                 path_a, path_b = self._ensure_pair(image_pair)
 
                 if not path_a:
@@ -329,8 +366,6 @@ class Composer:
                     )
 
                 else:
-                    # Deux mouvements photographiques différents.
-                    # On évite un zoom trop agressif.
                     duration_a = max(total_duration / 2, 0.1)
                     duration_b = max(
                         (total_duration / 2) + 0.35,
@@ -388,30 +423,12 @@ class Composer:
                     )
 
             # ==========================================================
-            # 📌 AJOUT DU CRÉDIT DE LA SOURCE (CORRIGÉ POUR LA V2)
+            # 📌 AJOUT DU CRÉDIT DE LA SOURCE (CORRIGÉ)
             # ==========================================================
             source_text = ""
 
             if not bg_video_path and path_a:
-                file_name = str(path_a).lower()
-
-                if "wiki" in file_name or "wikimedia" in file_name:
-                    source_text = "Source : Wikimedia Commons"
-
-                elif any(
-                    token in file_name
-                    for token in ("pexels", "pixabay", "videvo", "video")
-                ):
-                    source_text = "Illustration : Pexels / Pixabay"
-
-                elif any(
-                    token in file_name
-                    for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")
-                ):
-                    source_text = "Illustration générée par IA"
-
-                else:
-                    source_text = "Illustration"
+                source_text = self._resolve_source_credit(path_a)
 
             if source_text:
                 video_stream = video_stream.filter(
@@ -643,7 +660,6 @@ class Composer:
                 stream_loop=-1
             )
 
-            # Voix : légère remontée, mais sans écraser le mix.
             voice_audio = (
                 voice.audio
                 .filter(
@@ -657,7 +673,6 @@ class Composer:
                 .filter("asetpts", "PTS-STARTPTS")
             )
 
-            # Musique : basse et respirante.
             music_audio = (
                 music.audio
                 .filter(
@@ -683,7 +698,6 @@ class Composer:
                 )
             )
 
-            # Copies séparées pour le sidechain.
             voice_split = voice_audio.filter_multi_output(
                 "asplit",
                 2
@@ -698,7 +712,6 @@ class Composer:
             music_for_duck = music_split[0]
             music_for_mix = music_split[1]
 
-            # Ducking plus doux que l'ancien ratio=10.
             ducked_music = ffmpeg.filter(
                 [music_for_duck, voice_for_duck],
                 "sidechaincompress",
@@ -794,9 +807,6 @@ class Composer:
 
         merge_step_files = []
 
-        # --------------------------------------------------------------
-        # Assemblage des scènes
-        # --------------------------------------------------------------
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
 
@@ -852,9 +862,6 @@ class Composer:
 
             stitched_path = courant
 
-        # --------------------------------------------------------------
-        # Mix musique
-        # --------------------------------------------------------------
         if os.path.exists(self.bg_music_path):
             success = self._mix_background_music(
                 stitched_path,
@@ -909,9 +916,6 @@ class Composer:
                     raw_final_output_path
                 )
 
-        # --------------------------------------------------------------
-        # Filigrane de marque
-        # --------------------------------------------------------------
         watermark_success = self.add_watermark(
             raw_final_output_path,
             output_path
@@ -927,9 +931,6 @@ class Composer:
                 output_path
             )
 
-        # --------------------------------------------------------------
-        # Nettoyage
-        # --------------------------------------------------------------
         if os.path.exists(raw_final_output_path):
             try:
                 os.remove(raw_final_output_path)
