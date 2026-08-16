@@ -174,7 +174,7 @@ class WikidataChecker:
         )
     }
     CACHE = {}
-    MIN_DELAY_BETWEEN_CALLS = 0.6  # secondes, throttling systematique
+    MIN_DELAY_BETWEEN_CALLS = 0.6
 
     @classmethod
     def _throttled_get(cls, params, max_retries=2):
@@ -586,6 +586,16 @@ deroule des evenements) UNIQUEMENT sur cet extrait. Interdiction d'ajouter
 un fait, un detail chiffre ou un nom qui n'apparait pas dans cet extrait.
 Tu peux reformuler et dramatiser le style, mais pas inventer de contenu
 factuel supplementaire.
+
+CORRECTIF (IMAGES CONCRETES) : Pour la clé 'event_context', si une scene
+decrit un evenement precis et date mentionne dans l'extrait ci-dessus
+(ex: un incendie, une destruction, une decouverte), resume ce contexte en
+quelques mots factuels visuellement exploitables pour generer une image
+(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Cela
+permet de generer une image IA fidele a l'evenement reel plutot qu'une vue
+generique et intemporelle du lieu, car les archives Wikimedia/Openverse ne
+contiennent jamais de photos de presse recentes sous copyright. Si la
+scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
 """
             print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
         else:
@@ -614,13 +624,14 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
+14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 
 GENERE EXACTEMENT {scene_count} scenes.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type.
+id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
         correction_feedback = ""
@@ -654,6 +665,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                     scene.setdefault("voice_type", "narrator")
                     scene.setdefault("mood", "intriguing")
                     scene.setdefault("role", "value")
+                    scene.setdefault("scene_type", "generic")
+                    scene.setdefault("event_context", "")
 
             self._validate_script(data, scene_count, topic)
 
@@ -879,6 +892,8 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
                 scene["voice_type"] = "narrator"
             if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
                 scene["scene_type"] = "generic"
+            if "event_context" not in scene or not isinstance(scene.get("event_context"), str):
+                scene["event_context"] = ""
 
         if not str(data.get("title", "")).strip():
             data["title"] = topic
