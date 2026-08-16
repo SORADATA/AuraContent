@@ -131,19 +131,29 @@ async def main():
         scene_id = scene['id']
         search_query = scene.get("location_name") or scene.get("image_prompt") or dynamic_query
         scene_type = scene.get("scene_type", "generic")
-        
+
+        # CORRECTIF : recuperation du contexte factuel de l'evenement,
+        # rempli par ContentBrain quand une source Wikipedia mentionne un
+        # evenement precis et date (incendie, destruction, decouverte).
+        # Transmis a AssetManager pour enrichir le prompt IA de secours et
+        # obtenir une image concrete de l'evenement plutot qu'une vue
+        # generique et intemporelle du lieu.
+        event_context = scene.get("event_context") or None
+
         # On passe un chemin temporaire générique à l'AssetManager
         temp_asset_path = os.path.join(temp_dir, f"temp_media_{scene_id}.mp4")
 
-        print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{search_query}'...")
-        
+        log_query = search_query if not event_context else f"{search_query} (contexte: {event_context})"
+        print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{log_query}'...")
+
         # L'AssetManager nous dit quelle source a gagné via source_type
         success, source_type = asset_manager.get_best_asset(
-            query=search_query, 
-            output_path=temp_asset_path, 
-            scene_type=scene_type
+            query=search_query,
+            output_path=temp_asset_path,
+            scene_type=scene_type,
+            event_context=event_context,
         )
-        
+
         if success and os.path.exists(temp_asset_path):
             # On renomme le fichier avec la source pour que le Composer puisse la lire
             final_asset_path = os.path.join(temp_dir, f"scene_{source_type}_{scene_id}.mp4")
