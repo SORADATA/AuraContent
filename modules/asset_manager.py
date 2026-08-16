@@ -6,19 +6,26 @@ from modules.ai_image import AIImageGenerator
 
 class AssetManager:
     def __init__(self):
-        # 1. État global
         self.history = load_history()
-        # 2. Initialisation des fournisseurs spécialisés
         self.videos = VideoProvider(self.history)
         self.archives = ArchiveProvider(self.history)
         self.ai = AIImageGenerator()
 
-    def get_best_asset(self, query, output_path, scene_type="generic"):
+    def get_best_asset(self, query, output_path, scene_type="generic", event_context=None):
         """
         Orchestrateur principal.
         scene_type: 'generic' (vagues, ambiance) ou 'specific' (personnage, événement précis).
+
+        CORRECTIF : nouveau parametre optionnel event_context. Permet de
+        transmettre un descriptif factuel precis (ex: "incendie nocturne
+        de novembre 2025, ruines en flammes") issu du script/scene, afin
+        que le prompt IA genere une image concrete de l'evenement plutot
+        qu'une vue generique et intemporelle du lieu. Utile notamment
+        quand aucune archive (Wikimedia/Openverse) ne peut exister pour
+        un evenement recent, car ces sources ne contiennent jamais de
+        photos de presse recentes sous copyright.
         """
-        
+
         # ---------------------------------------------------------
         # SCÈNES SPÉCIFIQUES (Lieux réels, personnages, objets)
         # ---------------------------------------------------------
@@ -28,12 +35,20 @@ class AssetManager:
             if self.archives.get_wikimedia(query, output_path):
                 print("🏛️ Vraie archive trouvée !")
                 return True, "wiki"
-                
-            # 2. Si Wikipédia n'a rien, on demande à l'IA de l'imaginer
-            print(f"🧠 Archive introuvable. Tentative IA-First pour : '{query}'.")
-            if self.ai.generate_image(query, output_path):
+
+            # 2. Si Wikipédia n'a rien, on demande à l'IA de l'imaginer,
+            # en enrichissant le prompt avec le contexte factuel de
+            # l'evenement si disponible (CORRECTIF).
+            ai_prompt = query
+            if event_context:
+                ai_prompt = f"{query}, {event_context}"
+                print(f"🧠 Archive introuvable. Tentative IA-First contextualisee : '{ai_prompt}'.")
+            else:
+                print(f"🧠 Archive introuvable. Tentative IA-First pour : '{query}'.")
+
+            if self.ai.generate_image(ai_prompt, output_path):
                 return True, "ai"
-                
+
         # ---------------------------------------------------------
         # SCÈNES GÉNÉRIQUES (Ambiance, paysages, émotions)
         # ---------------------------------------------------------
@@ -43,10 +58,11 @@ class AssetManager:
             if self.videos.fetch_background(query, output_path):
                 return True, "video"
 
-        # 4. FALLBACK ULTIME POUR TOUT LE MONDE
-        print(f"🎨 Génération IA de secours : '{query}'...")
-        if self.ai.generate_image(query, output_path):
+        # 4. FALLBACK ULTIME POUR TOUT LE MONDE (aussi enrichi si event_context fourni)
+        fallback_prompt = f"{query}, {event_context}" if event_context else query
+        print(f"🎨 Génération IA de secours : '{fallback_prompt}'...")
+        if self.ai.generate_image(fallback_prompt, output_path):
             return True, "ai"
-            
+
         print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
         return False, "none"
