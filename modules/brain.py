@@ -324,6 +324,15 @@ class ContentBrain:
         return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
     def _extract_content(self, response):
+        """
+        CORRECTIF : filet de secours diagnostique. openai/gpt-oss-120b est
+        un modele de "reasoning" -- il raisonne dans un champ separe
+        (message.reasoning) avant d'ecrire sa reponse finale (content).
+        Si max_completion_tokens est atteint PENDANT ce raisonnement,
+        content reste vide ("") avec finish_reason='length'. On detecte
+        precisement ce cas pour donner un message d'erreur actionnable,
+        au lieu du message generique "Contenu vide de Groq: <dump complet>".
+        """
         choices = getattr(response, "choices", None)
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
@@ -353,21 +362,43 @@ class ContentBrain:
             content = "".join(parts).strip()
 
         if not content:
+            reasoning = None
+            if isinstance(message, dict):
+                reasoning = message.get("reasoning")
+            else:
+                reasoning = getattr(message, "reasoning", None)
+
+            finish_reason = getattr(choice0, "finish_reason", None)
+            if finish_reason is None and isinstance(choice0, dict):
+                finish_reason = choice0.get("finish_reason")
+
+            if finish_reason == "length" and reasoning:
+                raise ValueError(
+                    "Contenu vide de Groq : le modele a epuise son budget de "
+                    "tokens PENDANT son raisonnement interne (finish_reason="
+                    "'length'), avant d'ecrire la reponse finale. "
+                    "Augmenter max_completion_tokens et/ou reduire "
+                    "reasoning_effort a 'low'. "
+                    f"Extrait du raisonnement : {str(reasoning)[:200]}..."
+                )
+
             raise ValueError(f"Contenu vide de Groq: {response}")
 
         return content
 
-    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, max_completion_tokens=8000):
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
+                             max_completion_tokens=2000, reasoning_effort="low"):
         """
-        CORRECTIF CRITIQUE : max_completion_tokens est desormais toujours
-        explicitement fixe. Sans ce parametre, Groq applique sa valeur
-        par defaut de 1024 tokens (documentee officiellement), largement
-        insuffisante pour un script JSON complet de plusieurs scenes --
-        le modele etait tronque en plein milieu de sa generation, d'ou
-        l'erreur "max completion tokens reached before generating a
-        valid document" et un nombre de scenes decroissant a chaque
-        tentative (le modele essayant vainement de compenser en ecrivant
-        plus succinctement, sans jamais y parvenir).
+        CORRECTIF CRITIQUE (double couche) :
+        1) max_completion_tokens explicitement fixe (Groq utilise sinon
+           1024 par defaut, insuffisant).
+        2) reasoning_effort="low" par defaut : reduit le raisonnement
+           interne du modele "reasoning" gpt-oss-120b, pour laisser
+           l'essentiel du budget de tokens a la reponse finale plutot
+           qu'a la reflexion (cause du bug "Contenu vide de Groq" avec
+           finish_reason='length').
+        En cas d'echec, le budget de tokens est double et reasoning_effort
+        force a "low" sur les tentatives suivantes.
         """
         client = self._build_client()
         last_error = None
@@ -379,6 +410,7 @@ class ContentBrain:
                     "messages": messages,
                     "temperature": temperature,
                     "max_completion_tokens": max_completion_tokens,
+                    "reasoning_effort": reasoning_effort,
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
@@ -393,11 +425,14 @@ class ContentBrain:
             except Exception as e:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
+                max_completion_tokens = min(max_completion_tokens * 2, 16000)
+                reasoning_effort = "low"
                 time.sleep(8)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
-    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2, max_completion_tokens=8000):
+    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
+                               max_completion_tokens=8000, reasoning_effort="medium"):
         last_error = None
 
         for attempt in range(max_json_retries):
@@ -406,6 +441,7 @@ class ContentBrain:
                 temperature=temperature,
                 json_mode=True,
                 max_completion_tokens=max_completion_tokens,
+                reasoning_effort=reasoning_effort,
             )
             try:
                 data = json.loads(_clean_json_response(content))
@@ -440,7 +476,10 @@ class ContentBrain:
 
         last_topic = ""
         for attempt in range(3):
-            content = self._call_with_fallback(messages, temperature=0.9, max_completion_tokens=300)
+            content = self._call_with_fallback(
+                messages, temperature=0.9,
+                max_completion_tokens=1500, reasoning_effort="low"
+            )
             topic = _clean_single_line_title(content)
             last_topic = topic
 
@@ -464,7 +503,10 @@ class ContentBrain:
             )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
-        content = self._call_with_fallback(messages, temperature=0.8, max_completion_tokens=300)
+        content = self._call_with_fallback(
+            messages, temperature=0.8,
+            max_completion_tokens=1500, reasoning_effort="low"
+        )
         refined = _clean_single_line_title(content)
 
         if _contains_ai_mention(refined):
@@ -478,7 +520,10 @@ class ContentBrain:
             {"role": "system", "content": "Tu génères une requête de recherche visuelle en anglais, 6 mots max, sans phrase. Inclure des termes comme photorealistic, historical documentary, real photography, dark mysterious atmosphere. INTERDICTION ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
-        content = self._call_with_fallback(messages, temperature=0.7, max_completion_tokens=200)
+        content = self._call_with_fallback(
+            messages, temperature=0.7,
+            max_completion_tokens=1000, reasoning_effort="low"
+        )
         return _clean_single_line_title(content).replace('"', '')
 
     # =================================================================
@@ -514,7 +559,10 @@ RETURNS JSON:
             {"role": "user", "content": prompt},
         ]
 
-        data = self._call_json_with_retry(messages, temperature=1.1, max_completion_tokens=2000)
+        data = self._call_json_with_retry(
+            messages, temperature=1.1,
+            max_completion_tokens=3000, reasoning_effort="low"
+        )
 
         hooks = data.get("hooks")
         if not isinstance(hooks, list):
@@ -576,7 +624,10 @@ RETURNS JSON:
             {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
         ]
 
-        content = self._call_with_fallback(messages, temperature=0.3, max_completion_tokens=100)
+        content = self._call_with_fallback(
+            messages, temperature=0.3,
+            max_completion_tokens=1200, reasoning_effort="low"
+        )
         case_name = _clean_single_line_title(content)
 
         if not case_name:
@@ -598,7 +649,10 @@ RETURNS JSON:
                     )},
                     {"role": "user", "content": f"Sujet : {topic}"},
                 ]
-                content_retry = self._call_with_fallback(messages_retry, temperature=0.3, max_completion_tokens=100)
+                content_retry = self._call_with_fallback(
+                    messages_retry, temperature=0.3,
+                    max_completion_tokens=1200, reasoning_effort="low"
+                )
                 case_name_retry = _clean_single_line_title(content_retry)
                 if case_name_retry:
                     case_name = case_name_retry
@@ -625,11 +679,11 @@ RETURNS JSON:
         erreur de validation devient une "issue" corrigee via
         regeneration, au lieu de faire planter tout le run.
 
-        CORRECTIF CRITIQUE : budget de tokens dynamique et suffisant,
-        proportionnel au nombre de scenes demandees, pour eviter la
-        troncature JSON en cours de generation (cause racine du bug
-        "max completion tokens reached before generating a valid
-        document").
+        Budget de tokens dynamique et suffisant, proportionnel au nombre
+        de scenes demandees, pour eviter la troncature JSON en cours de
+        generation. reasoning_effort="medium" conserve ici car la tache
+        (script complet avec contraintes de veracite/geographie) benefice
+        reellement d'un raisonnement plus approfondi que les autres appels.
         """
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
@@ -703,13 +757,6 @@ Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
-        # CORRECTIF CRITIQUE : budget de tokens proportionnel au nombre de
-        # scenes demandees, avec une marge confortable (~700 tokens par
-        # scene detaillee + marge fixe pour title/visual_identity/etc.),
-        # plafonne a 16000 pour rester dans une limite raisonnable de cout
-        # et de latence tout en couvrant largement les besoins (65 536
-        # est la limite max du modele, mais un tel volume n'est jamais
-        # necessaire pour ce cas d'usage).
         estimated_tokens_needed = min(scene_count * 700 + 1500, 16000)
 
         correction_feedback = ""
@@ -730,6 +777,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 messages,
                 temperature=0.7,
                 max_completion_tokens=estimated_tokens_needed,
+                reasoning_effort="medium",
             )
 
             scenes = data.get("scenes", [])
@@ -962,7 +1010,10 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
         ]
 
         try:
-            data = self._call_json_with_retry(messages, temperature=0.1, max_json_retries=1, max_completion_tokens=1500)
+            data = self._call_json_with_retry(
+                messages, temperature=0.1, max_json_retries=1,
+                max_completion_tokens=1800, reasoning_effort="low"
+            )
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
             return {
