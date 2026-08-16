@@ -357,7 +357,18 @@ class ContentBrain:
 
         return content
 
-    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False):
+    def _call_with_fallback(self, messages, temperature=1.0, json_mode=False, max_completion_tokens=8000):
+        """
+        CORRECTIF CRITIQUE : max_completion_tokens est desormais toujours
+        explicitement fixe. Sans ce parametre, Groq applique sa valeur
+        par defaut de 1024 tokens (documentee officiellement), largement
+        insuffisante pour un script JSON complet de plusieurs scenes --
+        le modele etait tronque en plein milieu de sa generation, d'ou
+        l'erreur "max completion tokens reached before generating a
+        valid document" et un nombre de scenes decroissant a chaque
+        tentative (le modele essayant vainement de compenser en ecrivant
+        plus succinctement, sans jamais y parvenir).
+        """
         client = self._build_client()
         last_error = None
 
@@ -367,6 +378,7 @@ class ContentBrain:
                     "model": GROQ_MODEL,
                     "messages": messages,
                     "temperature": temperature,
+                    "max_completion_tokens": max_completion_tokens,
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
@@ -385,14 +397,15 @@ class ContentBrain:
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
-    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2):
+    def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2, max_completion_tokens=8000):
         last_error = None
 
         for attempt in range(max_json_retries):
             content = self._call_with_fallback(
                 messages,
                 temperature=temperature,
-                json_mode=True
+                json_mode=True,
+                max_completion_tokens=max_completion_tokens,
             )
             try:
                 data = json.loads(_clean_json_response(content))
@@ -427,7 +440,7 @@ class ContentBrain:
 
         last_topic = ""
         for attempt in range(3):
-            content = self._call_with_fallback(messages, temperature=0.9)
+            content = self._call_with_fallback(messages, temperature=0.9, max_completion_tokens=300)
             topic = _clean_single_line_title(content)
             last_topic = topic
 
@@ -451,7 +464,7 @@ class ContentBrain:
             )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
-        content = self._call_with_fallback(messages, temperature=0.8)
+        content = self._call_with_fallback(messages, temperature=0.8, max_completion_tokens=300)
         refined = _clean_single_line_title(content)
 
         if _contains_ai_mention(refined):
@@ -465,7 +478,7 @@ class ContentBrain:
             {"role": "system", "content": "Tu génères une requête de recherche visuelle en anglais, 6 mots max, sans phrase. Inclure des termes comme photorealistic, historical documentary, real photography, dark mysterious atmosphere. INTERDICTION ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
-        content = self._call_with_fallback(messages, temperature=0.7)
+        content = self._call_with_fallback(messages, temperature=0.7, max_completion_tokens=200)
         return _clean_single_line_title(content).replace('"', '')
 
     # =================================================================
@@ -501,7 +514,7 @@ RETURNS JSON:
             {"role": "user", "content": prompt},
         ]
 
-        data = self._call_json_with_retry(messages, temperature=1.1)
+        data = self._call_json_with_retry(messages, temperature=1.1, max_completion_tokens=2000)
 
         hooks = data.get("hooks")
         if not isinstance(hooks, list):
@@ -536,8 +549,8 @@ RETURNS JSON:
 
     def propose_real_case(self, topic):
         """
-        CORRECTIF : verification Wikidata du lieu propose AVANT de lancer
-        la recherche Wikipedia. Empeche de perdre du temps/tokens sur un
+        Verification Wikidata du lieu propose AVANT de lancer la
+        recherche Wikipedia. Empeche de perdre du temps/tokens sur un
         lieu hallucine ou confondu avec un lieu similaire (ex: deux
         "ponts du diable" distincts dans des villes differentes).
         """
@@ -563,7 +576,7 @@ RETURNS JSON:
             {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
         ]
 
-        content = self._call_with_fallback(messages, temperature=0.3)
+        content = self._call_with_fallback(messages, temperature=0.3, max_completion_tokens=100)
         case_name = _clean_single_line_title(content)
 
         if not case_name:
@@ -585,7 +598,7 @@ RETURNS JSON:
                     )},
                     {"role": "user", "content": f"Sujet : {topic}"},
                 ]
-                content_retry = self._call_with_fallback(messages_retry, temperature=0.3)
+                content_retry = self._call_with_fallback(messages_retry, temperature=0.3, max_completion_tokens=100)
                 case_name_retry = _clean_single_line_title(content_retry)
                 if case_name_retry:
                     case_name = case_name_retry
@@ -607,11 +620,16 @@ RETURNS JSON:
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
         """
-        CORRECTIF : la validation (nombre de scenes, champs obligatoires,
-        mentions IA) est desormais executee DANS la boucle de retry, avec
-        un try/except -- toute erreur de validation devient une "issue"
-        corrigee via regeneration, au lieu de faire planter tout le run
-        des la premiere tentative ratee.
+        La validation (nombre de scenes, champs obligatoires, mentions IA)
+        est executee DANS la boucle de retry, avec un try/except -- toute
+        erreur de validation devient une "issue" corrigee via
+        regeneration, au lieu de faire planter tout le run.
+
+        CORRECTIF CRITIQUE : budget de tokens dynamique et suffisant,
+        proportionnel au nombre de scenes demandees, pour eviter la
+        troncature JSON en cours de generation (cause racine du bug
+        "max completion tokens reached before generating a valid
+        document").
         """
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
@@ -676,12 +694,23 @@ developper {scene_count} scenes avec suffisamment de matiere, repartis le
 contenu disponible sur EXACTEMENT {scene_count} scenes plus courtes plutot
 que d'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
 ecrit les {scene_count} scenes completes et la fermeture correcte du JSON.
+Reste CONCIS sur chaque champ texte pour ne pas depasser le budget de
+tokens disponible tout en couvrant les {scene_count} scenes en entier.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
+
+        # CORRECTIF CRITIQUE : budget de tokens proportionnel au nombre de
+        # scenes demandees, avec une marge confortable (~700 tokens par
+        # scene detaillee + marge fixe pour title/visual_identity/etc.),
+        # plafonne a 16000 pour rester dans une limite raisonnable de cout
+        # et de latence tout en couvrant largement les besoins (65 536
+        # est la limite max du modele, mais un tel volume n'est jamais
+        # necessaire pour ce cas d'usage).
+        estimated_tokens_needed = min(scene_count * 700 + 1500, 16000)
 
         correction_feedback = ""
 
@@ -697,14 +726,16 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 {"role": "user", "content": prompt},
             ]
 
-            data = self._call_json_with_retry(messages, temperature=0.7)
+            data = self._call_json_with_retry(
+                messages,
+                temperature=0.7,
+                max_completion_tokens=estimated_tokens_needed,
+            )
 
             scenes = data.get("scenes", [])
             if not isinstance(scenes, list):
                 scenes = []
 
-            # CORRECTIF : mauvais comptage de scenes = "issue" a corriger,
-            # plus une exception qui plante tout le run immediatement.
             scene_count_issue = None
             if len(scenes) != scene_count:
                 scene_count_issue = (
@@ -722,6 +753,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 CORRECTION OBLIGATOIRE :
 {scene_count_issue}
 Regenere le script complet avec EXACTEMENT {scene_count} scenes cette fois-ci.
+Reste concis sur chaque champ texte pour respecter le budget de tokens.
 """
                     continue
                 else:
@@ -748,9 +780,6 @@ Regenere le script complet avec EXACTEMENT {scene_count} scenes cette fois-ci.
             try:
                 self._validate_script(data, scene_count, topic)
             except ValueError as e:
-                # CORRECTIF : les autres erreurs de validation (text
-                # manquant, mention IA detectee, etc.) declenchent aussi
-                # une regeneration au lieu de crasher le run.
                 print(f"⚠️ Erreur de validation (tentative {fact_check_attempt + 1}) : {e}")
                 if fact_check_attempt < max_fact_check_retries:
                     correction_feedback = f"""
@@ -933,7 +962,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
         ]
 
         try:
-            data = self._call_json_with_retry(messages, temperature=0.1, max_json_retries=1)
+            data = self._call_json_with_retry(messages, temperature=0.1, max_json_retries=1, max_completion_tokens=1500)
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
             return {
