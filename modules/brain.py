@@ -60,7 +60,12 @@ VERACITY_INSTRUCTION = (
     "5) Pour chaque lieu mentionne dans le champ 'location_name', precise aussi "
     "le pays reel dans un champ 'location_country' (ex: 'France', 'Allemagne', "
     "'Suisse'). Si le sujet annonce une zone geographique specifique, TOUS les "
-    "lieux du script doivent appartenir a cette zone reelle."
+    "lieux du script doivent appartenir a cette zone reelle. "
+    "6) ATTENTION AUX LIEUX AMBIGUS AVEC MEME NOM : il existe souvent plusieurs "
+    "lieux similaires (ex: plusieurs 'ponts du diable' en France, plusieurs "
+    "'eglises Saint-Pierre') dans des villes/regions differentes. Verifie "
+    "mentalement que le lieu precis correspond exactement au sujet donne, sans "
+    "confondre deux legendes/lieux distincts portant un nom proche."
 )
 
 
@@ -530,13 +535,27 @@ RETURNS JSON:
     # =================================================================
 
     def propose_real_case(self, topic):
+        """
+        CORRECTIF : verification Wikidata du lieu propose AVANT de lancer
+        la recherche Wikipedia. Empeche de perdre du temps/tokens sur un
+        lieu hallucine ou confondu avec un lieu similaire (ex: deux
+        "ponts du diable" distincts dans des villes differentes).
+        """
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
+
+        hint_country = _guess_country_hint(topic)
 
         messages = [
             {"role": "system", "content": (
                 "Tu proposes un cas historique REEL et verifiable, peu connu du "
                 "grand public, correspondant exactement au sujet donne. "
+                "ATTENTION : sois tres precis sur le lieu exact -- il existe "
+                "souvent plusieurs legendes/lieux similaires dans differentes "
+                "villes/regions (ex: plusieurs 'ponts du diable' en France a "
+                "des endroits differents). Verifie mentalement que le lieu "
+                "que tu proposes correspond exactement aux details du sujet "
+                "(region, nom propre, contexte). "
                 "Reponds UNIQUEMENT avec le nom propre exact du lieu/evenement/ "
                 "personnage principal (celui qui a un article Wikipedia), sans "
                 "phrase, sans guillemets, une seule ligne."
@@ -544,13 +563,33 @@ RETURNS JSON:
             {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
         ]
 
-        content = self._call_with_fallback(messages, temperature=0.5)
+        content = self._call_with_fallback(messages, temperature=0.3)
         case_name = _clean_single_line_title(content)
 
         if not case_name:
             return {"case_name": None, "wiki_query": None, "source": None}
 
-        hint_country = _guess_country_hint(topic)
+        if hint_country:
+            real_country = WikidataChecker.get_real_country(case_name, hint_country=hint_country)
+            if real_country and not _countries_match(hint_country, real_country):
+                print(f"⚠️ Lieu propose '{case_name}' semble incorrect "
+                      f"(Wikidata: {real_country}, attendu: {hint_country}). "
+                      f"Nouvelle tentative avec consigne renforcee...")
+
+                messages_retry = [
+                    {"role": "system", "content": (
+                        "Tu proposes un cas historique REEL, peu connu, "
+                        f"situe EXACTEMENT en {hint_country} (pas ailleurs). "
+                        "Reponds UNIQUEMENT avec le nom propre exact du lieu, "
+                        "sans phrase, sans guillemets, une seule ligne."
+                    )},
+                    {"role": "user", "content": f"Sujet : {topic}"},
+                ]
+                content_retry = self._call_with_fallback(messages_retry, temperature=0.3)
+                case_name_retry = _clean_single_line_title(content_retry)
+                if case_name_retry:
+                    case_name = case_name_retry
+
         source = fetch_grounding_source(case_name, hint_country=hint_country)
 
         return {
@@ -567,6 +606,13 @@ RETURNS JSON:
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
+        """
+        CORRECTIF : la validation (nombre de scenes, champs obligatoires,
+        mentions IA) est desormais executee DANS la boucle de retry, avec
+        un try/except -- toute erreur de validation devient une "issue"
+        corrigee via regeneration, au lieu de faire planter tout le run
+        des la premiere tentative ratee.
+        """
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
         hint_country = _guess_country_hint(topic)
@@ -591,10 +637,7 @@ CORRECTIF (IMAGES CONCRETES) : Pour la clé 'event_context', si une scene
 decrit un evenement precis et date mentionne dans l'extrait ci-dessus
 (ex: un incendie, une destruction, une decouverte), resume ce contexte en
 quelques mots factuels visuellement exploitables pour generer une image
-(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Cela
-permet de generer une image IA fidele a l'evenement reel plutot qu'une vue
-generique et intemporelle du lieu, car les archives Wikimedia/Openverse ne
-contiennent jamais de photos de presse recentes sous copyright. Si la
+(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Si la
 scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
 """
             print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
@@ -626,7 +669,13 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
 14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 
-GENERE EXACTEMENT {scene_count} scenes.
+CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
+Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
+Compte precisement le nombre d'elements avant de repondre. Si tu ne peux pas
+developper {scene_count} scenes avec suffisamment de matiere, repartis le
+contenu disponible sur EXACTEMENT {scene_count} scenes plus courtes plutot
+que d'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
+ecrit les {scene_count} scenes completes et la fermeture correcte du JSON.
 
 Retourne un JSON avec les clés :
 title, visual_identity, audio_profile, scenes.
@@ -641,7 +690,8 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 
             messages = [
                 {"role": "system", "content": (
-                    f"Tu produis uniquement du JSON valide. La cle scenes contient exactement {scene_count} scenes. "
+                    f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
+                    f"ni plus ni moins -- c'est une contrainte absolue et non negociable. "
                     f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
                 )},
                 {"role": "user", "content": prompt},
@@ -651,7 +701,34 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 
             scenes = data.get("scenes", [])
             if not isinstance(scenes, list):
-                raise ValueError("La reponse ne contient pas de tableau scenes.")
+                scenes = []
+
+            # CORRECTIF : mauvais comptage de scenes = "issue" a corriger,
+            # plus une exception qui plante tout le run immediatement.
+            scene_count_issue = None
+            if len(scenes) != scene_count:
+                scene_count_issue = (
+                    f"Le JSON genere contient {len(scenes)} scenes au lieu des "
+                    f"{scene_count} scenes exactement demandees. Il faut "
+                    f"generer EXACTEMENT {scene_count} scenes, ni plus ni moins."
+                )
+
+            if scene_count_issue:
+                print(f"⚠️ Comptage de scenes incorrect (tentative {fact_check_attempt + 1}) : {scene_count_issue}")
+
+                if fact_check_attempt < max_fact_check_retries:
+                    correction_feedback = f"""
+
+CORRECTION OBLIGATOIRE :
+{scene_count_issue}
+Regenere le script complet avec EXACTEMENT {scene_count} scenes cette fois-ci.
+"""
+                    continue
+                else:
+                    raise ValueError(
+                        f"Impossible d'obtenir {scene_count} scenes apres "
+                        f"{max_fact_check_retries + 1} tentatives (dernier essai : {len(scenes)} scenes)."
+                    )
 
             for idx, scene in enumerate(scenes, start=1):
                 if isinstance(scene, dict):
@@ -668,7 +745,24 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                     scene.setdefault("scene_type", "generic")
                     scene.setdefault("event_context", "")
 
-            self._validate_script(data, scene_count, topic)
+            try:
+                self._validate_script(data, scene_count, topic)
+            except ValueError as e:
+                # CORRECTIF : les autres erreurs de validation (text
+                # manquant, mention IA detectee, etc.) declenchent aussi
+                # une regeneration au lieu de crasher le run.
+                print(f"⚠️ Erreur de validation (tentative {fact_check_attempt + 1}) : {e}")
+                if fact_check_attempt < max_fact_check_retries:
+                    correction_feedback = f"""
+
+CORRECTION OBLIGATOIRE :
+Le script precedent a echoue a la validation : {e}
+Corrige ce probleme specifique et regenere un script complet et valide avec
+EXACTEMENT {scene_count} scenes.
+"""
+                    continue
+                else:
+                    raise
 
             geo_issue = self._check_geography_consistency(topic, data["scenes"])
             wikidata_issues = self._check_wikidata_locations(data["scenes"], hint_country=hint_country)
@@ -703,6 +797,7 @@ Le script precedent contenait les incoherences suivantes, a corriger imperativem
 {chr(10).join(f"- {i}" for i in issues)}
 Regenere un script totalement coherent avec des faits REELS et bien localises,
 en respectant strictement les memes regles{" et la source verifiee fournie" if source else ""}.
+IMPORTANT : garde EXACTEMENT {scene_count} scenes.
 """
             else:
                 print(f"❌ Incoherences factuelles persistantes apres {max_fact_check_retries + 1} tentatives, "
