@@ -16,29 +16,44 @@ class AssetManager:
         Orchestrateur principal.
         scene_type: 'generic' (vagues, ambiance) ou 'specific' (personnage, événement précis).
 
-        CORRECTIF : nouveau parametre optionnel event_context. Permet de
-        transmettre un descriptif factuel precis (ex: "incendie nocturne
-        de novembre 2025, ruines en flammes") issu du script/scene, afin
-        que le prompt IA genere une image concrete de l'evenement plutot
-        qu'une vue generique et intemporelle du lieu. Utile notamment
-        quand aucune archive (Wikimedia/Openverse) ne peut exister pour
-        un evenement recent, car ces sources ne contiennent jamais de
-        photos de presse recentes sous copyright.
+        event_context: descriptif factuel precis (ex: "incendie nocturne de
+        novembre 2025, ruines en flammes") issu du script/scene, transmis au
+        prompt IA en dernier recours pour generer une image concrete de
+        l'evenement plutot qu'une vue generique et intemporelle du lieu.
+
+        NOTE SUR OPENVERSE : ArchiveProvider.get_wikimedia() appelle deja
+        Openverse en interne (etape 2 de sa cascade : categorie Wikimedia
+        exacte -> Openverse -> plein texte Wikimedia). CORRECTIF : on
+        rend ici cet appel explicite et independant, pour pouvoir le
+        piloter/logger depuis AssetManager sans devoir lire ArchiveProvider,
+        et pour eventuellement changer l'ordre de priorite plus tard sans
+        toucher a ArchiveProvider.
         """
 
         # ---------------------------------------------------------
         # SCÈNES SPÉCIFIQUES (Lieux réels, personnages, objets)
         # ---------------------------------------------------------
         if scene_type == "specific":
-            # 1. On cherche d'ABORD la vraie photo dans les archives !
+            # 1. Wikimedia (catégorie exacte + Openverse intercalaire + plein texte)
             print(f"🔍 Recherche de la vraie photo historique : '{query}'...")
             if self.archives.get_wikimedia(query, output_path):
                 print("🏛️ Vraie archive trouvée !")
                 return True, "wiki"
 
-            # 2. Si Wikipédia n'a rien, on demande à l'IA de l'imaginer,
+            # 2. CORRECTIF : tentative Openverse EXPLICITE et independante,
+            # au cas ou get_wikimedia() aurait echoue avant meme d'atteindre
+            # son etape interne Openverse (ex: si la logique d'ArchiveProvider
+            # change plus tard). Filet de securite supplementaire, sans
+            # duplication de telechargement grace a is_used()/mark_used()
+            # deja geres dans ArchiveProvider.get_openverse().
+            print(f"🌍 Nouvelle tentative Openverse directe : '{query}'...")
+            if self.archives.get_openverse(query, output_path):
+                print("🏛️ Archive Openverse trouvée (tentative directe) !")
+                return True, "openverse"
+
+            # 3. Si aucune archive n'a rien, on demande à l'IA de l'imaginer,
             # en enrichissant le prompt avec le contexte factuel de
-            # l'evenement si disponible (CORRECTIF).
+            # l'evenement si disponible.
             ai_prompt = query
             if event_context:
                 ai_prompt = f"{query}, {event_context}"
@@ -53,12 +68,12 @@ class AssetManager:
         # SCÈNES GÉNÉRIQUES (Ambiance, paysages, émotions)
         # ---------------------------------------------------------
         else:
-            # 3. Vidéos d'ambiance Pexels
+            # 4. Vidéos d'ambiance Pexels/Pixabay
             print(f"🔍 Recherche vidéo d'ambiance : '{query}'...")
             if self.videos.fetch_background(query, output_path):
                 return True, "video"
 
-        # 4. FALLBACK ULTIME POUR TOUT LE MONDE (aussi enrichi si event_context fourni)
+        # 5. FALLBACK ULTIME POUR TOUT LE MONDE (aussi enrichi si event_context fourni)
         fallback_prompt = f"{query}, {event_context}" if event_context else query
         print(f"🎨 Génération IA de secours : '{fallback_prompt}'...")
         if self.ai.generate_image(fallback_prompt, output_path):
