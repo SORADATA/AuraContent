@@ -23,9 +23,6 @@ except ImportError:
 
 class AudioEngine:
     GEMINI_MODEL = "gemini-2.5-flash-preview-tts"
-    # Profil principal Gemini : documentaire mystère premium.
-    # Le prompt reste descriptif et naturel : on évite "very slow" / "high suspense"
-    # qui peuvent produire une diction trop théâtrale ou artificiellement lente.
     GEMINI_NARRATOR_STYLE = (
         "French documentary narrator. Calm, deep, warm and authoritative. "
         "Premium mystery-documentary style, intimate and cinematic but realistic. "
@@ -40,7 +37,7 @@ class AudioEngine:
         "Do not sound like an actor or a news presenter."
     )
 
-    # Fallback Edge : profils distincts et cohérents avec Gemini.
+    # Fallback Edge (1er niveau) : profils distincts et cohérents avec Gemini.
     EDGE_NARRATOR_VOICE = "fr-FR-ClaudeNeural"
     EDGE_NARRATOR_RATE = "-12%"
     EDGE_NARRATOR_PITCH = "-4Hz"
@@ -51,16 +48,27 @@ class AudioEngine:
     EDGE_WITNESS_PITCH = "-2Hz"
     EDGE_WITNESS_VOLUME = "+0%"
 
-    # Dernier recours local.
+    # === CORRECTIF : fallback final 100% masculin, grave et lent ===
+    # Remplace l'ancien recours a Kokoro (voix FR unique et FEMININE,
+    # "ff_siwis"), qui cassait la cohesion vocale de la video en alternant
+    # brutalement masculin/feminin selon la disponibilite de Gemini.
+    # fr-FR-HenriNeural est une voix masculine Edge distincte des deux
+    # premieres, utilisee ici a la fois pour narrator ET witness afin de
+    # garantir qu'aucune scene ne bascule jamais sur une voix feminine.
+    EDGE_LASTRESORT_VOICE = "fr-FR-HenriNeural"
+    EDGE_LASTRESORT_RATE = "-15%"
+    EDGE_LASTRESORT_PITCH = "-3Hz"
+    EDGE_LASTRESORT_VOLUME = "+0%"
+
+    # Kokoro reste disponible mais n'est plus utilise par defaut car sa
+    # seule voix francaise ("ff_siwis") est feminine -- cf. use_kokoro_fallback.
     KOKORO_FRENCH_VOICE = "ff_siwis"
     KOKORO_WITNESS_SPEED = 0.94
     KOKORO_NARRATOR_SPEED = 0.90
 
-    # Voix Gemini TTS. Gemini 2.5 Flash TTS accepte les voix prédéfinies.
     GEMINI_NARRATOR_VOICE = "Charon"
     GEMINI_WITNESS_VOICE = "Orus"
 
-    # Dictionnaire de correction phonétique pour la prononciation française
     PRONUNCIATION_DICT = {
         r"\bmythe\b": "mite",
         r"\bmythes\b": "mites",
@@ -83,7 +91,6 @@ class AudioEngine:
         r"\bah\b": "ah",
     }
 
-    # Remplacement des siècles et chiffres romains résiduels en toutes lettres
     ROMAN_NUMERALS_MAP = {
         r"\bXXI(?:e|ème|eme)?\s+siècle\b": "vingt et unième siècle",
         r"\bXX(?:e|ème|eme)?\s+siècle\b": "vingtième siècle",
@@ -114,7 +121,7 @@ class AudioEngine:
         r"\bNapoléon\s+III\b": "Napoléon trois",
     }
 
-    def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True):
+    def __init__(self, bark_url=None, use_kokoro=True, use_gemini=True, use_kokoro_fallback=False):
         self.output_dir = os.path.join(os.getcwd(), "assets", "audio_clips")
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -127,6 +134,13 @@ class AudioEngine:
             + f" | modèle={self.GEMINI_MODEL}"
         )
 
+        # === CORRECTIF : Kokoro desactive par defaut dans la cascade ===
+        # On garde la possibilite de l'initialiser (utile si tu veux
+        # explicitement le reactiver via use_kokoro_fallback=True), mais
+        # il n'est plus appele automatiquement dans generate_audio() afin
+        # d'eviter la rupture de voix masculine/feminine en plein milieu
+        # d'une video.
+        self.use_kokoro_fallback = use_kokoro_fallback
         self.use_kokoro = use_kokoro and KOKORO_AVAILABLE
         self._kokoro_pipeline = None
         if self.use_kokoro:
@@ -135,14 +149,12 @@ class AudioEngine:
                     lang_code="f",
                     repo_id="hexgrad/Kokoro-82M"
                 )
-                print("      Kokoro initialise avec succès")
+                print("      Kokoro initialise avec succès (fallback ultime desactive par defaut)")
             except Exception as e:
                 print(f"      Kokoro indisponible: {e}")
                 self.use_kokoro = False
 
     def clean_text(self, text):
-        # Nettoyage léger : la ponctuation doit rester disponible pour guider
-        # naturellement le rythme du moteur TTS.
         text = text.replace("\u2014", ", ").replace("\u2013", ", ")
         text = re.sub(r"\.{4,}", "...", text)
         text = re.sub(r"\s+([,;:!?])", r"\1", text)
@@ -150,21 +162,14 @@ class AudioEngine:
         return " ".join(text.split()).strip()
 
     def sanitize_for_phonetics(self, text):
-        """
-        Applique un dictionnaire de remplacement phonétique strict
-        dédié uniquement au moteur audio (sans impacter les sous-titres visuels).
-        """
         sanitized = self.clean_text(text)
 
-        # 1. Remplacement des chiffres romains & siècles résiduels
         for pattern, replacement in self.ROMAN_NUMERALS_MAP.items():
             sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
 
-        # 2. Remplacement des mots trompeurs pour la synthèse FR (ex: mythe -> mite)
         for pattern, replacement in self.PRONUNCIATION_DICT.items():
             sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
 
-        # 3. Lissage des abréviations
         sanitized = re.sub(r"\bav\.\s*J\.-C\.\b", "avant Jésus-Christ", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"\bap\.\s*J\.-C\.\b", "après Jésus-Christ", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"\benv\.\b", "environ", sanitized, flags=re.IGNORECASE)
@@ -181,9 +186,6 @@ class AudioEngine:
         else:
             style = self.GEMINI_NARRATOR_STYLE
 
-        # Une instruction explicite mais courte. On évite les marqueurs [pause]
-        # dans le texte, car le modèle gère mieux les pauses via la ponctuation
-        # et le style vocal.
         return f"{style}\nRead this French text naturally:\n{cleaned}"
 
     def get_audio_duration(self, file_path):
@@ -235,6 +237,11 @@ class AudioEngine:
     def _try_gemini(self, text, output_path_wav, voice_type="narrator"):
         """
         Gemini TTS principal avec système de Retry anti-blocage (429).
+        CORRECTIF : les tentatives d'attente (25/50/75s) restent, mais on
+        reduit le nombre de retries a 2 au lieu de 3 pour eviter de bloquer
+        1min45 sur une seule scene deja vouee a echouer si le quota est
+        vraiment epuise -- le budget de temps est mieux utilise en laissant
+        la cascade basculer plus vite vers Edge.
         """
         if not self.use_gemini:
             print("       Gemini TTS désactivé (GEMINI_API_KEY absente ou use_gemini=False)")
@@ -275,17 +282,16 @@ class AudioEngine:
             }
         }
 
-        # Boucle de 3 tentatives maximum
-        for attempt in range(3):
+        max_attempts = 2
+        for attempt in range(max_attempts):
             try:
                 response = requests.post(url, json=payload, timeout=90)
 
-                # Si l'API nous bloque pour cause de quota (429)
                 if response.status_code == 429:
-                    attente = 25 * (attempt + 1) # Attend 25s, puis 50s si ça bloque encore
-                    print(f"       Gemini TTS saturé (429). Pause automatique de {attente}s avant de réessayer (Tentative {attempt + 1}/3)...")
+                    attente = 20 * (attempt + 1)
+                    print(f"       Gemini TTS saturé (429). Pause automatique de {attente}s avant de réessayer (Tentative {attempt + 1}/{max_attempts})...")
                     time.sleep(attente)
-                    continue # On relance la boucle pour réessayer
+                    continue
 
                 if response.status_code != 200:
                     try:
@@ -342,25 +348,13 @@ class AudioEngine:
             except Exception as e:
                 print(f"       Gemini TTS erreur: {e}")
                 return False
-                
-        # Si après les 3 tentatives ça bloque toujours
-        print("       Gemini TTS a échoué après 3 tentatives de contournement de quota.")
+
+        print(f"       Gemini TTS a échoué après {max_attempts} tentatives de contournement de quota.")
         return False
 
-    async def _try_edge(self, text, output_path_mp3, voice_type="narrator"):
+    async def _try_edge_with_voice(self, text, output_path_mp3, voice, rate, pitch, volume):
         if not EDGE_AVAILABLE:
             raise RuntimeError("edge_tts non installe")
-
-        if voice_type == "witness":
-            voice = self.EDGE_WITNESS_VOICE
-            rate = self.EDGE_WITNESS_RATE
-            pitch = self.EDGE_WITNESS_PITCH
-            volume = self.EDGE_WITNESS_VOLUME
-        else:
-            voice = self.EDGE_NARRATOR_VOICE
-            rate = self.EDGE_NARRATOR_RATE
-            pitch = self.EDGE_NARRATOR_PITCH
-            volume = self.EDGE_NARRATOR_VOLUME
 
         phonetic_text = self.sanitize_for_phonetics(text)
 
@@ -373,18 +367,50 @@ class AudioEngine:
         )
         await communicate.save(output_path_mp3)
 
+    async def _try_edge(self, text, output_path_mp3, voice_type="narrator"):
+        if voice_type == "witness":
+            voice = self.EDGE_WITNESS_VOICE
+            rate = self.EDGE_WITNESS_RATE
+            pitch = self.EDGE_WITNESS_PITCH
+            volume = self.EDGE_WITNESS_VOLUME
+        else:
+            voice = self.EDGE_NARRATOR_VOICE
+            rate = self.EDGE_NARRATOR_RATE
+            pitch = self.EDGE_NARRATOR_PITCH
+            volume = self.EDGE_NARRATOR_VOLUME
+
+        await self._try_edge_with_voice(text, output_path_mp3, voice, rate, pitch, volume)
+
+    async def _try_edge_last_resort(self, text, output_path_mp3):
+        """
+        === CORRECTIF PRINCIPAL ===
+        Fallback final 100% masculin (fr-FR-HenriNeural), grave et lent,
+        utilise pour narrator ET witness. Remplace l'ancien recours a
+        Kokoro qui introduisait une voix feminine (ff_siwis) et cassait la
+        cohesion vocale de la video.
+        """
+        await self._try_edge_with_voice(
+            text,
+            output_path_mp3,
+            voice=self.EDGE_LASTRESORT_VOICE,
+            rate=self.EDGE_LASTRESORT_RATE,
+            pitch=self.EDGE_LASTRESORT_PITCH,
+            volume=self.EDGE_LASTRESORT_VOLUME,
+        )
+
     async def generate_audio(self, text, output_filename, voice_type="narrator"):
         base_name = output_filename.rsplit(".", 1)[0]
         wav_path = os.path.join(self.output_dir, base_name + ".wav")
         mp3_path = os.path.join(self.output_dir, base_name + ".mp3")
+        mp3_path_lastresort = os.path.join(self.output_dir, base_name + "_lr.mp3")
 
-        # Priorité qualité :
-        # 1. Gemini TTS : moteur principal premium
-        # 2. Edge TTS : fallback très fiable et profils vocaux distincts
-        # 3. Kokoro : dernier recours local
-        #
-        # Important : Gemini est tenté AVANT Kokoro. Le pipeline ne retombera
-        # donc plus silencieusement sur Kokoro dès que celui-ci est disponible.
+        # Cascade :
+        # 1. Gemini TTS (Charon/Orus) : moteur principal premium
+        # 2. Edge TTS profil dedie (Claude/Jerome) : fallback fiable
+        # 3. Edge TTS Henri (masculin, grave, lent) : fallback ultime,
+        #    garantit qu'AUCUNE scene ne bascule sur une voix feminine.
+        # 4. Kokoro (ff_siwis, feminine) : desactive par defaut. Ne sert
+        #    que si use_kokoro_fallback=True est explicitement demande.
 
         if self._try_gemini(text, wav_path, voice_type=voice_type):
             return wav_path, "gemini-tts"
@@ -397,8 +423,16 @@ class AudioEngine:
         except Exception as e:
             print(f"      Edge TTS indisponible: {e}")
 
-        if self._try_kokoro(text, wav_path, voice_type=voice_type):
-            print(f"      Fallback Kokoro utilisé ({voice_type})")
+        try:
+            await self._try_edge_last_resort(text, mp3_path_lastresort)
+            if self._file_ready(mp3_path_lastresort):
+                print(f"      Fallback Edge TTS ultime (Henri, masculin) utilisé ({voice_type})")
+                return mp3_path_lastresort, "edge-tts-lastresort"
+        except Exception as e:
+            print(f"      Edge TTS ultime indisponible: {e}")
+
+        if self.use_kokoro_fallback and self._try_kokoro(text, wav_path, voice_type=voice_type):
+            print(f"      Fallback Kokoro utilisé ({voice_type}) -- ATTENTION : voix feminine, rupture de coherence vocale possible")
             return wav_path, "kokoro"
 
         raise RuntimeError(
@@ -406,7 +440,7 @@ class AudioEngine:
         )
 
     async def process_script(self, script_data):
-        print("Génération audio documentaire (Gemini → Edge → Kokoro)...")
+        print("Génération audio documentaire (Gemini → Edge → Edge ultime)...")
 
         for scene in script_data:
             scene_id = scene["id"]
@@ -432,9 +466,6 @@ class AudioEngine:
                 f"({scene['duration']:.2f}s)"
             )
 
-            # On met le script en pause pendant 7 secondes après chaque scène.
-            # Cela empêche l'erreur 429 de Gemini (limite de 10 requêtes par minute)
-            # et garantit que tes voix "Charon" et "Orus" fonctionneront jusqu'à la fin !
             await asyncio.sleep(12)
 
         return script_data
