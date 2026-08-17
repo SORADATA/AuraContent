@@ -210,7 +210,6 @@ class WikidataChecker:
 
     @classmethod
     def _throttled_get(cls, params, max_retries=2):
-        
         for attempt in range(max_retries + 1):
             time.sleep(cls.MIN_DELAY_BETWEEN_CALLS)
             try:
@@ -405,6 +404,12 @@ def _estimate_prompt_tokens(messages):
 
 
 class ContentBrain:
+    def __init__(self):
+        # Suppose que reasoning_effort / reasoning_format sont acceptes par
+        # l'API tant qu'aucune erreur ne prouve le contraire (voir
+        # _call_with_fallback). Evite de re-tester inutilement a chaque appel.
+        self._reasoning_params_supported = True
+
     def _build_client(self):
         groq_key = os.getenv("GROQ_API_KEY")
         if not groq_key:
@@ -512,6 +517,18 @@ class ContentBrain:
                     "temperature": temperature,
                     "max_completion_tokens": max_completion_tokens,
                 }
+                if self._reasoning_params_supported:
+                    # BUG CORRIGE : ce parametre existait dans la signature
+                    # mais n'etait jamais transmis a l'API. Sans lui, qwen3.6
+                    # tourne avec son effort de raisonnement par defaut
+                    # (eleve), consomme tout le budget de tokens en <think>
+                    # et n'a plus la place d'ecrire la reponse finale.
+                    kwargs["reasoning_effort"] = reasoning_effort
+                    # Separe le raisonnement interne du contenu final au
+                    # niveau de l'API elle-meme (message.reasoning vs
+                    # message.content), au lieu de compter sur un nettoyage
+                    # regex apres coup sur du texte parfois mal forme.
+                    kwargs["reasoning_format"] = "parsed"
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
 
@@ -526,6 +543,23 @@ class ContentBrain:
                 err_str = str(e)
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
+
+                unsupported_param = (
+                    "reasoning_format" in err_str.lower()
+                    or "reasoning_effort" in err_str.lower()
+                    or "unknown parameter" in err_str.lower()
+                    or "unrecognized" in err_str.lower()
+                )
+                if unsupported_param:
+                    # Certains modeles/tiers Groq peuvent ne pas accepter un
+                    # de ces deux parametres : on les retire et on retente
+                    # immediatement plutot que de gaspiller les tentatives.
+                    print("ℹ️ Parametre reasoning_effort/reasoning_format non "
+                          "supporte par ce modele/tier, retrait et nouvelle "
+                          "tentative immediate.")
+                    self._reasoning_params_supported = False
+                    time.sleep(1)
+                    continue
 
                 rate_limit_nums = _parse_rate_limit_numbers(err_str)
 
@@ -818,6 +852,41 @@ RETURNS JSON:
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
+        """Point d'entree public. Essaie avec le nombre de scenes demande,
+        puis, si le budget de tokens Groq (8000/requete sur ce tier) ne
+        permet vraiment pas de tenir le raisonnement + un JSON complet a
+        cette taille, retente automatiquement avec moins de scenes plutot
+        que d'echouer completement. Un script un peu plus court reste
+        largement preferable a aucun script."""
+        candidate_counts = []
+        sc = scene_count
+        while sc >= 6 and len(candidate_counts) < 3:
+            candidate_counts.append(sc)
+            sc -= 3
+        if not candidate_counts:
+            candidate_counts = [scene_count]
+
+        last_error = None
+        for idx, candidate_count in enumerate(candidate_counts):
+            if idx > 0:
+                print(f"⚠️ Nouvelle tentative avec un nombre de scenes reduit : "
+                      f"{candidate_count} (au lieu de {scene_count}) pour "
+                      f"respecter le budget de tokens Groq.")
+            try:
+                return self._generate_script_attempt(
+                    topic, candidate_count, chosen_hook, max_fact_check_retries
+                )
+            except (RuntimeError, ValueError) as e:
+                last_error = e
+                print(f"❌ Echec de generation avec {candidate_count} scenes : {e}")
+                continue
+
+        raise RuntimeError(
+            f"Impossible de generer un script meme en reduisant le nombre "
+            f"de scenes ({candidate_counts}). Derniere erreur : {last_error}"
+        )
+
+    def _generate_script_attempt(self, topic, scene_count, chosen_hook, max_fact_check_retries):
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
         hint_country = _guess_country_hint(topic)
@@ -870,7 +939,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis et complet dans 'location_name' (ex: "Château de Chambord", "Église Saint-Pierre d'Oron" et non juste "Église Saint-Pierre") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
-9. {VERACITY_INSTRUCTION}
+9. Respecte scrupuleusement les exigences de veracite historique donnees dans les instructions systeme (lieux/faits reels, pays exact, pas d'invention).
 10. Pour la clé 'scene_type', choisis "specific" si la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
