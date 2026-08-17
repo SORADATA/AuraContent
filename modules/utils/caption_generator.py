@@ -1,9 +1,10 @@
 import os
 import requests
+from constants import GEMINI_MODEL, GROQ_MODEL
 
 # 🛠️ NOMS DE MODÈLES
-GEMINI_CAPTION_MODEL = "gemini-1.5-flash"
-GROQ_CAPTION_MODEL = "llama-3.3-70b-versatile"
+GEMINI_CAPTION_MODEL = GEMINI_MODEL
+GROQ_CAPTION_MODEL = GROQ_MODEL
 
 
 def generate_caption_with_gemini(prompt_legende):

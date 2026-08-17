@@ -5,6 +5,7 @@ import time
 import requests
 from openai import OpenAI
 from dotenv import load_dotenv
+from constants import GROQ_MODEL
 
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
@@ -25,8 +26,6 @@ except ImportError:
 
 load_dotenv()
 
-# NOUVEAU MODÈLE : GPT OSS 120B
-GROQ_MODEL = "openai/gpt-oss-120b"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
