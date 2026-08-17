@@ -25,7 +25,8 @@ except ImportError:
 
 load_dotenv()
 
-GROQ_MODEL = "qwen/qwen3.6-27b"
+# NOUVEAU MODÈLE RECOMMANDÉ : Direct, obéissant et sans mode "reasoning"
+GROQ_MODEL = "gpt-oss-120b"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -67,32 +68,6 @@ VERACITY_INSTRUCTION = (
     "mentalement que le lieu precis correspond exactement au sujet donne, sans "
     "confondre deux legendes/lieux distincts portant un nom proche."
 )
-
-
-# =====================================================================
-# --- NETTOYAGE DU RAISONNEMENT <think> (qwen3.6 et modeles "reasoning") ---
-# =====================================================================
-#
-# qwen/qwen3.6-27b sur Groq renvoie son raisonnement interne DIRECTEMENT
-# dans le champ `content`, encadre par <think>...</think>, avant la reponse
-# finale. Si le budget de tokens est atteint pendant ce raisonnement, la
-# balise fermante n'arrive jamais et tout le contenu utile est perdu.
-# Cette fonction doit etre appelee sur CHAQUE contenu brut recu de Groq,
-# avant tout parsing (titre, JSON, etc).
-
-_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-_THINK_ORPHAN_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
-
-
-def _strip_think_blocks(text):
-    if not text:
-        return text
-    cleaned = _THINK_BLOCK_RE.sub("", text)
-    # Si un <think> n'a jamais ete ferme (coupe par max_completion_tokens),
-    # on jette tout ce qui suit -- ce n'est que du raisonnement partiel.
-    cleaned = _THINK_ORPHAN_RE.sub("", cleaned)
-    return cleaned.strip()
-
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -144,7 +119,6 @@ Adapte le {label} selon les performances sans citer les stats explicitement.
 def _clean_single_line_title(text):
     if not text:
         return ""
-    text = _strip_think_blocks(text)
     cleaned = text.replace('"', '').replace('"', '').replace('"', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
@@ -155,8 +129,7 @@ def _clean_single_line_title(text):
 def _clean_json_response(content):
     if not content:
         return content
-    cleaned = _strip_think_blocks(content)
-    cleaned = cleaned.strip()
+    cleaned = content.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
@@ -377,8 +350,7 @@ def _estimate_prompt_tokens(messages):
 
 class ContentBrain:
     def __init__(self):
-        self._reasoning_params_supported = True
-        self._reasoning_format_supported = True
+        pass
 
     def _build_client(self):
         groq_key = os.getenv("GROQ_API_KEY")
@@ -416,45 +388,19 @@ class ContentBrain:
             content = "".join(parts).strip()
 
         if not content:
-            reasoning = None
-            if isinstance(message, dict):
-                reasoning = message.get("reasoning")
-            else:
-                reasoning = getattr(message, "reasoning", None)
-
             finish_reason = getattr(choice0, "finish_reason", None)
             if finish_reason is None and isinstance(choice0, dict):
                 finish_reason = choice0.get("finish_reason")
 
-            if finish_reason == "length" and reasoning:
-                raise ValueError(
-                    "Contenu vide de Groq : le modele a epuise son budget de "
-                    "tokens PENDANT son raisonnement interne (finish_reason="
-                    "'length'), avant d'ecrire la reponse finale. "
-                    "Augmenter max_completion_tokens ou desactiver le raisonnement. "
-                    f"Extrait : {str(reasoning)[:200]}..."
-                )
+            if finish_reason == "length":
+                raise ValueError("Contenu vide de Groq : budget de tokens épuisé (finish_reason='length'). Augmenter max_completion_tokens.")
 
             raise ValueError(f"Contenu vide de Groq: {response}")
 
-        content = _strip_think_blocks(content)
-
-        if not content:
-            finish_reason = getattr(choice0, "finish_reason", None)
-            if finish_reason is None and isinstance(choice0, dict):
-                finish_reason = choice0.get("finish_reason")
-            raise ValueError(
-                "Contenu vide apres suppression du bloc think : le modele "
-                "a probablement ete coupe (finish_reason="
-                f"'{finish_reason}') avant de finir son raisonnement. "
-                "Augmenter max_completion_tokens."
-            )
-
-        return content
+        return content.strip()
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
-                             max_completion_tokens=3000, reasoning_effort="none",
-                             hard_token_cap=7500):
+                             max_completion_tokens=3000, hard_token_cap=7500):
         client = self._build_client()
         last_error = None
 
@@ -480,17 +426,11 @@ class ContentBrain:
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
 
-                if self._reasoning_params_supported:
-                    extra_body = {"reasoning_effort": reasoning_effort}
-                    if self._reasoning_format_supported:
-                        extra_body["reasoning_format"] = "parsed"
-                    kwargs["extra_body"] = extra_body
-
                 response = client.chat.completions.create(**kwargs)
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
 
-                time.sleep(2)
+                time.sleep(1)
                 return content
 
             except Exception as e:
@@ -498,42 +438,12 @@ class ContentBrain:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
                 
-                # --- PROTECTION DES ERREURS MANUELLES (TRONCATURE) ---
-                # Si c'est notre propre erreur ValueError (budget épuisé), 
-                # on augmente les tokens et on retente, SANS toucher aux paramètres.
-                if isinstance(e, ValueError):
+                # Relance si le budget de tokens a été épuisé
+                if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
                     prompt_tokens_est = _estimate_prompt_tokens(messages)
                     available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
                     max_completion_tokens = max(500, min(max_completion_tokens + 1500, available))
                     time.sleep(2)
-                    continue
-
-                # --- AUTO-CORRECTIF INTELLIGENT POUR REASONING_EFFORT ---
-                if "reasoning_effort" in err_str and "must be one of" in err_str:
-                    allowed_values = re.findall(r"`([^`]+)`", err_str.split("must be one of")[1])
-                    if allowed_values:
-                        new_effort = "none" if "none" in allowed_values else allowed_values[0]
-                        print(f"ℹ️ Valeur '{reasoning_effort}' refusée pour reasoning_effort. Auto-correction : '{new_effort}'")
-                        reasoning_effort = new_effort
-                        time.sleep(1)
-                        continue
-
-                unsupported_param = (
-                    "reasoning_format" in err_str.lower()
-                    or "reasoning_effort" in err_str.lower()
-                    or "unknown parameter" in err_str.lower()
-                    or "unrecognized" in err_str.lower()
-                    or "unexpected keyword argument" in err_str.lower()
-                )
-                
-                if unsupported_param:
-                    if self._reasoning_format_supported:
-                        print("ℹ️ 'reasoning_format' non supporte, retrait et nouvelle tentative immediate.")
-                        self._reasoning_format_supported = False
-                    else:
-                        print("ℹ️ Parametres reasoning_effort/format non supportes, retrait complet.")
-                        self._reasoning_params_supported = False
-                    time.sleep(1)
                     continue
 
                 rate_limit_nums = _parse_rate_limit_numbers(err_str)
@@ -542,14 +452,14 @@ class ContentBrain:
                     limit, requested = rate_limit_nums
                     overage = requested - limit
                     new_budget = max(500, max_completion_tokens - overage - SAFETY_MARGIN_TOKENS)
-                    print(f"⚠️ Requete trop grosse pour le plafond Groq ({requested} > {limit}). "
+                    print(f"⚠️ Requete trop grosse ({requested} > {limit}). "
                           f"Reduction : {max_completion_tokens} -> {new_budget}.")
                     max_completion_tokens = new_budget
                     time.sleep(1)
 
                 elif _is_rate_limit_error(err_str):
                     wait_time = 60
-                    print(f"⏳ Limite de debit Groq atteinte (TPM/RPM), attente de {wait_time}s...")
+                    print(f"⏳ Limite de debit atteinte (TPM/RPM), attente de {wait_time}s...")
                     time.sleep(wait_time)
                 else:
                     prompt_tokens_est = _estimate_prompt_tokens(messages)
@@ -560,8 +470,7 @@ class ContentBrain:
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
-                              max_completion_tokens=6000, reasoning_effort="none",
-                              hard_token_cap=7500):
+                              max_completion_tokens=6000, hard_token_cap=7500):
         last_error = None
 
         for attempt in range(max_json_retries):
@@ -570,7 +479,6 @@ class ContentBrain:
                 temperature=temperature,
                 json_mode=True,
                 max_completion_tokens=max_completion_tokens,
-                reasoning_effort=reasoning_effort,
                 hard_token_cap=hard_token_cap,
             )
             try:
@@ -610,8 +518,7 @@ class ContentBrain:
         last_topic = ""
         for attempt in range(3):
             content = self._call_with_fallback(
-                messages, temperature=0.9,
-                max_completion_tokens=2000, reasoning_effort="none"
+                messages, temperature=0.9, max_completion_tokens=2000
             )
             topic = _clean_single_line_title(content)
             last_topic = topic
@@ -637,8 +544,7 @@ class ContentBrain:
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
         content = self._call_with_fallback(
-            messages, temperature=0.8,
-            max_completion_tokens=2000, reasoning_effort="none"
+            messages, temperature=0.8, max_completion_tokens=2000
         )
         refined = _clean_single_line_title(content)
 
@@ -660,8 +566,7 @@ class ContentBrain:
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
         content = self._call_with_fallback(
-            messages, temperature=0.7,
-            max_completion_tokens=1500, reasoning_effort="none"
+            messages, temperature=0.7, max_completion_tokens=1500
         )
         query = _clean_single_line_title(content).replace('"', '')
 
@@ -704,8 +609,7 @@ RETURNS JSON:
         ]
 
         data = self._call_json_with_retry(
-            messages, temperature=1.1,
-            max_completion_tokens=4000, reasoning_effort="none"
+            messages, temperature=1.1, max_completion_tokens=4000
         )
 
         hooks = data.get("hooks")
@@ -763,8 +667,7 @@ RETURNS JSON:
         ]
 
         content = self._call_with_fallback(
-            messages, temperature=0.3,
-            max_completion_tokens=1500, reasoning_effort="none"
+            messages, temperature=0.3, max_completion_tokens=1500
         )
         case_name = _clean_single_line_title(content)
 
@@ -788,8 +691,7 @@ RETURNS JSON:
                     {"role": "user", "content": f"Sujet : {topic}"},
                 ]
                 content_retry = self._call_with_fallback(
-                    messages_retry, temperature=0.3,
-                    max_completion_tokens=1500, reasoning_effort="none"
+                    messages_retry, temperature=0.3, max_completion_tokens=1500
                 )
                 case_name_retry = _clean_single_line_title(content_retry)
                 if case_name_retry:
@@ -935,7 +837,6 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 messages,
                 temperature=0.7,
                 max_completion_tokens=estimated_tokens_needed,
-                reasoning_effort="none",
             )
 
             scenes = data.get("scenes", [])
@@ -1174,7 +1075,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
         try:
             data = self._call_json_with_retry(
                 messages, temperature=0.1, max_json_retries=1,
-                max_completion_tokens=2500, reasoning_effort="none"
+                max_completion_tokens=2500
             )
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
