@@ -346,37 +346,15 @@ def _countries_match(declared, real):
 # =====================================================================
 # --- DETECTION DU TYPE D'ERREUR GROQ ---
 # =====================================================================
-#
-# Groq renvoie des erreurs 413/429 pour deux causes bien differentes :
-#
-#  1) PLAFOND PAR REQUETE DEPASSE : le message Groq contient explicitement
-#     "Limit 8000, Requested 10202". C'est un plafond FIXE par appel
-#     (prompt + max_completion_tokens demandes). CE N'EST PAS une fenetre
-#     qui se vide avec le temps -- attendre ne sert a RIEN, la requete
-#     echouera identiquement a chaque tentative tant qu'elle n'est pas
-#     reduite. Il FAUT diminuer max_completion_tokens (et/ou le prompt)
-#     et reessayer immediatement.
-#
-#  2) VRAIE LIMITE DE DEBIT (fenetre TPM/RPM temporairement pleine, sans
-#     indication Limit/Requested explicite) : la, attendre a du sens.
-#
-# On distingue les deux en parsant "Limit X, Requested Y" en priorite.
 
 _RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
-
-# Marge de securite : on ne vise jamais le plafond exact, pour absorber
-# les imprecisions d'estimation de tokens (le tokenizer exact de Groq
-# n'est pas disponible cote client).
 SAFETY_MARGIN_TOKENS = 400
 
-
 def _parse_rate_limit_numbers(err_str):
-    """Retourne (limit, requested) si le message Groq les precise, sinon None."""
     match = _RATE_LIMIT_NUMS_RE.search(err_str)
     if not match:
         return None
     return int(match.group(1)), int(match.group(2))
-
 
 def _is_rate_limit_error(err_str):
     err_lower = err_str.lower()
@@ -388,16 +366,10 @@ def _is_rate_limit_error(err_str):
         or "rpm" in err_lower
     )
 
-
 def _estimate_tokens(text):
-    """Estimation grossiere et volontairement pessimiste (sur-estime plutot
-    que sous-estimer) du nombre de tokens d'un texte, sans dependance a un
-    tokenizer specifique. ~3 caracteres/token est prudent pour du francais
-    (accents, mots composes) mele a de l'anglais technique."""
     if not text:
         return 0
     return max(1, len(text) // 3)
-
 
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
@@ -405,9 +377,6 @@ def _estimate_prompt_tokens(messages):
 
 class ContentBrain:
     def __init__(self):
-        # Suppose que reasoning_effort / reasoning_format sont acceptes par
-        # l'API tant qu'aucune erreur ne prouve le contraire (voir
-        # _call_with_fallback). Evite de re-tester inutilement a chaque appel.
         self._reasoning_params_supported = True
         self._reasoning_format_supported = True
 
@@ -463,16 +432,12 @@ class ContentBrain:
                     "tokens PENDANT son raisonnement interne (finish_reason="
                     "'length'), avant d'ecrire la reponse finale. "
                     "Augmenter max_completion_tokens et/ou reduire "
-                    "reasoning_effort a 'low'. "
+                    "reasoning_effort a 'default'. "
                     f"Extrait du raisonnement : {str(reasoning)[:200]}..."
                 )
 
             raise ValueError(f"Contenu vide de Groq: {response}")
 
-        # --- FIX PRINCIPAL ---
-        # qwen3.6 met son raisonnement <think>...</think> DANS le content.
-        # On le retire systematiquement ici, une seule fois, a la source,
-        # pour que toutes les fonctions en aval recoivent du texte propre.
         content = _strip_think_blocks(content)
 
         if not content:
@@ -489,16 +454,11 @@ class ContentBrain:
         return content
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
-                             max_completion_tokens=3000, reasoning_effort="low",
+                             max_completion_tokens=3000, reasoning_effort="default",
                              hard_token_cap=7500):
         client = self._build_client()
         last_error = None
 
-        # --- Plafonnage PREVENTIF avant le premier envoi ---
-        # On estime la taille du prompt et on reduit max_completion_tokens
-        # si necessaire pour rester sous le plafond par-requete de Groq
-        # (observe a 8000 tokens sur ce tier). Ca evite d'envoyer une
-        # requete qu'on sait deja condamnee a echouer.
         prompt_tokens_est = _estimate_prompt_tokens(messages)
         available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
         if max_completion_tokens > available:
@@ -522,25 +482,8 @@ class ContentBrain:
                     kwargs["response_format"] = {"type": "json_object"}
 
                 if self._reasoning_params_supported:
-                    # BUG CORRIGE : ce parametre existait dans la signature
-                    # mais n'etait jamais transmis a l'API. Sans lui, qwen3.6
-                    # tourne avec son effort de raisonnement par defaut
-                    # (eleve), consomme tout le budget de tokens en <think>
-                    # et n'a plus la place d'ecrire la reponse finale.
-                    #
-                    # IMPORTANT : ces parametres (reasoning_effort,
-                    # reasoning_format) sont specifiques a Groq et absents
-                    # du schema officiel du SDK openai-python. Passes en
-                    # kwargs directs, la methode typee Completions.create()
-                    # les rejette avec un TypeError AVANT meme l'appel
-                    # reseau ("unexpected keyword argument"). `extra_body`
-                    # est le mecanisme prevu par le SDK pour injecter des
-                    # champs non standard directement dans le JSON envoye,
-                    # sans passer par la validation stricte des kwargs.
                     extra_body = {"reasoning_effort": reasoning_effort}
                     if self._reasoning_format_supported:
-                        # Separe le raisonnement interne du contenu final
-                        # cote API (message.reasoning vs message.content).
                         extra_body["reasoning_format"] = "parsed"
                     kwargs["extra_body"] = extra_body
 
@@ -556,6 +499,16 @@ class ContentBrain:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
 
+                # --- AUTO-CORRECTIF INTELLIGENT POUR REASONING_EFFORT ---
+                if "reasoning_effort" in err_str and "must be one of" in err_str:
+                    allowed_values = re.findall(r"`([^`]+)`", err_str.split("must be one of")[1])
+                    if allowed_values:
+                        new_effort = "default" if "default" in allowed_values else allowed_values[0]
+                        print(f"ℹ️ Valeur '{reasoning_effort}' refusée pour reasoning_effort. Auto-correction depuis l'erreur Groq : '{new_effort}'")
+                        reasoning_effort = new_effort
+                        time.sleep(1)
+                        continue
+
                 unsupported_param = (
                     "reasoning_format" in err_str.lower()
                     or "reasoning_effort" in err_str.lower()
@@ -563,19 +516,14 @@ class ContentBrain:
                     or "unrecognized" in err_str.lower()
                     or "unexpected keyword argument" in err_str.lower()
                 )
+                
                 if unsupported_param:
                     if self._reasoning_format_supported:
-                        # Premier repli : reasoning_format peut etre le
-                        # champ en cause (deja observe). On le retire mais
-                        # on garde reasoning_effort, qui est plus largement
-                        # supporte cote Groq, puis on retente immediatement.
                         print("ℹ️ 'reasoning_format' non supporte, retrait "
                               "(on garde 'reasoning_effort') et nouvelle "
                               "tentative immediate.")
                         self._reasoning_format_supported = False
                     else:
-                        # Deuxieme repli : meme sans reasoning_format, ca
-                        # echoue encore -> on desactive tout et on retente.
                         print("ℹ️ Parametres reasoning_effort/reasoning_format "
                               "non supportes par ce SDK/tier, retrait complet "
                               "et nouvelle tentative immediate.")
@@ -586,9 +534,6 @@ class ContentBrain:
                 rate_limit_nums = _parse_rate_limit_numbers(err_str)
 
                 if rate_limit_nums:
-                    # Plafond PAR REQUETE depasse (ex: "Limit 8000, Requested
-                    # 10202"). Attendre ne changerait rien : il faut reduire
-                    # la taille demandee et reessayer tout de suite.
                     limit, requested = rate_limit_nums
                     overage = requested - limit
                     new_budget = max(500, max_completion_tokens - overage - SAFETY_MARGIN_TOKENS)
@@ -601,16 +546,11 @@ class ContentBrain:
                     time.sleep(1)
 
                 elif _is_rate_limit_error(err_str):
-                    # Vraie limite de debit (TPM/RPM) sans indication de
-                    # taille : ici attendre a du sens.
                     wait_time = 60
                     print(f"⏳ Limite de debit Groq atteinte (TPM/RPM), "
                           f"attente de {wait_time}s avant nouvelle tentative...")
                     time.sleep(wait_time)
                 else:
-                    # Erreur "classique" (JSON invalide, contenu vide, etc.)
-                    # -> on laisse un peu plus de marge de sortie au modele,
-                    # sans jamais depasser le plafond dur.
                     prompt_tokens_est = _estimate_prompt_tokens(messages)
                     available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
                     max_completion_tokens = max(500, min(max_completion_tokens + 1000, available))
@@ -619,7 +559,7 @@ class ContentBrain:
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
-                              max_completion_tokens=6000, reasoning_effort="low",
+                              max_completion_tokens=6000, reasoning_effort="default",
                               hard_token_cap=7500):
         last_error = None
 
@@ -639,9 +579,6 @@ class ContentBrain:
                 last_error = e
                 print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), "
                       f"nouvelle tentative avec budget de tokens augmenté...")
-                # Le JSON malforme vient generalement d'une troncature en
-                # plein milieu -> on augmente le budget avant de retenter,
-                # sans jamais viser le plafond dur (7500, marge comprise).
                 max_completion_tokens = min(max_completion_tokens + 1000, 7000)
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
@@ -673,7 +610,7 @@ class ContentBrain:
         for attempt in range(3):
             content = self._call_with_fallback(
                 messages, temperature=0.9,
-                max_completion_tokens=2000, reasoning_effort="low"
+                max_completion_tokens=2000, reasoning_effort="default"
             )
             topic = _clean_single_line_title(content)
             last_topic = topic
@@ -700,7 +637,7 @@ class ContentBrain:
         ]
         content = self._call_with_fallback(
             messages, temperature=0.8,
-            max_completion_tokens=2000, reasoning_effort="low"
+            max_completion_tokens=2000, reasoning_effort="default"
         )
         refined = _clean_single_line_title(content)
 
@@ -723,12 +660,11 @@ class ContentBrain:
         ]
         content = self._call_with_fallback(
             messages, temperature=0.7,
-            max_completion_tokens=1500, reasoning_effort="low"
+            max_completion_tokens=1500, reasoning_effort="default"
         )
         query = _clean_single_line_title(content).replace('"', '')
 
         if not query:
-            # Filet de securite : ne jamais renvoyer une chaine vide/"<think>"
             return "photorealistic historical documentary dark atmosphere"
         return query
 
@@ -768,7 +704,7 @@ RETURNS JSON:
 
         data = self._call_json_with_retry(
             messages, temperature=1.1,
-            max_completion_tokens=4000, reasoning_effort="low"
+            max_completion_tokens=4000, reasoning_effort="default"
         )
 
         hooks = data.get("hooks")
@@ -827,7 +763,7 @@ RETURNS JSON:
 
         content = self._call_with_fallback(
             messages, temperature=0.3,
-            max_completion_tokens=1500, reasoning_effort="low"
+            max_completion_tokens=1500, reasoning_effort="default"
         )
         case_name = _clean_single_line_title(content)
 
@@ -852,7 +788,7 @@ RETURNS JSON:
                 ]
                 content_retry = self._call_with_fallback(
                     messages_retry, temperature=0.3,
-                    max_completion_tokens=1500, reasoning_effort="low"
+                    max_completion_tokens=1500, reasoning_effort="default"
                 )
                 case_name_retry = _clean_single_line_title(content_retry)
                 if case_name_retry:
@@ -874,12 +810,6 @@ RETURNS JSON:
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
-        """Point d'entree public. Essaie avec le nombre de scenes demande,
-        puis, si le budget de tokens Groq (8000/requete sur ce tier) ne
-        permet vraiment pas de tenir le raisonnement + un JSON complet a
-        cette taille, retente automatiquement avec moins de scenes plutot
-        que d'echouer completement. Un script un peu plus court reste
-        largement preferable a aucun script."""
         candidate_counts = []
         sc = scene_count
         while sc >= 6 and len(candidate_counts) < 3:
@@ -917,8 +847,6 @@ RETURNS JSON:
         source = grounding.get("source")
 
         if source:
-            # On limite la taille de l'extrait injecte dans le prompt pour
-            # rester loin de la limite TPM (8000 tokens/min observee).
             extract_text = source['extract'][:1200] if 'extract' in source else ""
             grounding_block = f"""
 
@@ -962,7 +890,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
 9. Respecte scrupuleusement les exigences de veracite historique donnees dans les instructions systeme (lieux/faits reels, pays exact, pas d'invention).
-10. Pour la clé 'scene_type', choisis "specific" si la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
+10. Pour la clé 'scene_type', choisis "specific" if la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
@@ -985,12 +913,6 @@ Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
-        # Budget de sortie : le raisonnement interne de qwen3.6 est retire
-        # apres coup, mais consomme du budget PENDANT la generation. Le
-        # plafond Groq observe est 8000 tokens PAR REQUETE, prompt inclus
-        # -- avec ce prompt (regles + grounding + eventuel correction
-        # feedback), il faut rester nettement en dessous. La verification
-        # preventive dans _call_with_fallback ajustera encore si besoin.
         estimated_tokens_needed = min(scene_count * 280 + 1200, 6000)
 
         correction_feedback = ""
@@ -1012,7 +934,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 messages,
                 temperature=0.7,
                 max_completion_tokens=estimated_tokens_needed,
-                reasoning_effort="low",
+                reasoning_effort="default",
             )
 
             scenes = data.get("scenes", [])
@@ -1251,7 +1173,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
         try:
             data = self._call_json_with_retry(
                 messages, temperature=0.1, max_json_retries=1,
-                max_completion_tokens=2500, reasoning_effort="low"
+                max_completion_tokens=2500, reasoning_effort="default"
             )
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
@@ -1315,4 +1237,3 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
-
