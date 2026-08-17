@@ -25,8 +25,8 @@ except ImportError:
 
 load_dotenv()
 
-# NOUVEAU MODÈLE RECOMMANDÉ : Direct, obéissant et sans mode "reasoning"
-GROQ_MODEL = "gpt-oss-120b"
+# NOUVEAU MODÈLE : GPT OSS 120B
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -767,8 +767,7 @@ CORRECTIF (IMAGES CONCRETES) : Pour la clé 'event_context', si une scene
 decrit un evenement precis et date mentionne dans l'extrait ci-dessus
 (ex: un incendie, une destruction, une decouverte), resume ce contexte en
 quelques mots factuels visuellement exploitables pour generer une image
-(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Si la
-scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
+(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Si la scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
 """
             print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
         else:
