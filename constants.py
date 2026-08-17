@@ -6,5 +6,5 @@ API_URL_FINANCE = "https://huggingface.co/api/datasets/soradata/ai_videos_Financ
 DIRECT_URL_FINANCE = "https://huggingface.co/datasets/soradata/ai_videos_Finance/resolve/main/"
 
 # 🛠️ NOMS DE MODÈLES
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 GROQ_MODEL = "openai/gpt-oss-120b"
