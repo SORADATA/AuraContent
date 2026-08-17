@@ -69,6 +69,31 @@ VERACITY_INSTRUCTION = (
 )
 
 
+# =====================================================================
+# --- NETTOYAGE DU RAISONNEMENT <think> (qwen3.6 et modeles "reasoning") ---
+# =====================================================================
+#
+# qwen/qwen3.6-27b sur Groq renvoie son raisonnement interne DIRECTEMENT
+# dans le champ `content`, encadre par <think>...</think>, avant la reponse
+# finale. Si le budget de tokens est atteint pendant ce raisonnement, la
+# balise fermante n'arrive jamais et tout le contenu utile est perdu.
+# Cette fonction doit etre appelee sur CHAQUE contenu brut recu de Groq,
+# avant tout parsing (titre, JSON, etc).
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_ORPHAN_RE = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_blocks(text):
+    if not text:
+        return text
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    # Si un <think> n'a jamais ete ferme (coupe par max_completion_tokens),
+    # on jette tout ce qui suit -- ce n'est que du raisonnement partiel.
+    cleaned = _THINK_ORPHAN_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
         r"\bdecouv", r"\bmyster", r"\bsecret", r"\bexplor",
@@ -119,7 +144,8 @@ Adapte le {label} selon les performances sans citer les stats explicitement.
 def _clean_single_line_title(text):
     if not text:
         return ""
-    cleaned = text.replace('"', '').replace('“', '').replace('”', '').strip()
+    text = _strip_think_blocks(text)
+    cleaned = text.replace('"', '').replace('"', '').replace('"', '').strip()
     lines = [line.strip(' -•\t') for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return ""
@@ -129,7 +155,8 @@ def _clean_single_line_title(text):
 def _clean_json_response(content):
     if not content:
         return content
-    cleaned = content.strip()
+    cleaned = _strip_think_blocks(content)
+    cleaned = cleaned.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
@@ -316,6 +343,28 @@ def _countries_match(declared, real):
     return d == r or d in r or r in d
 
 
+# =====================================================================
+# --- DETECTION DU TYPE D'ERREUR GROQ ---
+# =====================================================================
+#
+# Groq renvoie des erreurs 413/429 pour deux causes bien differentes :
+#  1) Le message envoye est réellement trop lourd pour le modele (contexte)
+#  2) Une limite de debit TPM (tokens/minute) est temporairement atteinte
+# Le fix pour (1) est de reduire la taille du prompt / augmenter le budget
+# de sortie. Le fix pour (2) est d'ATTENDRE que la fenetre se reinitialise
+# -- augmenter la taille demandee ne fait qu'aggraver le probleme.
+
+def _is_rate_limit_error(err_str):
+    err_lower = err_str.lower()
+    return (
+        "rate_limit_exceeded" in err_lower
+        or "tokens per minute" in err_lower
+        or "tpm" in err_lower
+        or "requests per minute" in err_lower
+        or "rpm" in err_lower
+    )
+
+
 class ContentBrain:
     def _build_client(self):
         groq_key = os.getenv("GROQ_API_KEY")
@@ -375,10 +424,27 @@ class ContentBrain:
 
             raise ValueError(f"Contenu vide de Groq: {response}")
 
+        # --- FIX PRINCIPAL ---
+        # qwen3.6 met son raisonnement <think>...</think> DANS le content.
+        # On le retire systematiquement ici, une seule fois, a la source,
+        # pour que toutes les fonctions en aval recoivent du texte propre.
+        content = _strip_think_blocks(content)
+
+        if not content:
+            finish_reason = getattr(choice0, "finish_reason", None)
+            if finish_reason is None and isinstance(choice0, dict):
+                finish_reason = choice0.get("finish_reason")
+            raise ValueError(
+                "Contenu vide apres suppression du bloc <think> : le modele "
+                "a probablement ete coupe (finish_reason="
+                f"'{finish_reason}') avant de finir son raisonnement. "
+                "Augmenter max_completion_tokens."
+            )
+
         return content
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
-                             max_completion_tokens=2000, reasoning_effort="low"):
+                             max_completion_tokens=3000, reasoning_effort="low"):
         client = self._build_client()
         last_error = None
 
@@ -401,10 +467,22 @@ class ContentBrain:
                 return content
 
             except Exception as e:
+                err_str = str(e)
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                max_completion_tokens = min(max_completion_tokens + 1000, 6000)
-                time.sleep(4)
+
+                if _is_rate_limit_error(err_str):
+                    # Vraie limite de debit (TPM/RPM) : il faut ATTENDRE que
+                    # la fenetre se reinitialise, pas demander plus de tokens.
+                    wait_time = 60
+                    print(f"⏳ Limite de debit Groq atteinte (TPM/RPM), "
+                          f"attente de {wait_time}s avant nouvelle tentative...")
+                    time.sleep(wait_time)
+                else:
+                    # Erreur "classique" (JSON invalide, contenu vide, etc.)
+                    # -> on laisse plus de marge de sortie au modele.
+                    max_completion_tokens = min(max_completion_tokens + 1500, 8000)
+                    time.sleep(4)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
@@ -425,7 +503,11 @@ class ContentBrain:
                 return data
             except json.JSONDecodeError as e:
                 last_error = e
-                print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), nouvelle tentative...")
+                print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), "
+                      f"nouvelle tentative avec budget de tokens augmenté...")
+                # Le JSON malforme vient generalement d'une troncature en
+                # plein milieu -> on augmente le budget avant de retenter.
+                max_completion_tokens = min(max_completion_tokens + 1500, 8000)
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
@@ -439,6 +521,7 @@ class ContentBrain:
             {"role": "system", "content": (
                 "Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre "
                 "en francais, une seule ligne, sans guillemets, maximum 18 mots. "
+                "Ne montre jamais ton raisonnement, reponds directement avec le titre final. "
                 f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
             {"role": "user", "content": (
@@ -455,7 +538,7 @@ class ContentBrain:
         for attempt in range(3):
             content = self._call_with_fallback(
                 messages, temperature=0.9,
-                max_completion_tokens=1500, reasoning_effort="low"
+                max_completion_tokens=2000, reasoning_effort="low"
             )
             topic = _clean_single_line_title(content)
             last_topic = topic
@@ -475,33 +558,44 @@ class ContentBrain:
             {"role": "system", "content": (
                 "Tu reformules le sujet en un titre accrocheur, sans changer le theme "
                 "ni la localisation geographique reelle du fait evoque. "
-                f"Reponds uniquement avec le titre reformule. {ACCENT_INSTRUCTION} "
-                f"{NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
+                "Reponds uniquement avec le titre reformule, sans montrer ton raisonnement. "
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
         content = self._call_with_fallback(
             messages, temperature=0.8,
-            max_completion_tokens=1500, reasoning_effort="low"
+            max_completion_tokens=2000, reasoning_effort="low"
         )
         refined = _clean_single_line_title(content)
 
-        if _contains_ai_mention(refined):
-            print(f"⚠️ Reformulation rejetée (mention IA détectée) : {refined} → on garde le sujet brut.")
+        if not refined or _contains_ai_mention(refined):
+            print(f"⚠️ Reformulation rejetée (vide ou mention IA détectée) : '{refined}' → on garde le sujet brut.")
             return _clean_single_line_title(raw_topic)
 
         return refined
 
     def generate_video_search_query(self, topic):
         messages = [
-            {"role": "system", "content": "Tu génères une requête de recherche visuelle en anglais, 6 mots max, sans phrase. Inclure des termes comme photorealistic, historical documentary, real photography, dark mysterious atmosphere. INTERDICTION ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."},
+            {"role": "system", "content": (
+                "Tu génères une requête de recherche visuelle en anglais, 6 mots max, "
+                "sans phrase, sans raisonnement visible -- reponds directement avec la "
+                "requete finale. Inclure des termes comme photorealistic, historical "
+                "documentary, real photography, dark mysterious atmosphere. INTERDICTION "
+                "ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."
+            )},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
         content = self._call_with_fallback(
             messages, temperature=0.7,
-            max_completion_tokens=1000, reasoning_effort="low"
+            max_completion_tokens=1500, reasoning_effort="low"
         )
-        return _clean_single_line_title(content).replace('"', '')
+        query = _clean_single_line_title(content).replace('"', '')
+
+        if not query:
+            # Filet de securite : ne jamais renvoyer une chaine vide/"<think>"
+            return "photorealistic historical documentary dark atmosphere"
+        return query
 
     # =================================================================
     # HOOKS
@@ -530,7 +624,8 @@ RETURNS JSON:
 """
         messages = [
             {"role": "system", "content": (
-                f"Tu produis uniquement du JSON valide avec exactement {n} hooks. "
+                f"Tu produis uniquement du JSON valide avec exactement {n} hooks, "
+                "sans aucun texte ni raisonnement en dehors du JSON. "
                 f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
             )},
             {"role": "user", "content": prompt},
@@ -538,7 +633,7 @@ RETURNS JSON:
 
         data = self._call_json_with_retry(
             messages, temperature=1.1,
-            max_completion_tokens=3000, reasoning_effort="low"
+            max_completion_tokens=4000, reasoning_effort="low"
         )
 
         hooks = data.get("hooks")
@@ -590,14 +685,14 @@ RETURNS JSON:
                 "(region, nom propre, contexte). "
                 "Reponds UNIQUEMENT avec le nom propre exact du lieu/evenement/ "
                 "personnage principal (celui qui a un article Wikipedia), sans "
-                "phrase, sans guillemets, une seule ligne."
+                "phrase, sans guillemets, sans raisonnement visible, une seule ligne."
             )},
             {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
         ]
 
         content = self._call_with_fallback(
             messages, temperature=0.3,
-            max_completion_tokens=1200, reasoning_effort="low"
+            max_completion_tokens=1500, reasoning_effort="low"
         )
         case_name = _clean_single_line_title(content)
 
@@ -616,13 +711,13 @@ RETURNS JSON:
                         "Tu proposes un cas historique REEL, peu connu, "
                         f"situe EXACTEMENT en {hint_country} (pas ailleurs). "
                         "Reponds UNIQUEMENT avec le nom propre exact du lieu, "
-                        "sans phrase, sans guillemets, une seule ligne."
+                        "sans phrase, sans guillemets, sans raisonnement visible, une seule ligne."
                     )},
                     {"role": "user", "content": f"Sujet : {topic}"},
                 ]
                 content_retry = self._call_with_fallback(
                     messages_retry, temperature=0.3,
-                    max_completion_tokens=1200, reasoning_effort="low"
+                    max_completion_tokens=1500, reasoning_effort="low"
                 )
                 case_name_retry = _clean_single_line_title(content_retry)
                 if case_name_retry:
@@ -652,7 +747,9 @@ RETURNS JSON:
         source = grounding.get("source")
 
         if source:
-            extract_text = source['extract'][:2000] if 'extract' in source else ""
+            # On limite la taille de l'extrait injecte dans le prompt pour
+            # rester loin de la limite TPM (8000 tokens/min observee).
+            extract_text = source['extract'][:1200] if 'extract' in source else ""
             grounding_block = f"""
 
 SOURCE VERIFIEE OBLIGATOIRE (Wikipedia, {source['lang']}) :
@@ -700,6 +797,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
 14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
+15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
 
 CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
 Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
@@ -717,7 +815,10 @@ Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
-        estimated_tokens_needed = min(scene_count * 400 + 1000, 6000)
+        # Budget de sortie : le raisonnement interne de qwen3.6 est retire
+        # apres coup, mais consomme du budget PENDANT la generation. On
+        # prevoit large (jusqu'a 8000, plafond observe pour le TPM Groq).
+        estimated_tokens_needed = min(scene_count * 450 + 2000, 8000)
 
         correction_feedback = ""
 
@@ -728,6 +829,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 {"role": "system", "content": (
                     f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
                     f"ni plus ni moins -- c'est une contrainte absolue et non negociable. "
+                    f"Ne montre jamais ton raisonnement, reponds directement avec le JSON final. "
                     f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
                 )},
                 {"role": "user", "content": prompt},
@@ -907,6 +1009,7 @@ IMPORTANT : garde EXACTEMENT {scene_count} scenes.
         )
 
         if grounding_source:
+            extract_text = grounding_source['extract'][:1200]
             prompt = f"""
 Tu es un fact-checker rigoureux. Compare le SCRIPT ci-dessous a la SOURCE DE
 REFERENCE (extrait Wikipedia reel) et detecte UNIQUEMENT les affirmations du
@@ -914,12 +1017,12 @@ script qui CONTREDISENT ou AJOUTENT un fait absent de la source (date, nom,
 lieu, evenement invente).
 
 SOURCE DE REFERENCE ({grounding_source['title']}) :
-\"\"\"{grounding_source['extract']}\"\"\"
+\"\"\"{extract_text}\"\"\"
 
 RESUME DU SCRIPT GENERE :
 {scenes_summary}
 
-Retourne UNIQUEMENT du JSON valide :
+Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
 {{
   "is_consistent": true/false,
   "issues": ["fait du script absent ou contradictoire avec la source : ..."]
@@ -955,7 +1058,7 @@ NE SIGNALE JAMAIS :
   telle)
 - Les problemes de geographie/pays (verifies separement par une autre methode)
 
-Retourne UNIQUEMENT du JSON valide :
+Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
 {{
   "is_consistent": true/false,
   "issues": ["description precise et actionnable du probleme 1", "..."]
@@ -965,14 +1068,17 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
 """
 
         messages = [
-            {"role": "system", "content": "Tu produis uniquement du JSON valide, factuel, rigoureux et minimaliste (peu de faux positifs)."},
+            {"role": "system", "content": (
+                "Tu produis uniquement du JSON valide, factuel, rigoureux et "
+                "minimaliste (peu de faux positifs), sans raisonnement visible."
+            )},
             {"role": "user", "content": prompt},
         ]
 
         try:
             data = self._call_json_with_retry(
                 messages, temperature=0.1, max_json_retries=1,
-                max_completion_tokens=1800, reasoning_effort="low"
+                max_completion_tokens=2500, reasoning_effort="low"
             )
             if not isinstance(data, dict):
                 return {"is_consistent": True, "issues": []}
@@ -1036,3 +1142,4 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
+
