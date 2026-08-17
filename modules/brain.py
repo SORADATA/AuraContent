@@ -25,7 +25,7 @@ except ImportError:
 
 load_dotenv()
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "qwen/qwen3.6-27b"
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -324,15 +324,6 @@ class ContentBrain:
         return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
     def _extract_content(self, response):
-        """
-        CORRECTIF : filet de secours diagnostique. openai/gpt-oss-120b est
-        un modele de "reasoning" -- il raisonne dans un champ separe
-        (message.reasoning) avant d'ecrire sa reponse finale (content).
-        Si max_completion_tokens est atteint PENDANT ce raisonnement,
-        content reste vide ("") avec finish_reason='length'. On detecte
-        precisement ce cas pour donner un message d'erreur actionnable,
-        au lieu du message generique "Contenu vide de Groq: <dump complet>".
-        """
         choices = getattr(response, "choices", None)
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
@@ -388,18 +379,6 @@ class ContentBrain:
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
                              max_completion_tokens=2000, reasoning_effort="low"):
-        """
-        CORRECTIF CRITIQUE (double couche) :
-        1) max_completion_tokens explicitement fixe (Groq utilise sinon
-           1024 par defaut, insuffisant).
-        2) reasoning_effort="low" par defaut : reduit le raisonnement
-           interne du modele "reasoning" gpt-oss-120b, pour laisser
-           l'essentiel du budget de tokens a la reponse finale plutot
-           qu'a la reflexion (cause du bug "Contenu vide de Groq" avec
-           finish_reason='length').
-        En cas d'echec, le budget de tokens est double et reasoning_effort
-        force a "low" sur les tentatives suivantes.
-        """
         client = self._build_client()
         last_error = None
 
@@ -410,7 +389,6 @@ class ContentBrain:
                     "messages": messages,
                     "temperature": temperature,
                     "max_completion_tokens": max_completion_tokens,
-                    "reasoning_effort": reasoning_effort,
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
@@ -419,20 +397,19 @@ class ContentBrain:
                 content = self._extract_content(response)
                 print("✅ Reponse obtenue via Groq")
 
-                time.sleep(4)
+                time.sleep(2)
                 return content
 
             except Exception as e:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                max_completion_tokens = min(max_completion_tokens * 2, 16000)
-                reasoning_effort = "low"
-                time.sleep(8)
+                max_completion_tokens = min(max_completion_tokens + 1000, 6000)
+                time.sleep(4)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
-                               max_completion_tokens=8000, reasoning_effort="medium"):
+                              max_completion_tokens=6000, reasoning_effort="low"):
         last_error = None
 
         for attempt in range(max_json_retries):
@@ -596,12 +573,6 @@ RETURNS JSON:
     # =================================================================
 
     def propose_real_case(self, topic):
-        """
-        Verification Wikidata du lieu propose AVANT de lancer la
-        recherche Wikipedia. Empeche de perdre du temps/tokens sur un
-        lieu hallucine ou confondu avec un lieu similaire (ex: deux
-        "ponts du diable" distincts dans des villes differentes).
-        """
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
 
@@ -673,18 +644,6 @@ RETURNS JSON:
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
 
     def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
-        """
-        La validation (nombre de scenes, champs obligatoires, mentions IA)
-        est executee DANS la boucle de retry, avec un try/except -- toute
-        erreur de validation devient une "issue" corrigee via
-        regeneration, au lieu de faire planter tout le run.
-
-        Budget de tokens dynamique et suffisant, proportionnel au nombre
-        de scenes demandees, pour eviter la troncature JSON en cours de
-        generation. reasoning_effort="medium" conserve ici car la tache
-        (script complet avec contraintes de veracite/geographie) benefice
-        reellement d'un raisonnement plus approfondi que les autres appels.
-        """
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
 
         hint_country = _guess_country_hint(topic)
@@ -693,11 +652,12 @@ RETURNS JSON:
         source = grounding.get("source")
 
         if source:
+            extract_text = source['extract'][:2000] if 'extract' in source else ""
             grounding_block = f"""
 
 SOURCE VERIFIEE OBLIGATOIRE (Wikipedia, {source['lang']}) :
 Titre reel : {source['title']}
-Extrait de reference : \"\"\"{source['extract']}\"\"\"
+Extrait de reference : \"\"\"{extract_text}\"\"\"
 
 REGLE ABSOLUE : tu dois baser TOUS les faits du script (dates, lieux, noms,
 deroule des evenements) UNIQUEMENT sur cet extrait. Interdiction d'ajouter
@@ -746,7 +706,7 @@ Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni
 Compte precisement le nombre d'elements avant de repondre. Si tu ne peux pas
 developper {scene_count} scenes avec suffisamment de matiere, repartis le
 contenu disponible sur EXACTEMENT {scene_count} scenes plus courtes plutot
-que d'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
+qu'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
 ecrit les {scene_count} scenes completes et la fermeture correcte du JSON.
 Reste CONCIS sur chaque champ texte pour ne pas depasser le budget de
 tokens disponible tout en couvrant les {scene_count} scenes en entier.
@@ -757,7 +717,7 @@ Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
-        estimated_tokens_needed = min(scene_count * 700 + 1500, 16000)
+        estimated_tokens_needed = min(scene_count * 400 + 1000, 6000)
 
         correction_feedback = ""
 
@@ -777,7 +737,7 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
                 messages,
                 temperature=0.7,
                 max_completion_tokens=estimated_tokens_needed,
-                reasoning_effort="medium",
+                reasoning_effort="low",
             )
 
             scenes = data.get("scenes", [])
@@ -865,7 +825,7 @@ EXACTEMENT {scene_count} scenes.
             if fact_check_attempt < max_fact_check_retries:
                 print(f"⚠️ Incoherences factuelles/geographiques detectees (tentative {fact_check_attempt + 1}) :")
                 for issue in issues:
-                    print(f"   - {issue}")
+                    print(f"    - {issue}")
 
                 correction_feedback = f"""
 
@@ -880,7 +840,7 @@ IMPORTANT : garde EXACTEMENT {scene_count} scenes.
                 print(f"❌ Incoherences factuelles persistantes apres {max_fact_check_retries + 1} tentatives, "
                       f"video generee malgre tout (verification manuelle recommandee) :")
                 for issue in issues:
-                    print(f"   - {issue}")
+                    print(f"    - {issue}")
                 return data
 
         return data
