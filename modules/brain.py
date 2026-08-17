@@ -210,6 +210,7 @@ class WikidataChecker:
 
     @classmethod
     def _throttled_get(cls, params, max_retries=2):
+        
         for attempt in range(max_retries + 1):
             time.sleep(cls.MIN_DELAY_BETWEEN_CALLS)
             try:
@@ -348,11 +349,35 @@ def _countries_match(declared, real):
 # =====================================================================
 #
 # Groq renvoie des erreurs 413/429 pour deux causes bien differentes :
-#  1) Le message envoye est réellement trop lourd pour le modele (contexte)
-#  2) Une limite de debit TPM (tokens/minute) est temporairement atteinte
-# Le fix pour (1) est de reduire la taille du prompt / augmenter le budget
-# de sortie. Le fix pour (2) est d'ATTENDRE que la fenetre se reinitialise
-# -- augmenter la taille demandee ne fait qu'aggraver le probleme.
+#
+#  1) PLAFOND PAR REQUETE DEPASSE : le message Groq contient explicitement
+#     "Limit 8000, Requested 10202". C'est un plafond FIXE par appel
+#     (prompt + max_completion_tokens demandes). CE N'EST PAS une fenetre
+#     qui se vide avec le temps -- attendre ne sert a RIEN, la requete
+#     echouera identiquement a chaque tentative tant qu'elle n'est pas
+#     reduite. Il FAUT diminuer max_completion_tokens (et/ou le prompt)
+#     et reessayer immediatement.
+#
+#  2) VRAIE LIMITE DE DEBIT (fenetre TPM/RPM temporairement pleine, sans
+#     indication Limit/Requested explicite) : la, attendre a du sens.
+#
+# On distingue les deux en parsant "Limit X, Requested Y" en priorite.
+
+_RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
+
+# Marge de securite : on ne vise jamais le plafond exact, pour absorber
+# les imprecisions d'estimation de tokens (le tokenizer exact de Groq
+# n'est pas disponible cote client).
+SAFETY_MARGIN_TOKENS = 400
+
+
+def _parse_rate_limit_numbers(err_str):
+    """Retourne (limit, requested) si le message Groq les precise, sinon None."""
+    match = _RATE_LIMIT_NUMS_RE.search(err_str)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
 
 def _is_rate_limit_error(err_str):
     err_lower = err_str.lower()
@@ -363,6 +388,20 @@ def _is_rate_limit_error(err_str):
         or "requests per minute" in err_lower
         or "rpm" in err_lower
     )
+
+
+def _estimate_tokens(text):
+    """Estimation grossiere et volontairement pessimiste (sur-estime plutot
+    que sous-estimer) du nombre de tokens d'un texte, sans dependance a un
+    tokenizer specifique. ~3 caracteres/token est prudent pour du francais
+    (accents, mots composes) mele a de l'anglais technique."""
+    if not text:
+        return 0
+    return max(1, len(text) // 3)
+
+
+def _estimate_prompt_tokens(messages):
+    return sum(_estimate_tokens(m.get("content", "")) for m in messages)
 
 
 class ContentBrain:
@@ -444,9 +483,26 @@ class ContentBrain:
         return content
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
-                             max_completion_tokens=3000, reasoning_effort="low"):
+                             max_completion_tokens=3000, reasoning_effort="low",
+                             hard_token_cap=7500):
         client = self._build_client()
         last_error = None
+
+        # --- Plafonnage PREVENTIF avant le premier envoi ---
+        # On estime la taille du prompt et on reduit max_completion_tokens
+        # si necessaire pour rester sous le plafond par-requete de Groq
+        # (observe a 8000 tokens sur ce tier). Ca evite d'envoyer une
+        # requete qu'on sait deja condamnee a echouer.
+        prompt_tokens_est = _estimate_prompt_tokens(messages)
+        available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
+        if max_completion_tokens > available:
+            adjusted = max(500, available)
+            if adjusted < max_completion_tokens:
+                print(f"ℹ️ Budget de sortie reduit preventivement : "
+                      f"{max_completion_tokens} -> {adjusted} "
+                      f"(prompt estime a ~{prompt_tokens_est} tokens, "
+                      f"plafond {hard_token_cap}).")
+                max_completion_tokens = adjusted
 
         for attempt in range(3):
             try:
@@ -471,23 +527,44 @@ class ContentBrain:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
 
-                if _is_rate_limit_error(err_str):
-                    # Vraie limite de debit (TPM/RPM) : il faut ATTENDRE que
-                    # la fenetre se reinitialise, pas demander plus de tokens.
+                rate_limit_nums = _parse_rate_limit_numbers(err_str)
+
+                if rate_limit_nums:
+                    # Plafond PAR REQUETE depasse (ex: "Limit 8000, Requested
+                    # 10202"). Attendre ne changerait rien : il faut reduire
+                    # la taille demandee et reessayer tout de suite.
+                    limit, requested = rate_limit_nums
+                    overage = requested - limit
+                    new_budget = max(500, max_completion_tokens - overage - SAFETY_MARGIN_TOKENS)
+                    print(f"⚠️ Requete trop grosse pour le plafond Groq "
+                          f"({requested} tokens demandes > limite {limit}). "
+                          f"Reduction du budget de sortie : "
+                          f"{max_completion_tokens} -> {new_budget}, "
+                          f"nouvelle tentative immediate.")
+                    max_completion_tokens = new_budget
+                    time.sleep(1)
+
+                elif _is_rate_limit_error(err_str):
+                    # Vraie limite de debit (TPM/RPM) sans indication de
+                    # taille : ici attendre a du sens.
                     wait_time = 60
                     print(f"⏳ Limite de debit Groq atteinte (TPM/RPM), "
                           f"attente de {wait_time}s avant nouvelle tentative...")
                     time.sleep(wait_time)
                 else:
                     # Erreur "classique" (JSON invalide, contenu vide, etc.)
-                    # -> on laisse plus de marge de sortie au modele.
-                    max_completion_tokens = min(max_completion_tokens + 1500, 8000)
+                    # -> on laisse un peu plus de marge de sortie au modele,
+                    # sans jamais depasser le plafond dur.
+                    prompt_tokens_est = _estimate_prompt_tokens(messages)
+                    available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
+                    max_completion_tokens = max(500, min(max_completion_tokens + 1000, available))
                     time.sleep(4)
 
         raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
-                              max_completion_tokens=6000, reasoning_effort="low"):
+                              max_completion_tokens=6000, reasoning_effort="low",
+                              hard_token_cap=7500):
         last_error = None
 
         for attempt in range(max_json_retries):
@@ -497,6 +574,7 @@ class ContentBrain:
                 json_mode=True,
                 max_completion_tokens=max_completion_tokens,
                 reasoning_effort=reasoning_effort,
+                hard_token_cap=hard_token_cap,
             )
             try:
                 data = json.loads(_clean_json_response(content))
@@ -506,8 +584,9 @@ class ContentBrain:
                 print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), "
                       f"nouvelle tentative avec budget de tokens augmenté...")
                 # Le JSON malforme vient generalement d'une troncature en
-                # plein milieu -> on augmente le budget avant de retenter.
-                max_completion_tokens = min(max_completion_tokens + 1500, 8000)
+                # plein milieu -> on augmente le budget avant de retenter,
+                # sans jamais viser le plafond dur (7500, marge comprise).
+                max_completion_tokens = min(max_completion_tokens + 1000, 7000)
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
@@ -816,9 +895,12 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 """
 
         # Budget de sortie : le raisonnement interne de qwen3.6 est retire
-        # apres coup, mais consomme du budget PENDANT la generation. On
-        # prevoit large (jusqu'a 8000, plafond observe pour le TPM Groq).
-        estimated_tokens_needed = min(scene_count * 450 + 2000, 8000)
+        # apres coup, mais consomme du budget PENDANT la generation. Le
+        # plafond Groq observe est 8000 tokens PAR REQUETE, prompt inclus
+        # -- avec ce prompt (regles + grounding + eventuel correction
+        # feedback), il faut rester nettement en dessous. La verification
+        # preventive dans _call_with_fallback ajustera encore si besoin.
+        estimated_tokens_needed = min(scene_count * 280 + 1200, 6000)
 
         correction_feedback = ""
 
