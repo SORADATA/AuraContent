@@ -409,6 +409,7 @@ class ContentBrain:
         # l'API tant qu'aucune erreur ne prouve le contraire (voir
         # _call_with_fallback). Evite de re-tester inutilement a chaque appel.
         self._reasoning_params_supported = True
+        self._reasoning_format_supported = True
 
     def _build_client(self):
         groq_key = os.getenv("GROQ_API_KEY")
@@ -517,20 +518,31 @@ class ContentBrain:
                     "temperature": temperature,
                     "max_completion_tokens": max_completion_tokens,
                 }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+
                 if self._reasoning_params_supported:
                     # BUG CORRIGE : ce parametre existait dans la signature
                     # mais n'etait jamais transmis a l'API. Sans lui, qwen3.6
                     # tourne avec son effort de raisonnement par defaut
                     # (eleve), consomme tout le budget de tokens en <think>
                     # et n'a plus la place d'ecrire la reponse finale.
-                    kwargs["reasoning_effort"] = reasoning_effort
-                    # Separe le raisonnement interne du contenu final au
-                    # niveau de l'API elle-meme (message.reasoning vs
-                    # message.content), au lieu de compter sur un nettoyage
-                    # regex apres coup sur du texte parfois mal forme.
-                    kwargs["reasoning_format"] = "parsed"
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+                    #
+                    # IMPORTANT : ces parametres (reasoning_effort,
+                    # reasoning_format) sont specifiques a Groq et absents
+                    # du schema officiel du SDK openai-python. Passes en
+                    # kwargs directs, la methode typee Completions.create()
+                    # les rejette avec un TypeError AVANT meme l'appel
+                    # reseau ("unexpected keyword argument"). `extra_body`
+                    # est le mecanisme prevu par le SDK pour injecter des
+                    # champs non standard directement dans le JSON envoye,
+                    # sans passer par la validation stricte des kwargs.
+                    extra_body = {"reasoning_effort": reasoning_effort}
+                    if self._reasoning_format_supported:
+                        # Separe le raisonnement interne du contenu final
+                        # cote API (message.reasoning vs message.content).
+                        extra_body["reasoning_format"] = "parsed"
+                    kwargs["extra_body"] = extra_body
 
                 response = client.chat.completions.create(**kwargs)
                 content = self._extract_content(response)
@@ -549,15 +561,25 @@ class ContentBrain:
                     or "reasoning_effort" in err_str.lower()
                     or "unknown parameter" in err_str.lower()
                     or "unrecognized" in err_str.lower()
+                    or "unexpected keyword argument" in err_str.lower()
                 )
                 if unsupported_param:
-                    # Certains modeles/tiers Groq peuvent ne pas accepter un
-                    # de ces deux parametres : on les retire et on retente
-                    # immediatement plutot que de gaspiller les tentatives.
-                    print("ℹ️ Parametre reasoning_effort/reasoning_format non "
-                          "supporte par ce modele/tier, retrait et nouvelle "
-                          "tentative immediate.")
-                    self._reasoning_params_supported = False
+                    if self._reasoning_format_supported:
+                        # Premier repli : reasoning_format peut etre le
+                        # champ en cause (deja observe). On le retire mais
+                        # on garde reasoning_effort, qui est plus largement
+                        # supporte cote Groq, puis on retente immediatement.
+                        print("ℹ️ 'reasoning_format' non supporte, retrait "
+                              "(on garde 'reasoning_effort') et nouvelle "
+                              "tentative immediate.")
+                        self._reasoning_format_supported = False
+                    else:
+                        # Deuxieme repli : meme sans reasoning_format, ca
+                        # echoue encore -> on desactive tout et on retente.
+                        print("ℹ️ Parametres reasoning_effort/reasoning_format "
+                              "non supportes par ce SDK/tier, retrait complet "
+                              "et nouvelle tentative immediate.")
+                        self._reasoning_params_supported = False
                     time.sleep(1)
                     continue
 
