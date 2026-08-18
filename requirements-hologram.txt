@@ -1,0 +1,6 @@
+# Dependances additionnelles pour le module de cartes hologrammes
+# (modules/visuals/scene_map_hologram.py)
+# Ajoutez ces lignes a requirements.txt si vous ne separez pas les fichiers.
+osmnx>=1.9.0
+manim>=0.18.0
+networkx>=3.0
