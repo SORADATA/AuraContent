@@ -118,7 +118,7 @@ async def main():
         print("❌ Script generation failed.")
         return
 
-    # --- 3. RECHERCHE D'ASSETS (NOUVELLE LOGIQUE V2.0 AVEC ATTRIBUTION) ---
+    # --- 3. RECHERCHE D'ASSETS (LOGIQUE V2.1 : ROUTAGE CORRIGÉ) ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
 
@@ -129,15 +129,35 @@ async def main():
 
     for index, scene in enumerate(script):
         scene_id = scene['id']
-        search_query = scene.get("location_name") or scene.get("image_prompt") or dynamic_query
         scene_type = scene.get("scene_type", "generic")
 
-        # CORRECTIF : recuperation du contexte factuel de l'evenement,
-        # rempli par ContentBrain quand une source Wikipedia mentionne un
-        # evenement precis et date (incendie, destruction, decouverte).
-        # Transmis a AssetManager pour enrichir le prompt IA de secours et
-        # obtenir une image concrete de l'evenement plutot qu'une vue
-        # generique et intemporelle du lieu.
+        location_name = (scene.get("location_name") or "").strip()
+        stock_search = (scene.get("stock_search") or "").strip()
+        image_prompt = (scene.get("image_prompt") or "").strip()
+
+        # CORRECTIF PRINCIPAL : routage du champ de recherche selon le
+        # type de scene, au lieu de l'ancien
+        # "location_name or image_prompt or dynamic_query" qui envoyait
+        # par erreur des phrases françaises longues (image_prompt) aux
+        # moteurs de recherche vidéo (Pexels/Pixabay), et qui ne
+        # transmettait jamais image_prompt à la génération IA.
+        #
+        # - Scenes 'specific' : on cherche un lieu réel -> location_name
+        #   (utilisé par Wikimedia/Openverse, qui ont besoin d'un nom
+        #   propre exact).
+        # - Scenes 'generic'  : on cherche une vidéo d'ambiance ->
+        #   stock_search (mot-clé anglais court, conforme à la règle 12
+        #   du brain).
+        if scene_type == "specific":
+            search_query = location_name or dynamic_query
+        else:
+            search_query = stock_search or dynamic_query
+
+        # event_context : rempli par ContentBrain quand une source
+        # Wikipedia mentionne un evenement precis et date (incendie,
+        # destruction, decouverte). Transmis a AssetManager pour enrichir
+        # le prompt IA de secours et obtenir une image concrete de
+        # l'evenement plutot qu'une vue generique et intemporelle du lieu.
         event_context = scene.get("event_context") or None
 
         # On passe un chemin temporaire générique à l'AssetManager
@@ -146,12 +166,17 @@ async def main():
         log_query = search_query if not event_context else f"{search_query} (contexte: {event_context})"
         print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{log_query}'...")
 
-        # L'AssetManager nous dit quelle source a gagné via source_type
+        # L'AssetManager nous dit quelle source a gagné via source_type.
+        # CORRECTIF : image_prompt est désormais transmis explicitement,
+        # pour que la génération IA (quand elle a lieu) s'appuie sur la
+        # description visuelle spécifique à la scène plutôt que sur le
+        # seul nom du lieu.
         success, source_type = asset_manager.get_best_asset(
             query=search_query,
             output_path=temp_asset_path,
             scene_type=scene_type,
             event_context=event_context,
+            image_prompt=image_prompt,
         )
 
         if success and os.path.exists(temp_asset_path):
@@ -229,3 +254,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

@@ -11,6 +11,19 @@ class VideoProvider:
         self.pexels_key = os.getenv("PEXELS_API_KEY")
         self.history = history
 
+        # CORRECTIF : ancien pool de secours générique et déconnecté du
+        # thème ("dark ocean waves", "foggy rocky coast", "old stone
+        # ruins") remplacé par un pool neutre documentaire/mystère, utilisé
+        # UNIQUEMENT si aucun fallback_keywords thématique n'est fourni par
+        # l'appelant (voir asset_manager.py, qui dérive désormais ce pool
+        # du "mood" de la scène généré par le brain).
+        self.default_fallback_pool = [
+            "dark documentary atmosphere",
+            "mysterious abandoned building",
+            "old archive footage texture",
+            "dim candlelight corridor",
+        ]
+
     def get_pixabay(self, query, min_relevance=0.1):
         if not self.pixabay_key: return None
         url = f"https://pixabay.com/api/videos/?key={self.pixabay_key}&q={urllib.parse.quote(query)}&video_type=film&per_page=10"
@@ -66,6 +79,17 @@ class VideoProvider:
         return None
 
     def fetch_background(self, query, output_path, is_fallback=False, fallback_keywords=None):
+        """
+        CORRECTIF : le pool de secours utilisé en cas d'échec de la
+        recherche initiale n'est plus un pool générique fixe sans rapport
+        avec le sujet ("dark ocean waves", "foggy rocky coast", "old stone
+        ruins"). Il est désormais piloté par 'fallback_keywords', que
+        l'appelant (AssetManager) construit à partir du 'mood' réel de la
+        scène (ominous, tense, awe, etc.), pour rester dans le thème
+        sombre/mystère/documentaire même quand la recherche précise
+        échoue. Le pool générique interne ci-dessous ne sert plus que de
+        filet de sécurité ultime si aucun mood n'a pu être déterminé.
+        """
         print(f"📡 Recherche vidéo d'ambiance : '{query}'...")
         
         video_url = self.get_pixabay(query)
@@ -74,7 +98,7 @@ class VideoProvider:
 
         if not video_url:
             if not is_fallback:
-                pool = fallback_keywords or ["dark ocean waves", "foggy rocky coast", "old stone ruins"]
+                pool = fallback_keywords or self.default_fallback_pool
                 fallback_query = random.choice(pool)
                 print(f"🔄 Roue de secours vidéo activée avec : '{fallback_query}'...")
                 return self.fetch_background(fallback_query, output_path, is_fallback=True)

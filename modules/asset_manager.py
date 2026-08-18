@@ -11,26 +11,39 @@ class AssetManager:
         self.archives = ArchiveProvider(self.history)
         self.ai = AIImageGenerator()
 
-    def _build_structured_prompt(self, query, event_context=None):
+    def _build_structured_prompt(self, query, event_context=None, image_prompt=None):
         """
-        CORRECTIF : construction d'un prompt structure selon la formule
-        recommandee pour la generation d'images photorealistes :
+        Construction d'un prompt structure selon la formule recommandee
+        pour la generation d'images photorealistes :
         [Sujet precis] + [Cadrage/angle] + [Lumiere] + [Texture/details] +
         [Palette] + [Ambiance] + [Negatifs].
 
-        Avant, le prompt etait une simple concatenation brute
-        "query, event_context", sans hierarchie -- les premiers mots d'un
-        prompt pesant plus fort sur le resultat final, l'absence de
-        structure produisait des images vagues/abstraites plutot que des
-        scenes concretes et photorealistes.
+        CORRECTIF PRINCIPAL : le sujet ('subject') est desormais construit
+        en priorite a partir de 'image_prompt' -- la description riche et
+        specifique a la scene, generee par le LLM (ex: "photographie en
+        noir et blanc d'un couloir de pierre etroit, eclairage a la
+        bougie, ambiance lugubre") -- plutot qu'a partir du simple
+        'location_name' (ex: "Mont-Dauphin (Cite Vauban)").
+
+        Avant ce correctif, 'image_prompt' n'etait jamais transmis a
+        AssetManager : le prompt IA final ne contenait que le nom du lieu,
+        produisant des images generiques et repetees (meme seed) qui ne
+        correspondaient pas au contenu reel de chaque scene.
+
+        'query' (location_name ou stock_search) est conserve comme
+        contexte factuel complementaire (lieu reel), pas comme sujet
+        principal, pour ancrer geographiquement l'image sans sacrifier
+        la specificite visuelle de la scene.
         """
-        subject = query.strip()
+        if image_prompt and image_prompt.strip():
+            subject = image_prompt.strip()
+            if query and query.strip() and query.strip().lower() not in subject.lower():
+                subject = f"{subject}, lieu réel : {query.strip()}"
+        else:
+            subject = (query or "").strip()
 
         if event_context:
-            # Le contexte factuel (ex: "nocturnal fire, monastery ruins in
-            # flames, november 2025") devient le coeur du sujet, pas un
-            # simple ajout en fin de phrase.
-            subject = f"{query.strip()}, {event_context.strip()}"
+            subject = f"{subject}, {event_context.strip()}"
 
         composition = "wide-angle documentary shot, eye-level perspective"
         lighting = "dramatic natural lighting, moody shadows, golden-hour or night ambient light depending on scene"
@@ -47,15 +60,28 @@ class AssetManager:
 
         return structured_prompt
 
-    def get_best_asset(self, query, output_path, scene_type="generic", event_context=None):
+    def get_best_asset(self, query, output_path, scene_type="generic", event_context=None, image_prompt=None):
         """
         Orchestrateur principal.
         scene_type: 'generic' (vagues, ambiance) ou 'specific' (personnage, événement précis).
+
+        query: pour les scenes 'specific', il s'agit du location_name (utilise
+        pour les recherches d'archives Wikimedia/Openverse, qui ont besoin
+        d'un nom propre). Pour les scenes 'generic', il s'agit du
+        stock_search (mot-cle anglais court, utilise pour les recherches
+        video Pexels/Pixabay).
 
         event_context: descriptif factuel precis (ex: "incendie nocturne de
         novembre 2025, ruines en flammes") issu du script/scene, transmis au
         prompt IA en dernier recours pour generer une image concrete de
         l'evenement plutot qu'une vue generique et intemporelle du lieu.
+
+        image_prompt: description visuelle riche et specifique a la scene,
+        generee par le LLM (ex: "photographie en noir et blanc d'un couloir
+        de pierre étroit, éclairage à la bougie, ambiance lugubre").
+        CORRECTIF : desormais transmise et utilisee comme coeur du prompt
+        IA, pour que l'image generee corresponde reellement au contenu
+        narratif de la scene plutot qu'a une vue generique du lieu.
         """
 
         # ---------------------------------------------------------
@@ -75,9 +101,12 @@ class AssetManager:
                 return True, "openverse"
 
             # 3. Si aucune archive n'a rien, on demande à l'IA de l'imaginer,
-            # avec un prompt structure (CORRECTIF) plutot qu'une simple
-            # concatenation brute.
-            ai_prompt = self._build_structured_prompt(query, event_context=event_context)
+            # avec un prompt structure construit a partir de l'image_prompt
+            # specifique a la scene (CORRECTIF), enrichi du lieu reel et du
+            # contexte factuel eventuel.
+            ai_prompt = self._build_structured_prompt(
+                query, event_context=event_context, image_prompt=image_prompt
+            )
 
             if event_context:
                 print(f"🧠 Archive introuvable. Tentative IA-First contextualisee (prompt structure).")
@@ -91,13 +120,18 @@ class AssetManager:
         # SCÈNES GÉNÉRIQUES (Ambiance, paysages, émotions)
         # ---------------------------------------------------------
         else:
-            # 4. Vidéos d'ambiance Pexels/Pixabay
+            # 4. Vidéos d'ambiance Pexels/Pixabay.
+            # 'query' ici doit être stock_search (mot-clé anglais court),
+            # transmis correctement depuis main.py (CORRECTIF).
             print(f"🔍 Recherche vidéo d'ambiance : '{query}'...")
             if self.videos.fetch_background(query, output_path):
                 return True, "video"
 
-        # 5. FALLBACK ULTIME POUR TOUT LE MONDE (prompt structure aussi)
-        fallback_prompt = self._build_structured_prompt(query, event_context=event_context)
+        # 5. FALLBACK ULTIME POUR TOUT LE MONDE (prompt structure aussi,
+        # incluant image_prompt si disponible)
+        fallback_prompt = self._build_structured_prompt(
+            query, event_context=event_context, image_prompt=image_prompt
+        )
         print(f"🎨 Génération IA de secours (prompt structure)...")
         if self.ai.generate_image(fallback_prompt, output_path):
             return True, "ai"
