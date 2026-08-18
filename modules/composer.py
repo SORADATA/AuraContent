@@ -4,9 +4,11 @@ import shutil
 import ffmpeg
 
 
+
 class Composer:
     """
     Compositeur vidéo vertical 1080x1920 orienté documentaire / mystère.
+
 
     Pipeline visuel :
         scènes -> sous-titres -> crédit source
@@ -15,9 +17,11 @@ class Composer:
                -> normalisation finale
                -> filigrane de marque premium
 
+
     Le filigrane n'est plus un drawtext : il utilise le logo PNG
     assets/images/minute_mystere_watermark.png.
     """
+
 
     def __init__(self):
         self.temp_dir = os.path.join(os.getcwd(), "assets", "temp")
@@ -25,15 +29,19 @@ class Composer:
         self.music_dir = os.path.join(os.getcwd(), "assets", "music")
         self.images_dir = os.path.join(os.getcwd(), "assets", "images")
 
+
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.final_dir, exist_ok=True)
         os.makedirs(self.music_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
 
+
         # Documentaire mystère : transitions sobres.
         self.transitions = ["fade", "fade", "fade", "fade"]
 
+
         self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
+
 
         # Branding.
         self.watermark_path = os.path.join(
@@ -45,15 +53,18 @@ class Composer:
         self.watermark_x = 42
         self.watermark_y = 48
 
+
         self.video_width = 1080
         self.video_height = 1920
         self.fps = 30
+
 
         # Mix documentaire : voix prioritaire, musique réellement en arrière-plan.
         self.voice_gain = 1.08
         self.music_gain = 0.085
         self.music_fade_duration = 2.5
         self.transition_duration = 0.38
+
 
         # Sous-titres : plus lisibles sur mobile sans devenir énormes.
         self.subtitle_style = (
@@ -73,15 +84,18 @@ class Composer:
             "MarginV=125"
         )
 
+
         # Crédit discret des sources visuelles.
         self.source_credit_y = "h-520"
         self.source_credit_size = 18
         self.source_credit_alpha = 0.52
 
+
         # Police conservée comme fallback éventuel pour du texte branding.
         self.watermark_font_path = (
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         )
+
 
         # === CORRECTIF : mapping explicite source_type -> texte credit ===
         # Aligne enfin la detection sur les vraies valeurs retournees par
@@ -91,6 +105,12 @@ class Composer:
         # "openverse" ne matchait aucune condition et retombait sur le
         # libelle generique "Illustration", ce qui rendait le credit
         # incorrect pour toutes les images trouvees via Openverse.
+        #
+        # AJOUT MODE_HOLOGRAM : "hologram" est le source_type utilise par
+        # main.py pour les scenes rendues via
+        # modules/visuals/scene_map_hologram.py (cartes wireframe
+        # OSMnx + Manim), afin d'afficher un credit coherent plutot que
+        # le libelle generique "Illustration".
         self.source_credit_labels = {
             "wiki": "Source : Wikimedia Commons",
             "wikimedia": "Source : Wikimedia Commons",
@@ -100,11 +120,14 @@ class Composer:
             "pixabay": "Illustration : Pexels / Pixabay",
             "videvo": "Illustration : Pexels / Pixabay",
             "ai": "Illustration générée par IA",
+            "hologram": "Carte générée : OpenStreetMap",
         }
+
 
     # ------------------------------------------------------------------
     # Utilitaires
     # ------------------------------------------------------------------
+
 
     def get_duration(self, filepath):
         try:
@@ -113,11 +136,13 @@ class Composer:
         except Exception:
             return 0.0
 
+
     def _escape_path_for_filter(self, path):
-        escaped = str(path).replace("\\", "/")
-        escaped = escaped.replace(":", "\\:")
-        escaped = escaped.replace("'", r"\'")
+        escaped = str(path).replace("\\\\", "/")
+        escaped = escaped.replace(":", "\\\\:")
+        escaped = escaped.replace("'", r"\\'")
         return escaped
+
 
     def _escape_drawtext(self, text):
         """
@@ -125,11 +150,12 @@ class Composer:
         """
         return (
             str(text)
-            .replace("\\", r"\\")
-            .replace(":", r"\:")
-            .replace("'", r"\'")
-            .replace(",", r"\,")
+            .replace("\\\\", r"\\\\")
+            .replace(":", r"\\:")
+            .replace("'", r"\\'")
+            .replace(",", r"\\,")
         )
+
 
     def _ensure_pair(self, image_pair):
         if isinstance(image_pair, dict):
@@ -137,18 +163,23 @@ class Composer:
             path_b = image_pair.get("b", path_a)
             return path_a, path_b
 
+
         if isinstance(image_pair, (list, tuple)) and len(image_pair) >= 2:
             return image_pair[0], image_pair[1]
+
 
         if image_pair:
             return str(image_pair), str(image_pair)
 
+
         return None, None
+
 
     def _is_video_file(self, path):
         return str(path).lower().endswith(
             (".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")
         )
+
 
     def _resolve_source_credit(self, path_a):
         """
@@ -160,10 +191,12 @@ class Composer:
         """
         file_name = str(path_a).lower()
 
+
         # 1. Detection exacte via le token source_type present dans le nom
         for token, label in self.source_credit_labels.items():
             if f"_{token}_" in file_name or file_name.startswith(f"{token}_"):
                 return label
+
 
         # 2. Fallback heuristique (ancien comportement, compatibilite)
         if "wiki" in file_name or "wikimedia" in file_name:
@@ -174,16 +207,22 @@ class Composer:
             return "Illustration : Pexels / Pixabay"
         if any(token in file_name for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")):
             return "Illustration générée par IA"
+        if "hologram" in file_name:
+            return "Carte générée : OpenStreetMap"
+
 
         return "Illustration"
+
 
     # ------------------------------------------------------------------
     # FILIGRANE PREMIUM
     # ------------------------------------------------------------------
 
+
     def add_watermark(self, input_video_path, output_video_path):
         """
         Ajoute le logo Minute Mystère en haut à gauche.
+
 
         Le PNG doit idéalement avoir un fond transparent.
         Le logo est volontairement petit et discret : il signe la vidéo
@@ -195,14 +234,17 @@ class Composer:
             )
             return False
 
+
         try:
             video = ffmpeg.input(input_video_path)
+
 
             logo = ffmpeg.input(
                 self.watermark_path,
                 loop=1,
                 framerate=self.fps
             ).video
+
 
             logo = (
                 logo
@@ -216,6 +258,7 @@ class Composer:
                 .filter("colorchannelmixer", aa=self.watermark_opacity)
             )
 
+
             watermarked_video = ffmpeg.overlay(
                 video.video,
                 logo,
@@ -224,6 +267,7 @@ class Composer:
                 eof_action="repeat",
                 shortest=1
             )
+
 
             runner = ffmpeg.output(
                 watermarked_video,
@@ -240,7 +284,9 @@ class Composer:
                 shortest=None
             )
 
+
             runner.run(overwrite_output=True, quiet=True)
+
 
             if os.path.exists(output_video_path):
                 print(
@@ -249,7 +295,9 @@ class Composer:
                 )
                 return True
 
+
             return False
+
 
         except ffmpeg.Error as e:
             error_log = (
@@ -260,9 +308,11 @@ class Composer:
             print(f"⚠️ Watermark failed: {error_log}")
             return False
 
+
         except Exception as e:
             print(f"⚠️ Watermark failed: {e}")
             return False
+
 
     def add_watermark_text(
         self,
@@ -279,9 +329,11 @@ class Composer:
             output_video_path
         )
 
+
     # ------------------------------------------------------------------
     # RENDU D'UNE SCÈNE
     # ------------------------------------------------------------------
+
 
     def process_scene(
         self,
@@ -294,16 +346,20 @@ class Composer:
         audio_path = scene["audio_path"]
         total_duration = float(scene["duration"])
 
+
         output_path = os.path.join(
             self.temp_dir,
             f"scene_{scene_id}_rendered.mp4"
         )
 
+
         path_a = None
         path_b = None
 
+
         try:
             input_audio = ffmpeg.input(audio_path)
+
 
             if bg_video_path and os.path.exists(bg_video_path):
                 source_duration = self.get_duration(bg_video_path)
@@ -312,6 +368,7 @@ class Composer:
                     if source_duration > 0
                     else 0.0
                 )
+
 
                 video_stream = (
                     ffmpeg.input(
@@ -334,15 +391,19 @@ class Composer:
                     .setpts("PTS-STARTPTS")
                 )
 
+
             else:
                 path_a, path_b = self._ensure_pair(image_pair)
+
 
                 if not path_a:
                     raise ValueError(
                         f"Scene {scene_id}: aucune image ou vidéo disponible."
                     )
 
+
                 path_b = path_b or path_a
+
 
                 if self._is_video_file(path_a):
                     video_stream = (
@@ -365,12 +426,14 @@ class Composer:
                         .setpts("PTS-STARTPTS")
                     )
 
+
                 else:
                     duration_a = max(total_duration / 2, 0.1)
                     duration_b = max(
                         (total_duration / 2) + 0.35,
                         0.1
                     )
+
 
                     frames_a = max(
                         int(duration_a * self.fps),
@@ -380,6 +443,7 @@ class Composer:
                         int(duration_b * self.fps),
                         1
                     )
+
 
                     stream_a = (
                         ffmpeg.input(
@@ -398,6 +462,7 @@ class Composer:
                         .setpts("PTS-STARTPTS")
                     )
 
+
                     stream_b = (
                         ffmpeg.input(
                             path_b,
@@ -415,6 +480,7 @@ class Composer:
                         .setpts("PTS-STARTPTS")
                     )
 
+
                     video_stream = ffmpeg.concat(
                         stream_a,
                         stream_b,
@@ -422,13 +488,16 @@ class Composer:
                         a=0
                     )
 
+
             # ==========================================================
             # 📌 AJOUT DU CRÉDIT DE LA SOURCE (CORRIGÉ)
             # ==========================================================
             source_text = ""
 
+
             if not bg_video_path and path_a:
                 source_text = self._resolve_source_credit(path_a)
+
 
             if source_text:
                 video_stream = video_stream.filter(
@@ -445,19 +514,23 @@ class Composer:
                     y=self.source_credit_y
                 )
 
+
             # ----------------------------------------------------------
             # Sous-titres
             # ----------------------------------------------------------
             srt_path = scene.get("srt_path")
 
+
             if srt_path and os.path.exists(srt_path):
                 escaped_srt_path = self._escape_path_for_filter(srt_path)
+
 
                 video_stream = video_stream.filter(
                     "subtitles",
                     filename=escaped_srt_path,
                     force_style=self.subtitle_style
                 )
+
 
             # ----------------------------------------------------------
             # Encodage scène
@@ -477,9 +550,12 @@ class Composer:
                 shortest=None
             )
 
+
             runner.run(overwrite_output=True, quiet=True)
 
+
             return output_path
+
 
         except ffmpeg.Error as e:
             error = (
@@ -492,15 +568,18 @@ class Composer:
             )
             return None
 
+
         except Exception as e:
             print(
                 f"❌ Render Fail Scene {scene_id}: {e}"
             )
             return None
 
+
     # ------------------------------------------------------------------
     # RENDU DE TOUTES LES SCÈNES
     # ------------------------------------------------------------------
+
 
     def render_all_scenes(
         self,
@@ -511,12 +590,14 @@ class Composer:
         rendered_paths = []
         bg_cursor = 0.0
 
+
         for i, scene in enumerate(script_data):
             current_pair = (
                 video_pairs[i]
                 if i < len(video_pairs)
                 else None
             )
+
 
             output_path = self.process_scene(
                 scene,
@@ -525,16 +606,21 @@ class Composer:
                 bg_offset=bg_cursor
             )
 
+
             bg_cursor += float(scene["duration"])
+
 
             if output_path:
                 rendered_paths.append(output_path)
 
+
         return rendered_paths
+
 
     # ------------------------------------------------------------------
     # ASSEMBLAGE
     # ------------------------------------------------------------------
+
 
     def _merge_two_clips(
         self,
@@ -549,13 +635,17 @@ class Composer:
             else self.transition_duration
         )
 
+
         dur_a = self.get_duration(clip_a)
         offset = max(dur_a - trans_dur, 0)
 
+
         effect = random.choice(self.transitions)
+
 
         input_a = ffmpeg.input(clip_a)
         input_b = ffmpeg.input(clip_b)
+
 
         v_stream = ffmpeg.filter(
             [input_a.video, input_b.video],
@@ -565,11 +655,13 @@ class Composer:
             offset=offset
         )
 
+
         a_stream = ffmpeg.filter(
             [input_a.audio, input_b.audio],
             "acrossfade",
             d=trans_dur
         )
+
 
         runner = ffmpeg.output(
             v_stream,
@@ -584,13 +676,17 @@ class Composer:
             movflags="faststart"
         )
 
+
         runner.run(overwrite_output=True, quiet=True)
 
+
         return effect, offset
+
 
     # ------------------------------------------------------------------
     # NORMALISATION AUDIO
     # ------------------------------------------------------------------
+
 
     def _normalize_audio_track(
         self,
@@ -599,6 +695,7 @@ class Composer:
     ):
         try:
             src = ffmpeg.input(input_video_path)
+
 
             normalized_audio = (
                 src.audio
@@ -610,6 +707,7 @@ class Composer:
                 )
             )
 
+
             runner = ffmpeg.output(
                 src.video,
                 normalized_audio,
@@ -620,8 +718,10 @@ class Composer:
                 movflags="faststart"
             )
 
+
             runner.run(overwrite_output=True, quiet=True)
             return True
+
 
         except ffmpeg.Error as e:
             error_log = (
@@ -632,9 +732,11 @@ class Composer:
             print(f"⚠️ Loudnorm failed: {error_log}")
             return False
 
+
     # ------------------------------------------------------------------
     # MUSIQUE + DUCKING
     # ------------------------------------------------------------------
+
 
     def _mix_background_music(
         self,
@@ -644,21 +746,25 @@ class Composer:
         try:
             video_duration = self.get_duration(stitched_path)
 
+
             if video_duration <= 0:
                 raise ValueError(
                     "Durée vidéo invalide pour le mix audio."
                 )
+
 
             fade_start = max(
                 video_duration - self.music_fade_duration,
                 0
             )
 
+
             voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(
                 self.bg_music_path,
                 stream_loop=-1
             )
+
 
             voice_audio = (
                 voice.audio
@@ -672,6 +778,7 @@ class Composer:
                 .filter("atrim", duration=video_duration)
                 .filter("asetpts", "PTS-STARTPTS")
             )
+
 
             music_audio = (
                 music.audio
@@ -698,6 +805,7 @@ class Composer:
                 )
             )
 
+
             voice_split = voice_audio.filter_multi_output(
                 "asplit",
                 2
@@ -705,12 +813,14 @@ class Composer:
             voice_for_duck = voice_split[0]
             voice_for_mix = voice_split[1]
 
+
             music_split = music_audio.filter_multi_output(
                 "asplit",
                 2
             )
             music_for_duck = music_split[0]
             music_for_mix = music_split[1]
+
 
             ducked_music = ffmpeg.filter(
                 [music_for_duck, voice_for_duck],
@@ -721,6 +831,7 @@ class Composer:
                 release=450,
                 makeup=1
             )
+
 
             mixed_audio = (
                 ffmpeg.filter(
@@ -739,6 +850,7 @@ class Composer:
                 )
             )
 
+
             final_runner = ffmpeg.output(
                 voice.video,
                 mixed_audio,
@@ -751,12 +863,15 @@ class Composer:
                 preset="medium"
             )
 
+
             final_runner.run(
                 overwrite_output=True,
                 quiet=True
             )
 
+
             return True
+
 
         except ffmpeg.Error as e:
             error_log = (
@@ -770,6 +885,7 @@ class Composer:
             )
             return False
 
+
         except Exception as e:
             print(
                 "⚠️ Music mix failed, falling back to "
@@ -777,9 +893,11 @@ class Composer:
             )
             return False
 
+
     # ------------------------------------------------------------------
     # FINALISATION
     # ------------------------------------------------------------------
+
 
     def concatenate_with_transitions(
         self,
@@ -791,10 +909,12 @@ class Composer:
             "raw_final_stitched.mp4"
         )
 
+
         output_path = os.path.join(
             self.final_dir,
             output_filename
         )
+
 
         if os.path.exists(output_path):
             try:
@@ -802,24 +922,31 @@ class Composer:
             except Exception:
                 pass
 
+
         if not video_paths:
             return None
 
+
         merge_step_files = []
+
 
         if len(video_paths) == 1:
             stitched_path = video_paths[0]
 
+
         else:
             courant = video_paths[0]
 
+
             for i in range(1, len(video_paths)):
                 suivant = video_paths[i]
+
 
                 merge_output = os.path.join(
                     self.temp_dir,
                     f"merge_step_{i}.mp4"
                 )
+
 
                 try:
                     effect, offset = self._merge_two_clips(
@@ -828,10 +955,12 @@ class Composer:
                         merge_output
                     )
 
+
                     print(
                         f"      Transition {i}: {effect} "
                         f"(offset={offset:.2f}s)"
                     )
+
 
                 except ffmpeg.Error as e:
                     error_log = (
@@ -840,15 +969,18 @@ class Composer:
                         else str(e)
                     )
 
+
                     print(
                         f"❌ Stitching Error at step {i}: "
                         f"{error_log}"
                     )
 
+
                     self._cleanup_temp_files(
                         merge_step_files
                     )
                     return None
+
 
                 if courant.startswith(
                     os.path.join(
@@ -858,9 +990,12 @@ class Composer:
                 ):
                     merge_step_files.append(courant)
 
+
                 courant = merge_output
 
+
             stitched_path = courant
+
 
         if os.path.exists(self.bg_music_path):
             success = self._mix_background_music(
@@ -868,16 +1003,19 @@ class Composer:
                 raw_final_output_path
             )
 
+
             if not success:
                 normalized_fallback = os.path.join(
                     self.temp_dir,
                     "normalized_no_music.mp4"
                 )
 
+
                 ok = self._normalize_audio_track(
                     stitched_path,
                     normalized_fallback
                 )
+
 
                 if ok and os.path.exists(
                     normalized_fallback
@@ -892,16 +1030,19 @@ class Composer:
                         raw_final_output_path
                     )
 
+
         else:
             normalized_fallback = os.path.join(
                 self.temp_dir,
                 "normalized_no_music.mp4"
             )
 
+
             ok = self._normalize_audio_track(
                 stitched_path,
                 normalized_fallback
             )
+
 
             if ok and os.path.exists(
                 normalized_fallback
@@ -916,10 +1057,12 @@ class Composer:
                     raw_final_output_path
                 )
 
+
         watermark_success = self.add_watermark(
             raw_final_output_path,
             output_path
         )
+
 
         if not watermark_success:
             print(
@@ -931,16 +1074,19 @@ class Composer:
                 output_path
             )
 
+
         if os.path.exists(raw_final_output_path):
             try:
                 os.remove(raw_final_output_path)
             except Exception:
                 pass
 
+
         self._cleanup_temp_files(
             video_paths + merge_step_files,
             keep=output_path
         )
+
 
         if (
             stitched_path not in video_paths
@@ -951,11 +1097,14 @@ class Composer:
                 keep=output_path
             )
 
+
         return output_path
+
 
     # ------------------------------------------------------------------
     # NETTOYAGE
     # ------------------------------------------------------------------
+
 
     def _cleanup_temp_files(
         self,
@@ -965,6 +1114,7 @@ class Composer:
         for filepath in filepaths:
             if not filepath or filepath == keep:
                 continue
+
 
             if os.path.exists(filepath):
                 try:
