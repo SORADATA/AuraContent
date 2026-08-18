@@ -1,10 +1,17 @@
 import asyncio
 import os
+import shutil
+
 
 from modules.brain import ContentBrain
 from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
 from modules.composer import Composer
+from modules.visuals.scene_map_hologram import (
+    HologramMapConfig,
+    HologramPOI,
+    render_hologram_map_video,
+)
 from modules.utils.database.uploader import upload_to_huggingface
 from modules.utils.cache import clean_cache
 from modules.utils.subtitles import generate_grouped_srt
@@ -17,29 +24,37 @@ from modules.utils.hook_tracker import (
     select_hook,
 )
 
+
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
 
+
     def get_latest_videos_stats():
         return None
+
 
 
 # =====================================================================
 # --- PIPELINE PRINCIPAL ---
 # =====================================================================
 
+
 async def main():
     print("🚀 STARTING AUTOMATION...")
+
 
     topic_input = os.getenv("VIDEO_TOPIC", "").strip()
     duration_target = int(os.getenv("VIDEO_DURATION", "45"))
     refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
     use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
+    mode_hologram = os.getenv("MODE_HOLOGRAM", "false").lower() == "true"
+
 
     brain = ContentBrain()
     asset_manager = AssetManager()
+
 
     print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
     try:
@@ -47,6 +62,7 @@ async def main():
     except Exception as e:
         print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
         stats_historique = None
+
 
     # --- 1. GÉNÉRATION DU SUJET ET DE LA REQUÊTE ---
     try:
@@ -60,18 +76,22 @@ async def main():
             topic = brain.get_trending_topic(previous_stats_list=stats_historique)
             print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
+
         print("🔍 Génération du mot-clé de recherche visuelle par l'IA...")
         dynamic_query = brain.generate_video_search_query(topic)
         print(f"🎯 Requête vidéo générée : '{dynamic_query}'")
+
 
     except Exception as e:
         print(f"❌ Brain Error (Sujet/Requête): {e}")
         return
 
+
     # --- 2. GÉNÉRATION DU SCRIPT ET HOOKS (SCORING PAR BANDIT) ---
     try:
         chosen_hook = None
         chosen_hook_pattern = None
+
 
         if use_hooks_ab_test:
             try:
@@ -81,11 +101,14 @@ async def main():
                     previous_stats_list=stats_historique,
                 )
 
+
                 hook_history = load_hook_history()
                 pattern_scores = compute_pattern_scores(stats_historique, hook_history)
 
+
                 if pattern_scores:
                     print(f"📈 Scores de patterns connus : {pattern_scores}")
+
 
                 selected = select_hook(hooks, pattern_scores=pattern_scores)
                 if selected:
@@ -93,11 +116,14 @@ async def main():
                     chosen_hook_pattern = selected.get("pattern", "?")
                     print(f"🧠 Hook retenu ({chosen_hook_pattern}): {chosen_hook}")
 
+
             except Exception as e:
                 print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
 
+
         scene_count = estimate_scene_count(duration_target)
         print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
+
 
         script_payload = brain.generate_script_with_target(
             topic,
@@ -105,72 +131,107 @@ async def main():
             chosen_hook=chosen_hook,
         )
 
+
         validate_script_payload(script_payload)
         script = script_payload["scenes"]
         video_title = script_payload.get("title", topic)
         script_payload["hook_pattern_used"] = chosen_hook_pattern
 
+
     except Exception as e:
         print(f"❌ Brain Error (Script): {e}")
         return
+
 
     if not script:
         print("❌ Script generation failed.")
         return
 
-    # --- 3. RECHERCHE D'ASSETS (LOGIQUE V2.1 : ROUTAGE CORRIGÉ) ---
+
+    # --- 3. RECHERCHE D'ASSETS (LOGIQUE V2.2 : MODE_HOLOGRAM + ROUTAGE V2.1) ---
     temp_dir = os.path.join(os.getcwd(), "assets", "temp")
     os.makedirs(temp_dir, exist_ok=True)
+
 
     bg_video_path = None
     video_pairs = []
 
-    print("🔄 Recherche des meilleurs assets (Archives / Vidéos / IA)...")
+
+    if mode_hologram:
+        print("🗺️ MODE_HOLOGRAM actif : les scènes 'specific' avec lieu réel "
+              "utiliseront des cartes hologrammes générées (OSMnx + Manim).")
+
+
+    print("🔄 Recherche des meilleurs assets (Archives / Vidéos / IA / Hologramme)...")
+
 
     for index, scene in enumerate(script):
         scene_id = scene['id']
         scene_type = scene.get("scene_type", "generic")
 
+
         location_name = (scene.get("location_name") or "").strip()
+        location_country = (scene.get("location_country") or "").strip()
         stock_search = (scene.get("stock_search") or "").strip()
         image_prompt = (scene.get("image_prompt") or "").strip()
 
-        # CORRECTIF PRINCIPAL : routage du champ de recherche selon le
-        # type de scene, au lieu de l'ancien
-        # "location_name or image_prompt or dynamic_query" qui envoyait
-        # par erreur des phrases françaises longues (image_prompt) aux
-        # moteurs de recherche vidéo (Pexels/Pixabay), et qui ne
-        # transmettait jamais image_prompt à la génération IA.
-        #
-        # - Scenes 'specific' : on cherche un lieu réel -> location_name
-        #   (utilisé par Wikimedia/Openverse, qui ont besoin d'un nom
-        #   propre exact).
-        # - Scenes 'generic'  : on cherche une vidéo d'ambiance ->
-        #   stock_search (mot-clé anglais court, conforme à la règle 12
-        #   du brain).
+
         if scene_type == "specific":
             search_query = location_name or dynamic_query
         else:
             search_query = stock_search or dynamic_query
 
-        # event_context : rempli par ContentBrain quand une source
-        # Wikipedia mentionne un evenement precis et date (incendie,
-        # destruction, decouverte). Transmis a AssetManager pour enrichir
-        # le prompt IA de secours et obtenir une image concrete de
-        # l'evenement plutot qu'une vue generique et intemporelle du lieu.
+
         event_context = scene.get("event_context") or None
 
-        # On passe un chemin temporaire générique à l'AssetManager
+
         temp_asset_path = os.path.join(temp_dir, f"temp_media_{scene_id}.mp4")
+
+
+        # --- MODE HOLOGRAMME (test) ---
+        # On tente le rendu hologramme uniquement si la scène a un vrai
+        # lieu (location_name non vide) : sans lieu, pas de carte
+        # possible. En cas d'échec (géocodage, réseau OSM, rendu Manim),
+        # on retombe automatiquement sur le pipeline classique ci-dessous
+        # plutôt que de faire échouer toute la génération de la scène.
+        if mode_hologram and scene_type == "specific" and location_name:
+            try:
+                city_for_geocoding = (
+                    f"{location_name}, {location_country}"
+                    if location_country
+                    else location_name
+                )
+                print(f"  🗺️ Scène {scene_id} [hologram] : carte pour '{city_for_geocoding}'...")
+
+
+                hologram_config = HologramMapConfig(
+                    city=city_for_geocoding,
+                    network_type="drive",
+                    theme="cyan_noir",
+                    pois=[HologramPOI(name=location_name)],
+                    duration_per_poi=max(float(scene.get("duration", 3.0)) - 3.5, 1.0),
+                )
+
+
+                hologram_path = render_hologram_map_video(hologram_config)
+                final_asset_path = os.path.join(temp_dir, f"scene_hologram_{scene_id}.mp4")
+                shutil.copy(hologram_path, final_asset_path)
+                video_pairs.append(final_asset_path)
+                print(f"  ✅ Carte hologramme générée pour la scène {scene_id}.")
+                continue
+
+
+            except Exception as e:
+                print(f"  ⚠️ Échec génération hologramme scène {scene_id} ({e}), "
+                      f"repli sur asset_manager classique.")
+                # Pas de "continue" ici : on retombe volontairement sur le
+                # chemin normal ci-dessous si le rendu hologramme échoue.
+
 
         log_query = search_query if not event_context else f"{search_query} (contexte: {event_context})"
         print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{log_query}'...")
 
-        # L'AssetManager nous dit quelle source a gagné via source_type.
-        # CORRECTIF : image_prompt est désormais transmis explicitement,
-        # pour que la génération IA (quand elle a lieu) s'appuie sur la
-        # description visuelle spécifique à la scène plutôt que sur le
-        # seul nom du lieu.
+
         success, source_type = asset_manager.get_best_asset(
             query=search_query,
             output_path=temp_asset_path,
@@ -179,13 +240,14 @@ async def main():
             image_prompt=image_prompt,
         )
 
+
         if success and os.path.exists(temp_asset_path):
-            # On renomme le fichier avec la source pour que le Composer puisse la lire
             final_asset_path = os.path.join(temp_dir, f"scene_{source_type}_{scene_id}.mp4")
             os.rename(temp_asset_path, final_asset_path)
             video_pairs.append(final_asset_path)
         else:
             print(f"  ❌ Impossible de trouver un asset pour la scène {scene_id}. La vidéo pourrait être tronquée.")
+
 
     # --- 4. LÉGENDE, AUDIO ET SOUS-TITRES ---
     print("📝 Demande de légende à l'IA basée sur le script complet...")
@@ -193,7 +255,9 @@ async def main():
     legende_finale = generate_caption(full_text, video_title)
     save_caption(legende_finale)
 
+
     audio_engine = AudioEngine()
+
 
     try:
         print("🎙️ Generation audio...")
@@ -202,8 +266,10 @@ async def main():
         print(f"❌ Audio Error: {e}")
         return
 
+
     subs_dir = os.path.join(os.getcwd(), "assets", "temp", "subs")
     os.makedirs(subs_dir, exist_ok=True)
+
 
     print("📝 Generation des sous-titres...")
     for scene in script:
@@ -215,6 +281,7 @@ async def main():
             max_words_per_caption=3,
             min_caption_dur=0.45,
         )
+
 
     # --- 5. ASSEMBLAGE ET MONTAGE ---
     try:
@@ -229,9 +296,11 @@ async def main():
         print(f"❌ Render Error: {e}")
         return
 
+
     if not final_scene_paths:
         print("❌ Failed to generate any scenes.")
         return
+
 
     try:
         final_path = composer.concatenate_with_transitions(final_scene_paths)
@@ -239,19 +308,22 @@ async def main():
         print(f"❌ Final assembly error: {e}")
         return
 
+
     # --- 6. UPLOAD & NETTOYAGE ---
     if final_path:
         print(f"✅ Video finale prête : {final_path}")
         upload_to_huggingface(final_path, video_title)
 
+
         if chosen_hook_pattern:
             record_hook_usage(video_title, chosen_hook_pattern)
+
 
         clean_cache()
     else:
         print("❌ L'assemblage final a échoué, upload annulé.")
 
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-
