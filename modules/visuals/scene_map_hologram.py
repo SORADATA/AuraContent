@@ -42,12 +42,20 @@ class HologramPOI:
 class HologramMapConfig:
     """Configuration generique d'une scene carte-hologramme.
 
-    city: n'importe quelle ville/lieu geocodable par OSMnx/Nominatim
-          (ex: "Paris, France", "Tokyo, Japan", "New York, USA").
+    city: soit une zone administrative geocodable par OSMnx/Nominatim
+          (ex: "Paris, France", "Tokyo, Japan", "7th arrondissement,
+          Paris, France"), soit un lieu precis (ex: "Porte Maillot,
+          Paris, France") -- dans ce dernier cas, le module bascule
+          automatiquement sur un telechargement par rayon autour du
+          point plutot que par polygone administratif (voir
+          point_radius_m).
     network_type: "drive" | "walk" | "bike" | "all" - type de reseau
           OSM a afficher en fond (rues, metro approxime via "walk"/"all").
     theme: permet de changer la palette sans dupliquer le code
           (ex: "cyan_noir", "ambre_noir", "violet_noir").
+    point_radius_m: rayon en metres autour du point quand "city" n'est
+          pas une zone administrative geocodable en polygone (fallback
+          automatique). Plus petit = telechargement plus rapide.
     """
     city: str
     pois: List[HologramPOI] = field(default_factory=list)
@@ -57,6 +65,7 @@ class HologramMapConfig:
     resolution: Tuple[int, int] = (1080, 1920)  # vertical par defaut (Shorts/TikTok)
     fps: int = 30
     zoom_on_poi: bool = True
+    point_radius_m: int = 900
     output_name: Optional[str] = None
 
 
@@ -92,12 +101,44 @@ def _geocode_pois(config: HologramMapConfig) -> None:
 
 
 def fetch_city_network(config: HologramMapConfig):
-    """Telecharge le graphe de rues/reseau reel de la ville via OSMnx.
-    Retourne un graphe networkx utilisable pour le rendu."""
+    """Telecharge le graphe de rues/reseau reel autour du sujet via OSMnx.
+
+    Essaie d'abord graph_from_place() (zone administrative avec polygone
+    OSM : ville, arrondissement, quartier). Si Nominatim ne renvoie pas
+    de polygone pour "city" (cas frequent pour un lieu precis comme une
+    place ou un monument, ex: "Porte Maillot"), bascule automatiquement
+    sur graph_from_point() centre sur le premier POI geocode, avec un
+    rayon de config.point_radius_m metres -- plus rapide et plus adapte
+    a un lieu ponctuel qu'un polygone administratif.
+    """
     import osmnx as ox
 
     logger.info("Telechargement du reseau OSM pour '%s' (%s)...", config.city, config.network_type)
-    graph = ox.graph_from_place(config.city, network_type=config.network_type, simplify=True)
+
+    try:
+        graph = ox.graph_from_place(config.city, network_type=config.network_type, simplify=True)
+        return graph
+    except (TypeError, ValueError) as exc:
+        logger.info(
+            "'%s' n'est pas une zone administrative geocodable en polygone (%s). "
+            "Fallback sur un rayon autour du point.",
+            config.city, exc,
+        )
+
+    _geocode_pois(config)
+    valid_pois = [p for p in config.pois if p.lat is not None and p.lon is not None]
+
+    if valid_pois:
+        center_lat, center_lon = valid_pois[0].lat, valid_pois[0].lon
+    else:
+        center_lat, center_lon = ox.geocode(config.city)
+
+    graph = ox.graph_from_point(
+        (center_lat, center_lon),
+        dist=config.point_radius_m,
+        network_type=config.network_type,
+        simplify=True,
+    )
     return graph
 
 
@@ -259,8 +300,6 @@ def _build_manim_scene_code(edge_lines, poi_points, theme: dict, config: Hologra
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Exemple 1 : stations fantomes de Paris (le cas d'origine, mais
-    # traite comme un cas parmi d'autres, pas un cas special en dur)
     demo_paris = HologramMapConfig(
         city="Paris, France",
         network_type="walk",
@@ -273,8 +312,6 @@ if __name__ == "__main__":
         ],
     )
 
-    # Exemple 2 : un tout autre sujet, une tout autre ville, pour
-    # prouver que rien n'est code en dur pour Paris/metro.
     demo_tokyo = HologramMapConfig(
         city="Tokyo, Japan",
         network_type="drive",
