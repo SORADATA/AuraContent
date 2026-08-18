@@ -85,19 +85,44 @@ def _cache_key(config: HologramMapConfig) -> str:
 
 def _geocode_pois(config: HologramMapConfig) -> None:
     """Complete lat/lon manquants via geocodage (Nominatim / OSMnx),
-    pour que l'appelant puisse ne fournir que des noms de lieux."""
+    pour que l'appelant puisse ne fournir que des noms de lieux.
+
+    CORRECTIF : evite la duplication du nom de lieu dans la requete
+    quand poi.name est deja identique ou tres proche de config.city
+    (cas frequent quand l'appelant construit HologramMapConfig(city=X,
+    pois=[HologramPOI(name=X)]) pour un lieu ponctuel plutot qu'une
+    vraie ville, ex: main.py qui fait city=location_name+pays et
+    pois=[HologramPOI(name=location_name)]). On essaie d'abord poi.name
+    seul, puis en fallback "poi.name, city" seulement si city apporte
+    une info differente du nom du POI.
+    """
     import osmnx as ox
 
     for poi in config.pois:
         if poi.lat is not None and poi.lon is not None:
             continue
-        query = "{}, {}".format(poi.name, config.city)
-        try:
-            lat, lon = ox.geocode(query)
-            poi.lat, poi.lon = lat, lon
-            logger.info("Geocodage OK: %s -> (%.5f, %.5f)", query, lat, lon)
-        except Exception as exc:
-            logger.warning("Geocodage echoue pour '%s' (%s). POI ignore.", query, exc)
+
+        name_clean = poi.name.strip()
+        city_clean = config.city.strip()
+
+        if name_clean.lower() in city_clean.lower() or city_clean.lower() in name_clean.lower():
+            candidates = [name_clean, city_clean]
+        else:
+            candidates = [name_clean, "{}, {}".format(name_clean, city_clean)]
+
+        geocoded = False
+        for query in candidates:
+            try:
+                lat, lon = ox.geocode(query)
+                poi.lat, poi.lon = lat, lon
+                logger.info("Geocodage OK: %s -> (%.5f, %.5f)", query, lat, lon)
+                geocoded = True
+                break
+            except Exception as exc:
+                logger.warning("Geocodage echoue pour '%s' (%s).", query, exc)
+
+        if not geocoded:
+            logger.warning("POI '%s' ignore : aucun candidat de geocodage n'a fonctionne.", name_clean)
 
 
 def fetch_city_network(config: HologramMapConfig):
