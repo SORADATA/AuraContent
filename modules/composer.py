@@ -6,10 +6,10 @@ import ffmpeg
 
 class Composer:
     """
-    Compositeur vidéo vertical 1080x1920 orienté documentaire / mystère.
+    Compositeur video verticale 1080x1920 oriente documentaire / mystere.
 
     Pipeline visuel :
-        scènes (avec micro-plans) -> sous-titres -> crédit source
+        scenes (avec micro-plans) -> sous-titres -> credit source
                -> assemblage discret par fondus
                -> mix voix + musique avec ducking
                -> normalisation finale
@@ -26,13 +26,13 @@ class Composer:
             os.makedirs(d, exist_ok=True)
 
         self.transitions = ["fade", "fade"]
-        
-        # 📌 La musique de fond est désormais dynamique
+
+        # La musique de fond est desormais dynamique
         self.current_bg_music_path = None
 
         self.watermark_path = os.path.join(self.images_dir, "minute_mystere_watermark.png")
-        self.watermark_width = 160  # Plus discret
-        self.watermark_opacity = 0.55  # Moins opaque
+        self.watermark_width = 160
+        self.watermark_opacity = 0.55
         self.watermark_x = 42
         self.watermark_y = 48
 
@@ -66,13 +66,13 @@ class Composer:
             "pexels": "Illustration : Pexels / Pixabay",
             "pixabay": "Illustration : Pexels / Pixabay",
             "videvo": "Illustration : Pexels / Pixabay",
-            "ai": "Illustration générée par IA",
+            "ai": "Illustration generee par IA",
         }
 
     def set_background_music(self, mood="intriguing"):
         """
         Choisit une musique de fond en fonction de l'ambiance (mood).
-        Cherche dans le dossier assets/music/ un fichier qui contient le mot-clé.
+        Cherche dans le dossier assets/music/ un fichier qui contient le mot-cle.
         """
         if not os.path.exists(self.music_dir):
             self.current_bg_music_path = None
@@ -80,15 +80,15 @@ class Composer:
 
         available_tracks = [f for f in os.listdir(self.music_dir) if f.endswith('.mp3')]
         if not available_tracks:
-            print("      ⚠️ Aucune musique trouvée dans assets/music/ !")
+            print("      \u26a0\ufe0f Aucune musique trouvee dans assets/music/ !")
             self.current_bg_music_path = None
             return
 
         matching_tracks = [f for f in available_tracks if mood.lower() in f.lower()]
         chosen_track = random.choice(matching_tracks) if matching_tracks else random.choice(available_tracks)
-            
+
         self.current_bg_music_path = os.path.join(self.music_dir, chosen_track)
-        print(f"      🎵 Musique sélectionnée : {chosen_track} (Mood ciblé: {mood})")
+        print(f"      \U0001f3b5 Musique selectionnee : {chosen_track} (Mood cible: {mood})")
 
     def _get_transition_for_scene(self, scene):
         transition = scene.get("transition", "cut")
@@ -128,12 +128,12 @@ class Composer:
         if any(token in file_name for token in ("pexels", "pixabay", "videvo", "video")):
             return "Illustration : Pexels / Pixabay"
         if any(token in file_name for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")):
-            return "Illustration générée par IA"
+            return "Illustration generee par IA"
         return "Illustration"
 
     def add_watermark(self, input_video_path, output_video_path):
         if not os.path.exists(self.watermark_path):
-            print(f"⚠️ Filigrane introuvable : {self.watermark_path}")
+            print(f"\u26a0\ufe0f Filigrane introuvable : {self.watermark_path}")
             return False
 
         try:
@@ -158,26 +158,38 @@ class Composer:
             runner.run(overwrite_output=True, quiet=True)
             return True
         except ffmpeg.Error as e:
-            print(f"⚠️ Watermark failed: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            print(f"\u26a0\ufe0f Watermark failed: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
             return False
-        except Exception as e:
+        except Exception:
             return False
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
         """
-        Nouveau moteur de micro-plans.
-        'assets' est désormais une liste contenant de 1 à plusieurs chemins d'images/vidéos.
+        Moteur de micro-plans.
+        'assets' est une liste contenant de 1 a plusieurs chemins d'images/videos.
         """
         scene_id = scene["id"]
-        audio_path = scene["audio_path"]
+        audio_path = scene.get("audio_path")
         total_duration = float(scene["duration"])
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
+
+        # GARDE DEFENSIVE (correctif) : si le TTS a echoue pour cette scene
+        # (audio_path est None ou le fichier n'existe pas sur disque), on ne
+        # tente plus ffmpeg.input(None). Cela provoquait auparavant un
+        # "TypeError: expected str, bytes or os.PathLike object, not
+        # NoneType" peu comprehensible, remonte tardivement par le bloc
+        # except generique. On le detecte maintenant explicitement en amont,
+        # avec un message clair, et on abandonne proprement cette scene :
+        # elle sera filtree par render_all_scenes() sans casser le reste du
+        # pipeline.
+        if not audio_path or not os.path.exists(audio_path):
+            print(f"      \u26a0\ufe0f Scene {scene_id} ignoree : aucun fichier audio valide (TTS probablement en echec).")
+            return None
 
         try:
             input_audio = ffmpeg.input(audio_path)
 
             if bg_video_path and os.path.exists(bg_video_path):
-                # Cas d'une vidéo de fond unifiée (Pexels)
                 source_duration = self.get_duration(bg_video_path)
                 start_offset = bg_offset % source_duration if source_duration > 0 else 0.0
                 video_stream = (
@@ -190,18 +202,15 @@ class Composer:
                 source_for_credit = None
 
             else:
-                # 📌 ARCHITECTURE MICRO-PLANS
                 if not assets:
                     raise ValueError(f"Scene {scene_id}: aucun asset fourni.")
-                
-                # S'assurer qu'on travaille bien avec une liste
+
                 if not isinstance(assets, list):
                     if isinstance(assets, dict):
                         assets = list(assets.values())
                     else:
                         assets = [assets]
-                
-                # Filtrer les assets invalides
+
                 valid_assets = [p for p in assets if p and os.path.exists(p)]
                 if not valid_assets:
                     raise ValueError(f"Scene {scene_id}: les assets fournis sont introuvables.")
@@ -209,7 +218,7 @@ class Composer:
                 num_assets = len(valid_assets)
                 chunk_duration = total_duration / num_assets
                 streams = []
-                
+
                 for idx, path in enumerate(valid_assets):
                     if self._is_video_file(path):
                         stream = (
@@ -220,10 +229,9 @@ class Composer:
                             .setpts("PTS-STARTPTS")
                         )
                     else:
-                        # Animation d'images fixes avec sens de zoom alterné
                         frames = max(int(chunk_duration * self.fps), 1)
                         zoom_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
-                        
+
                         stream = (
                             ffmpeg.input(path, loop=1, t=chunk_duration)
                             .filter("scale", 2200, -1)
@@ -238,16 +246,13 @@ class Composer:
                         )
                     streams.append(stream)
 
-                # Concaténer tous les micro-plans de la scène
                 if len(streams) > 1:
                     video_stream = ffmpeg.concat(*streams, v=1, a=0)
                 else:
                     video_stream = streams[0]
-                
-                # On utilise la première image pour déterminer le crédit
+
                 source_for_credit = valid_assets[0]
 
-            # Crédit source
             if source_for_credit:
                 source_text = self._resolve_source_credit(source_for_credit)
                 if source_text:
@@ -258,14 +263,12 @@ class Composer:
                         shadowx=1, shadowy=1, x="30", y=self.source_credit_y
                     )
 
-            # Sous-titres
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
                 video_stream = video_stream.filter(
                     "subtitles", filename=self._escape_path_for_filter(srt_path), force_style=self.subtitle_style
                 )
 
-            # Encodage
             runner = ffmpeg.output(
                 video_stream, input_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
@@ -275,21 +278,20 @@ class Composer:
             return output_path
 
         except ffmpeg.Error as e:
-            print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            print(f"\u274c Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
             return None
         except Exception as e:
-            print(f"❌ Render Fail Scene {scene_id}: {e}")
+            print(f"\u274c Render Fail Scene {scene_id}: {e}")
             return None
 
     def render_all_scenes(self, script_data, video_asset_lists, bg_video_path=None):
         """
-        video_asset_lists: liste de listes. Chaque sous-liste contient les assets d'une scène.
+        video_asset_lists: liste de listes. Chaque sous-liste contient les assets d'une scene.
         """
         rendered_paths = []
         bg_cursor = 0.0
 
         for i, scene in enumerate(script_data):
-            # Récupère la liste des micro-plans pour cette scène (ou None)
             current_assets = video_asset_lists[i] if i < len(video_asset_lists) else None
             output_path = self.process_scene(scene, current_assets, bg_video_path=bg_video_path, bg_offset=bg_cursor)
             bg_cursor += float(scene["duration"])
@@ -334,7 +336,7 @@ class Composer:
         try:
             video_duration = self.get_duration(stitched_path)
             if video_duration <= 0:
-                raise ValueError("Durée vidéo invalide.")
+                raise ValueError("Duree video invalide.")
 
             fade_start = max(video_duration - self.music_fade_duration, 0)
             voice = ffmpeg.input(stitched_path)
@@ -376,7 +378,7 @@ class Composer:
             )
             final_runner.run(overwrite_output=True, quiet=True)
             return True
-        except ffmpeg.Error as e:
+        except ffmpeg.Error:
             return False
         except Exception:
             return False
@@ -401,7 +403,7 @@ class Composer:
 
         if os.path.exists(output_path):
             try: os.remove(output_path)
-            except: pass
+            except Exception: pass
 
         if not video_paths:
             return None
@@ -416,7 +418,7 @@ class Composer:
                 merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
                 try:
                     effect, offset = self._merge_two_clips(courant, suivant, merge_output)
-                except ffmpeg.Error as e:
+                except ffmpeg.Error:
                     self._cleanup_temp_files(merge_step_files)
                     return None
 
@@ -438,7 +440,7 @@ class Composer:
 
         if os.path.exists(raw_final_output_path):
             try: os.remove(raw_final_output_path)
-            except: pass
+            except Exception: pass
 
         self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
         if stitched_path not in video_paths and stitched_path != output_path:
