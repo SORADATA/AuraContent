@@ -68,6 +68,25 @@ VERACITY_INSTRUCTION = (
     "confondre deux legendes/lieux distincts portant un nom proche."
 )
 
+# 📌 NOUVELLE INSTRUCTION NARRATIVE AJOUTÉE
+NARRATIVE_STRUCTURE_INSTRUCTION = (
+    "STRUCTURE NARRATIVE OBLIGATOIRE (RETENTION MAXIMALE) : "
+    "Repartis ces phases proportionnellement sur les scenes disponibles : "
+    "1) HOOK (debut) : commence IMMEDIATEMENT par le fait le plus intrigant, sans introduction. "
+    "2) PREUVE : donne un element concret qui justifie le hook. "
+    "3) CONTEXTE : explique uniquement ce qui est necessaire, sans remplissage. "
+    "4) ESCALADE : chaque scene doit apporter une information nouvelle, jamais une redite. "
+    "5) REVELATION : presente le detail le plus surprenant du sujet. "
+    "6) PAYOFF (fin) : reponse, retournement ou question extremement forte donnant envie "
+    "de revoir ou commenter la video. "
+    "REGLES : aucune introduction generique, aucune phrase vide, aucune repetition ; "
+    "interdiction des formulations comme 'aujourd'hui nous allons decouvrir...' ; "
+    "privilegie des faits concrets avec dates et lieux precis quand ils sont verifiables ; "
+    "chaque scene doit avoir une fonction narrative claire ET une idee visuelle distincte ; "
+    "ne jamais inventer une source ou un evenement historique ; "
+    "distingue clairement fait historique etabli et hypothese/legende."
+)
+
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
         r"\bdecouv", r"\bmyster", r"\bsecret", r"\bexplor",
@@ -774,19 +793,21 @@ quelques mots factuels visuellement exploitables pour generer une image
             print("⚠️ Aucune source Wikipedia trouvee, generation en mode libre "
                   "(fact-check LLM seul, moins fiable sur la veracite narrative).")
 
+        # 📌 INJECTION DES NOUVELLES RÈGLES 5 ET NARRATIVE
         base_prompt = f"""
 SUJET:
 {topic}
 
 {hook_instruction}
 {grounding_block}
+{NARRATIVE_STRUCTURE_INSTRUCTION}
 
 REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
 1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
 2. Dès la scène 2, entre DIRECTEMENT dans le vif du sujet en racontant de vrais faits historiques, des détails précis ou une anecdote concrète et surprenante.
 3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
 4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
-5. Pour la clé 'image_prompt', décris des décors sous forme de photographies réelles, style documentaire historique, ambiance sombre et mystérieuse. Interdiction formelle d'utiliser des termes liés à la synthèse (CGI, Unreal Engine, 3D render).
+5. Pour la clé 'image_prompt', rédige une description PHOTOGRAPHIQUE ULTRA-PRÉCISE (3 à 5 phrases), au format "photographie documentaire" : sujet précis (type de lieu, époque, style architectural ou objet), cadrage/angle de vue, éclairage (naturel, bougie, nocturne...), textures et détails visibles, ambiance. Exemple du niveau de précision attendu : "Photographie documentaire nocturne d'une ancienne forteresse militaire française du XVIIIe siècle, couloir intérieur étroit en pierre humide, murs massifs, une lanterne chaude isolée au fond du passage, porte métallique entrouverte au premier plan, aucune personne visible, légère brume froide, textures de pierre très détaillées, profondeur cinématographique, ambiance inquiétante mais historiquement crédible." Interdiction formelle des termes liés à la synthèse (CGI, Unreal Engine, 3D render, illustration, dessin).
 6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis et complet dans 'location_name' (ex: "Château de Chambord", "Église Saint-Pierre d'Oron" et non juste "Église Saint-Pierre") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
 7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
 8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
@@ -821,12 +842,13 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
         for fact_check_attempt in range(max_fact_check_retries + 1):
             prompt = base_prompt + correction_feedback
 
+            # 📌 INJECTION DE NARRATIVE_STRUCTURE_INSTRUCTION DANS LE SYSTEME
             messages = [
                 {"role": "system", "content": (
                     f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
                     f"ni plus ni moins -- c'est une contrainte absolue et non negociable. "
                     f"Ne montre jamais ton raisonnement, reponds directement avec le JSON final. "
-                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
+                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION} {NARRATIVE_STRUCTURE_INSTRUCTION}"
                 )},
                 {"role": "user", "content": prompt},
             ]

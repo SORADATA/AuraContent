@@ -1,257 +1,107 @@
 import asyncio
 import os
-
 from modules.brain import ContentBrain
+from modules.retention import RetentionPlanner
 from modules.asset_manager import AssetManager
 from modules.audio import AudioEngine
 from modules.composer import Composer
-from modules.utils.database.uploader import upload_to_huggingface
-from modules.utils.cache import clean_cache
-from modules.utils.subtitles import generate_grouped_srt
-from modules.utils.caption_generator import generate_caption, save_caption
-from modules.utils.helpers import estimate_scene_count, validate_script_payload
-from modules.utils.hook_tracker import (
-    load_hook_history,
-    record_hook_usage,
-    compute_pattern_scores,
-    select_hook,
-)
-
-try:
-    from modules.utils.client_http.zernio_client import get_latest_videos_stats
-except ImportError:
-    print("⚠️ Module zernio_client introuvable. Feedback loop desactive pour cette execution.")
-
-    def get_latest_videos_stats():
-        return None
+from modules.sound_design import SoundDesigner
+from modules.quality_control import QualityControl
+from modules.utils.performance_learner import PerformanceLearner
 
 
-# =====================================================================
-# --- PIPELINE PRINCIPAL ---
-# =====================================================================
+def clean_cache():
+    temp_dir = os.path.join(os.getcwd(), "assets", "temp")
+    if os.path.exists(temp_dir):
+        for f in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, f))
+            except:
+                pass
+
 
 async def main():
-    print("🚀 STARTING AUTOMATION...")
-
-    topic_input = os.getenv("VIDEO_TOPIC", "").strip()
-    duration_target = int(os.getenv("VIDEO_DURATION", "45"))
-    refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
-    use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
-
+    print("🚀 Démarrage du pipeline AuraContent V3 (Minute Mystère)")
+    
+    # 1. Initialisation des modules
     brain = ContentBrain()
-    asset_manager = AssetManager()
+    planner = RetentionPlanner()
+    assets = AssetManager()
+    audio = AudioEngine()
+    composer = Composer()
+    sfx_designer = SoundDesigner()
+    qc = QualityControl()
+    learner = PerformanceLearner()
 
-    print("📡 Récupération des statistiques Zernio pour l'Agent IA...")
+    # 2. Topic & Hook basés sur l'apprentissage
+    best_patterns = learner.get_best_patterns()
+    raw_topic = brain.get_trending_topic()
+    topic = brain.refine_topic_angle(raw_topic)
+    
+    print(f"🎯 Sujet retenu : {topic}")
+    
+    hooks = brain.generate_hook_variants(topic, n=3)
+    # On privilégie un hook qui a déjà fait ses preuves, sinon on prend le premier
+    chosen_hook = next((h for h in hooks if h.get("pattern") in best_patterns), hooks[0])
+    
+    # 3. Script & Planification de Rétention (Micro-plans, SFX)
+    raw_script_data = brain.generate_script(topic, chosen_hook["text"])
+    script_data = raw_script_data.copy()
+    script_data["scenes"] = planner.plan(raw_script_data["scenes"])
+    
+    # 4. Génération Audio (Stricte 2 voix)
+    script_data = audio.process_script_audio(script_data)
+    
+    # 5. Génération Visuelle (Micro-plans variants)
+    video_asset_lists = []
+    for scene in script_data["scenes"]:
+        variants = assets.get_scene_variants(scene, composer.temp_dir)
+        video_asset_lists.append(variants)
+
+    # 6. Choix de la musique de fond selon l'ambiance dominante
+    dominant_mood = script_data["scenes"][0].get("mood", "intriguing")
+    composer.set_background_music(dominant_mood)
+
+    # 7. Rendu des scènes
+    rendered_paths = composer.render_all_scenes(script_data["scenes"], video_asset_lists)
+    
+    # 8. Application des effets sonores (Impacts)
+    for i, path in enumerate(rendered_paths):
+        scene = script_data["scenes"][i]
+        if scene.get("sound_effect"):
+            sfx_output = os.path.join(composer.temp_dir, f"sfx_applied_{i}.mp4")
+            if sfx_designer.apply_effect(path, sfx_output, scene["sound_effect"]):
+                rendered_paths[i] = sfx_output
+
+    # 9. Assemblage final et Mixage
+    print("🎬 Assemblage final de la vidéo...")
     try:
-        stats_historique = get_latest_videos_stats()
-    except Exception as e:
-        print(f"⚠️ Impossible de recuperer les stats Zernio : {e}")
-        stats_historique = None
-
-    # --- 1. GÉNÉRATION DU SUJET ET DE LA REQUÊTE ---
-    try:
-        if topic_input:
-            topic = topic_input
-            print(f"📌 Sujet fourni manuellement : {topic}")
-            if refine_angle and hasattr(brain, "refine_topic_angle"):
-                topic = brain.refine_topic_angle(topic)
-                print(f"🎯 Angle affine : {topic}")
-        else:
-            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
-            print(f"🔥 Sujet selectionne automatiquement : {topic}")
-
-        print("🔍 Génération du mot-clé de recherche visuelle par l'IA...")
-        dynamic_query = brain.generate_video_search_query(topic)
-        print(f"🎯 Requête vidéo générée : '{dynamic_query}'")
-
-    except Exception as e:
-        print(f"❌ Brain Error (Sujet/Requête): {e}")
+        final_path = composer.concatenate_with_transitions(rendered_paths, output_filename="minute_mystere_final.mp4")
+    except Exception as exc:
+        print(f"❌ Erreur critique lors de l'assemblage : {exc}")
         return
 
-    # --- 2. GÉNÉRATION DU SCRIPT ET HOOKS (SCORING PAR BANDIT) ---
-    try:
-        chosen_hook = None
-        chosen_hook_pattern = None
-
-        if use_hooks_ab_test:
-            try:
-                hooks = brain.generate_hook_variants(
-                    topic,
-                    n=5,
-                    previous_stats_list=stats_historique,
-                )
-
-                hook_history = load_hook_history()
-                pattern_scores = compute_pattern_scores(stats_historique, hook_history)
-
-                if pattern_scores:
-                    print(f"📈 Scores de patterns connus : {pattern_scores}")
-
-                selected = select_hook(hooks, pattern_scores=pattern_scores)
-                if selected:
-                    chosen_hook = selected["text"]
-                    chosen_hook_pattern = selected.get("pattern", "?")
-                    print(f"🧠 Hook retenu ({chosen_hook_pattern}): {chosen_hook}")
-
-            except Exception as e:
-                print(f"⚠️ Generation des hooks alternatifs echouee : {e}")
-
-        scene_count = estimate_scene_count(duration_target)
-        print(f"⏱️ Duree cible: {duration_target}s -> {scene_count} scenes")
-
-        script_payload = brain.generate_script_with_target(
-            topic,
-            scene_count,
-            chosen_hook=chosen_hook,
-        )
-
-        validate_script_payload(script_payload)
-        script = script_payload["scenes"]
-        video_title = script_payload.get("title", topic)
-        script_payload["hook_pattern_used"] = chosen_hook_pattern
-
-    except Exception as e:
-        print(f"❌ Brain Error (Script): {e}")
+    if not final_path:
+        print("❌ Vidéo finale absente.")
         return
 
-    if not script:
-        print("❌ Script generation failed.")
+    # 10. Contrôle Qualité (Quality Gate)
+    print("🔎 Contrôle qualité...")
+    if not qc.validate(final_path):
+        print("❌ Action bloquée : vidéo non conforme (durée, résolution, ou audio manquant).")
         return
 
-    # --- 3. RECHERCHE D'ASSETS (LOGIQUE V2.1 : ROUTAGE CORRIGÉ) ---
-    temp_dir = os.path.join(os.getcwd(), "assets", "temp")
-    os.makedirs(temp_dir, exist_ok=True)
+    # 11. Apprentissage & Historisation
+    print("📈 Enregistrement des données de performance...")
+    learner.record(
+        title=topic,
+        topic=raw_topic,
+        hook_pattern=chosen_hook.get("pattern"),
+        duration=composer.get_duration(final_path)
+    )
 
-    bg_video_path = None
-    video_pairs = []
-
-    print("🔄 Recherche des meilleurs assets (Archives / Vidéos / IA)...")
-
-    for index, scene in enumerate(script):
-        scene_id = scene['id']
-        scene_type = scene.get("scene_type", "generic")
-
-        location_name = (scene.get("location_name") or "").strip()
-        stock_search = (scene.get("stock_search") or "").strip()
-        image_prompt = (scene.get("image_prompt") or "").strip()
-
-        # CORRECTIF PRINCIPAL : routage du champ de recherche selon le
-        # type de scene, au lieu de l'ancien
-        # "location_name or image_prompt or dynamic_query" qui envoyait
-        # par erreur des phrases françaises longues (image_prompt) aux
-        # moteurs de recherche vidéo (Pexels/Pixabay), et qui ne
-        # transmettait jamais image_prompt à la génération IA.
-        #
-        # - Scenes 'specific' : on cherche un lieu réel -> location_name
-        #   (utilisé par Wikimedia/Openverse, qui ont besoin d'un nom
-        #   propre exact).
-        # - Scenes 'generic'  : on cherche une vidéo d'ambiance ->
-        #   stock_search (mot-clé anglais court, conforme à la règle 12
-        #   du brain).
-        if scene_type == "specific":
-            search_query = location_name or dynamic_query
-        else:
-            search_query = stock_search or dynamic_query
-
-        # event_context : rempli par ContentBrain quand une source
-        # Wikipedia mentionne un evenement precis et date (incendie,
-        # destruction, decouverte). Transmis a AssetManager pour enrichir
-        # le prompt IA de secours et obtenir une image concrete de
-        # l'evenement plutot qu'une vue generique et intemporelle du lieu.
-        event_context = scene.get("event_context") or None
-
-        # On passe un chemin temporaire générique à l'AssetManager
-        temp_asset_path = os.path.join(temp_dir, f"temp_media_{scene_id}.mp4")
-
-        log_query = search_query if not event_context else f"{search_query} (contexte: {event_context})"
-        print(f"  🎬 Scène {scene_id} [{scene_type}] : Recherche de l'asset pour '{log_query}'...")
-
-        # L'AssetManager nous dit quelle source a gagné via source_type.
-        # CORRECTIF : image_prompt est désormais transmis explicitement,
-        # pour que la génération IA (quand elle a lieu) s'appuie sur la
-        # description visuelle spécifique à la scène plutôt que sur le
-        # seul nom du lieu.
-        success, source_type = asset_manager.get_best_asset(
-            query=search_query,
-            output_path=temp_asset_path,
-            scene_type=scene_type,
-            event_context=event_context,
-            image_prompt=image_prompt,
-        )
-
-        if success and os.path.exists(temp_asset_path):
-            # On renomme le fichier avec la source pour que le Composer puisse la lire
-            final_asset_path = os.path.join(temp_dir, f"scene_{source_type}_{scene_id}.mp4")
-            os.rename(temp_asset_path, final_asset_path)
-            video_pairs.append(final_asset_path)
-        else:
-            print(f"  ❌ Impossible de trouver un asset pour la scène {scene_id}. La vidéo pourrait être tronquée.")
-
-    # --- 4. LÉGENDE, AUDIO ET SOUS-TITRES ---
-    print("📝 Demande de légende à l'IA basée sur le script complet...")
-    full_text = " ".join(scene["text"] for scene in script)
-    legende_finale = generate_caption(full_text, video_title)
-    save_caption(legende_finale)
-
-    audio_engine = AudioEngine()
-
-    try:
-        print("🎙️ Generation audio...")
-        script = await audio_engine.process_script(script)
-    except Exception as e:
-        print(f"❌ Audio Error: {e}")
-        return
-
-    subs_dir = os.path.join(os.getcwd(), "assets", "temp", "subs")
-    os.makedirs(subs_dir, exist_ok=True)
-
-    print("📝 Generation des sous-titres...")
-    for scene in script:
-        srt_path = os.path.join(subs_dir, f"scene_{scene['id']}.srt")
-        scene["srt_path"] = generate_grouped_srt(
-            text=scene["text"],
-            duration=scene["duration"],
-            output_path=srt_path,
-            max_words_per_caption=3,
-            min_caption_dur=0.45,
-        )
-
-    # --- 5. ASSEMBLAGE ET MONTAGE ---
-    try:
-        print("🎞️ Composition video...")
-        composer = Composer()
-        final_scene_paths = composer.render_all_scenes(
-            script_data=script,
-            video_pairs=video_pairs,
-            bg_video_path=bg_video_path
-        )
-    except Exception as e:
-        print(f"❌ Render Error: {e}")
-        return
-
-    if not final_scene_paths:
-        print("❌ Failed to generate any scenes.")
-        return
-
-    try:
-        final_path = composer.concatenate_with_transitions(final_scene_paths)
-    except Exception as e:
-        print(f"❌ Final assembly error: {e}")
-        return
-
-    # --- 6. UPLOAD & NETTOYAGE ---
-    if final_path:
-        print(f"✅ Video finale prête : {final_path}")
-        upload_to_huggingface(final_path, video_title)
-
-        if chosen_hook_pattern:
-            record_hook_usage(video_title, chosen_hook_pattern)
-
-        clean_cache()
-    else:
-        print("❌ L'assemblage final a échoué, upload annulé.")
-
+    clean_cache()
+    print(f"✅ PIPELINE V3 TERMINÉ AVEC SUCCÈS. Fichier disponible : {final_path}")
 
 if __name__ == "__main__":
     asyncio.run(main())
-

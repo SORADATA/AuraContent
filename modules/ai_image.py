@@ -4,177 +4,428 @@ import hashlib
 import requests
 
 
+try:
+    from huggingface_hub import InferenceClient
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+
+
 class AIImageGenerator:
+
     BASE_STYLE = (
-        "cinematic realistic documentary still, photorealistic, atmospheric depth, "
-        "subtle film grain, dramatic but natural lighting, rich natural textures, "
-        "high visual clarity, strong central subject, vertical 9:16 composition, "
-        "subject kept inside the center safe zone, clean space near the top and bottom for captions"
+        "cinematic realistic documentary still, "
+        "photorealistic real-world photography, "
+        "natural physical materials, "
+        "realistic human anatomy, "
+        "subtle 35mm film grain, "
+        "documentary cinematography, "
+        "atmospheric depth, "
+        "natural dramatic lighting, "
+        "high micro-detail, "
+        "muted desaturated cinematic color palette, "
+        "vertical 9:16 composition, "
+        "strong readable central subject, "
+        "safe composition for mobile captions"
     )
 
     NEGATIVE_PROMPT = (
-        "text, logo, watermark, subtitles, deformed hands, extra fingers, duplicate people, "
-        "cropped head, blurry face, cartoon, anime"
+        "text, subtitles, captions, logo, watermark, "
+        "UI, typography, poster, illustration, cartoon, anime, "
+        "3d render, CGI, plastic skin, artificial face, "
+        "deformed hands, extra fingers, duplicate people, "
+        "cropped head, distorted anatomy, blurry face, "
+        "oversaturated colors"
     )
 
-    DEFAULT_MODEL = "flux"
+    DEFAULT_MODEL = os.getenv(
+        "AI_IMAGE_MODEL",
+        "black-forest-labs/FLUX.1-dev"
+    )
+
+    HF_MODEL = os.getenv(
+        "HF_IMAGE_MODEL",
+        "black-forest-labs/FLUX.1-dev"
+    )
 
     def __init__(self):
         self.hf_token = os.getenv("HF_TOKEN")
-        self.hf_model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-        
-        # User-Agent standardisé pour ton projet
-        contact = os.getenv("WIKIMEDIA_CONTACT", "https://github.com/tonuser")
-        self.headers = {"User-Agent": f"AuraContentPipeline/2.0 ({contact})"}
-        
-        print("🤖 Initialisation du générateur d'images IA (Pollinations + Fallback HF)")
 
-    def _stable_seed(self, prompt_text, visual_identity=None, variant="base"):
-        raw = f"{prompt_text}|{visual_identity or ''}|{variant}|{self.DEFAULT_MODEL}"
-        digest = hashlib.md5(raw.encode("utf-8")).hexdigest()
+        contact = os.getenv(
+            "WIKIMEDIA_CONTACT",
+            "https://github.com/tonuser"
+        )
+
+        self.headers = {
+            "User-Agent": f"AuraContentPipeline/3.0 ({contact})"
+        }
+
+        self.hf_client = None
+
+        if HF_AVAILABLE and self.hf_token:
+            try:
+                self.hf_client = InferenceClient(
+                    api_key=self.hf_token
+                )
+            except Exception as exc:
+                print(
+                    f"⚠️ Hugging Face client indisponible: {exc}"
+                )
+
+        print(
+            "🤖 AI Image Generator V3 initialisé | "
+            f"Pollinations={self.DEFAULT_MODEL} | "
+            f"HF={self.HF_MODEL}"
+        )
+
+    # ---------------------------------------------------------------
+    # SEED
+    # ---------------------------------------------------------------
+
+    def _stable_seed(
+        self,
+        prompt_text,
+        visual_identity=None,
+        variant="base",
+        scene_id=None
+    ):
+        raw = (
+            f"{prompt_text}|"
+            f"{visual_identity or ''}|"
+            f"{variant}|"
+            f"{scene_id or ''}"
+        )
+
+        digest = hashlib.sha256(
+            raw.encode("utf-8")
+        ).hexdigest()
+
         return int(digest[:8], 16) % 999999 + 1
 
-    def _build_prompt(self, prompt_text, visual_identity=None, variant=None):
-        fixed_parts = [
+    # ---------------------------------------------------------------
+    # PROMPT
+    # ---------------------------------------------------------------
+
+    def _variant_instruction(self, variant):
+        variants = {
+            "a": (
+                "wide establishing shot, "
+                "environment clearly readable, "
+                "cinematic spatial depth"
+            ),
+
+            "b": (
+                "medium cinematic shot, "
+                "subject and surrounding evidence visible, "
+                "stronger visual storytelling"
+            ),
+
+            "c": (
+                "tight documentary close-up, "
+                "important physical detail, "
+                "shallow depth of field"
+            ),
+
+            "establishing": (
+                "wide establishing composition, "
+                "location immediately recognizable"
+            ),
+
+            "detail": (
+                "close documentary detail shot, "
+                "important texture or object emphasized"
+            ),
+
+            "evidence": (
+                "forensic documentary composition, "
+                "physical evidence clearly visible, "
+                "realistic investigative atmosphere"
+            ),
+
+            "reveal": (
+                "dramatic reveal composition, "
+                "the important discovery visually dominant"
+            ),
+
+            "payoff": (
+                "powerful final documentary image, "
+                "strong emotional and narrative composition"
+            ),
+        }
+
+        return variants.get(
+            variant,
+            variants["b"]
+        )
+
+    def _build_prompt(
+        self,
+        prompt_text,
+        visual_identity=None,
+        variant=None
+    ):
+        parts = [
             prompt_text.strip().rstrip(",."),
-            self.BASE_STYLE
+            self.BASE_STYLE,
         ]
 
         if visual_identity:
-            fixed_parts.append(f"visual continuity: {visual_identity.strip().rstrip(',.')}")
+            parts.append(
+                "visual continuity: "
+                + visual_identity.strip().rstrip(",.")
+            )
 
-        if variant == "a":
-            fixed_parts.append("wider establishing composition, environment clearly visible, stable cinematic framing")
-        elif variant == "b":
-            fixed_parts.append("closer cinematic framing, more subject detail, same scene continuity, same visual world")
+        if variant:
+            parts.append(
+                self._variant_instruction(variant)
+            )
 
-        fixed_parts.append(f"avoid: {self.NEGATIVE_PROMPT}")
-        return ", ".join(fixed_parts)
-
-    def _file_is_valid(self, output_path, min_bytes=5000):
-        return os.path.exists(output_path) and os.path.getsize(output_path) >= min_bytes
-
-    def _build_url(self, enhanced_prompt, seed):
-        encoded_prompt = requests.utils.quote(enhanced_prompt, safe="")
-        return (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width=1080&height=1920"
-            f"&seed={seed}"
-            f"&model={self.DEFAULT_MODEL}"
-            f"&nologo=true&enhance=true"
+        parts.append(
+            "leave clean visual space near the lower third "
+            "for mobile subtitles"
         )
 
-    def _try_pollinations(self, prompt_text, output_path, visual_identity=None, seed=None, variant=None):
-        enhanced_prompt = self._build_prompt(prompt_text, visual_identity=visual_identity, variant=variant)
-        if seed is None:
-            seed = self._stable_seed(prompt_text, visual_identity=visual_identity, variant=variant or "base")
+        return ", ".join(parts)
 
-        api_url = self._build_url(enhanced_prompt, seed)
+    # ---------------------------------------------------------------
+    # VALIDATION
+    # ---------------------------------------------------------------
+
+    def _file_is_valid(
+        self,
+        output_path,
+        min_bytes=5000
+    ):
+        return (
+            os.path.exists(output_path)
+            and os.path.getsize(output_path) >= min_bytes
+        )
+
+    # ---------------------------------------------------------------
+    # POLLINATIONS
+    # ---------------------------------------------------------------
+
+    def _build_pollinations_url(
+        self,
+        enhanced_prompt,
+        seed
+    ):
+        encoded_prompt = requests.utils.quote(
+            enhanced_prompt,
+            safe=""
+        )
+
+        return (
+            "https://image.pollinations.ai/prompt/"
+            f"{encoded_prompt}"
+            "?width=1080"
+            "&height=1920"
+            f"&seed={seed}"
+            f"&model={self.DEFAULT_MODEL}"
+            "&nologo=true"
+            "&enhance=true"
+        )
+
+    def _try_pollinations(
+        self,
+        prompt_text,
+        output_path,
+        visual_identity=None,
+        seed=None,
+        variant=None
+    ):
+        enhanced_prompt = self._build_prompt(
+            prompt_text,
+            visual_identity=visual_identity,
+            variant=variant
+        )
+
+        if seed is None:
+            seed = self._stable_seed(
+                prompt_text,
+                visual_identity,
+                variant or "base"
+            )
+
+        api_url = self._build_pollinations_url(
+            enhanced_prompt,
+            seed
+        )
 
         try:
-            response = requests.get(api_url, timeout=45, headers=self.headers)
-            content_type = response.headers.get("Content-Type", "")
+            response = requests.get(
+                api_url,
+                timeout=60,
+                headers=self.headers
+            )
 
-            if response.status_code == 200 and content_type.startswith("image/") and len(response.content) > 5000:
-                os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                with open(output_path, "wb") as file:
+            content_type = response.headers.get(
+                "Content-Type",
+                ""
+            )
+
+            if (
+                response.status_code == 200
+                and content_type.startswith("image/")
+                and len(response.content) > 5000
+            ):
+                os.makedirs(
+                    os.path.dirname(output_path) or ".",
+                    exist_ok=True
+                )
+
+                with open(
+                    output_path,
+                    "wb"
+                ) as file:
                     file.write(response.content)
+
                 return True
 
-            if response.status_code == 429:
-                print("    ⚠️ Limite de requêtes atteinte sur Pollinations.")
-            else:
-                print(f"    ❌ Erreur Pollinations : {response.status_code}, type={content_type}")
+            print(
+                "    ❌ Pollinations : "
+                f"HTTP {response.status_code}"
+            )
+
             return False
 
         except requests.RequestException as error:
-            print(f"    ❌ Erreur réseau Pollinations : {error}")
+            print(
+                f"    ❌ Pollinations réseau : {error}"
+            )
             return False
 
-    def _try_huggingface(self, prompt_text, output_path, visual_identity=None, variant=None):
-        if not self.hf_token:
-            print("    ⚠️ HF_TOKEN absent, fallback Hugging Face ignoré.")
+    # ---------------------------------------------------------------
+    # HUGGING FACE
+    # ---------------------------------------------------------------
+
+    def _try_huggingface(
+        self,
+        prompt_text,
+        output_path,
+        visual_identity=None,
+        variant=None,
+        seed=None
+    ):
+        if not self.hf_client:
             return False
 
-        enhanced_prompt = self._build_prompt(prompt_text, visual_identity=visual_identity, variant=variant)
-        headers = {
-            "Authorization": f"Bearer {self.hf_token}",
-            "Content-Type": "application/json",
-            "User-Agent": self.headers["User-Agent"]
-        }
-        payload = {"inputs": enhanced_prompt}
+        prompt = self._build_prompt(
+            prompt_text,
+            visual_identity=visual_identity,
+            variant=variant
+        )
 
         try:
-            response = requests.post(self.hf_model_url, headers=headers, json=payload, timeout=120)
+            image = self.hf_client.text_to_image(
+                prompt=prompt,
+                model=self.HF_MODEL,
+                negative_prompt=self.NEGATIVE_PROMPT,
+                width=1080,
+                height=1920,
+                seed=seed or 42,
+            )
 
-            if response.status_code == 503:
-                print("    ⏳ Modèle Hugging Face en cours de chargement...")
-                return False
+            image.save(output_path)
 
-            if not response.ok:
-                print(f"    ❌ Erreur Hugging Face : {response.status_code}")
-                return False
+            return self._file_is_valid(
+                output_path
+            )
 
-            content_type = response.headers.get("Content-Type", "")
-            if "application/json" in content_type:
-                data = response.json()
-                if isinstance(data, dict) and data.get("error"):
-                    print(f"    ❌ Erreur Hugging Face API : {data['error']}")
-                return False
-
-            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            with open(output_path, "wb") as file:
-                file.write(response.content)
-
-            return self._file_is_valid(output_path)
-
-        except requests.RequestException as error:
-            print(f"    ❌ Erreur réseau Hugging Face : {error}")
+        except Exception as error:
+            print(
+                f"    ❌ Hugging Face image error: {error}"
+            )
             return False
 
-    def generate_image(self, prompt_text, output_path, visual_identity=None, retries=1, seed=None, variant=None):
-        print(f"🎨 Génération d'une image IA pour : '{prompt_text}'")
+    # ---------------------------------------------------------------
+    # PUBLIC
+    # ---------------------------------------------------------------
+
+    def generate_image(
+        self,
+        prompt_text,
+        output_path,
+        visual_identity=None,
+        retries=2,
+        seed=None,
+        variant=None,
+        scene_id=None
+    ):
+        print(
+            f"🎨 IA image : {prompt_text[:120]}"
+        )
 
         if self._file_is_valid(output_path):
-            print(f"    ♻️ Image déjà présente : {output_path}")
+            print(
+                f"    ♻️ Image déjà présente : "
+                f"{output_path}"
+            )
             return True
 
-        base_seed = seed or self._stable_seed(prompt_text, visual_identity=visual_identity, variant=variant or "base")
+        base_seed = seed or self._stable_seed(
+            prompt_text,
+            visual_identity,
+            variant or "base",
+            scene_id
+        )
 
         for attempt in range(retries + 1):
+
             if attempt > 0:
-                print(f"    🔄 Tentative {attempt + 1}/{retries + 1} (pause courte)...")
                 time.sleep(2)
 
             current_seed = base_seed + attempt
 
-            # 1. Tentative Pollinations
+            # -------------------------------------------------------
+            # 1. Pollinations
+            # -------------------------------------------------------
+
             success = self._try_pollinations(
-                prompt_text=prompt_text,
-                output_path=output_path,
-                visual_identity=visual_identity,
-                seed=current_seed,
-                variant=variant,
+                prompt_text,
+                output_path,
+                visual_identity,
+                current_seed,
+                variant
             )
 
-            if success and self._file_is_valid(output_path):
-                print(f"    ✅ Image sauvegardée (Pollinations, seed={current_seed}) : {output_path}")
+            if success and self._file_is_valid(
+                output_path
+            ):
+                print(
+                    f"    ✅ Pollinations "
+                    f"(seed={current_seed})"
+                )
                 return True
 
-            # 2. Fallback Hugging Face si Pollinations échoue
-            print("    ⚠️ Pollinations a échoué, tentative de secours via Hugging Face...")
-            if self._try_huggingface(
-                prompt_text=prompt_text,
-                output_path=output_path,
-                visual_identity=visual_identity,
-                variant=variant,
-            ) and self._file_is_valid(output_path):
-                print(f"    ✅ Image sauvegardée (Hugging Face) : {output_path}")
+            # -------------------------------------------------------
+            # 2. Hugging Face
+            # -------------------------------------------------------
+
+            success = self._try_huggingface(
+                prompt_text,
+                output_path,
+                visual_identity,
+                variant,
+                current_seed
+            )
+
+            if success and self._file_is_valid(
+                output_path
+            ):
+                print(
+                    "    ✅ Hugging Face image"
+                )
                 return True
 
-            if attempt == 0:
-                print("    ⚠️ Panne API suspectée. On abandonne vite pour utiliser le texte de secours.")
-                break
+            if attempt < retries:
+                print(
+                    "    🔄 Nouvelle tentative..."
+                )
 
-        print(f"    ❌ Échec définitif pour la génération de l'image : {output_path}")
+        print(
+            f"    ❌ Génération impossible : "
+            f"{output_path}"
+        )
+
         return False
