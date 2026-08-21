@@ -11,61 +11,60 @@ except ImportError:
 
 class AudioEngine:
     """
-    Générateur audio strict à 2 voix (Narrateur / Témoin).
-    Garantit une cohérence vocale totale sur toute la vidéo.
+    Generateur audio strict a 2 voix (Narrateur / Temoin).
+    Garantit une coherence vocale totale sur toute la video.
     """
-    
-    # Dictionnaires de prononciation conservés de l'ancienne version
+
     PRONUNCIATION_DICT = {
         r"\bmythe\b": "mite",
         r"\bmythes\b": "mites",
         r"\bmythique\b": "mitique",
         r"\bmythiques\b": "mitiques",
-        r"\bchâteau\b": "châto",
-        r"\bchâteaux\b": "châtos",
+        r"\bch\u00e2teau\b": "ch\u00e2to",
+        r"\bch\u00e2teaux\b": "ch\u00e2tos",
         r"\bchaos\b": "kao",
         r"\bclimax\b": "climax",
-        r"\bchœur\b": "keur",
-        r"\bchœurs\b": "keurs",
-        r"\barchéologue\b": "arkéologue",
-        r"\barchéologues\b": "arkéologues",
-        r"\barchéologie\b": "arkéologie",
-        r"\barchéologique\b": "arkéologique",
-        r"\barchéologiques\b": "arkéologiques",
-        r"\barchétype\b": "arkétype",
-        r"\barchétypes\b": "arkétypes",
+        r"\bch\u0153ur\b": "keur",
+        r"\bch\u0153urs\b": "keurs",
+        r"\barch\u00e9ologue\b": "ark\u00e9ologue",
+        r"\barch\u00e9ologues\b": "ark\u00e9ologues",
+        r"\barch\u00e9ologie\b": "ark\u00e9ologie",
+        r"\barch\u00e9ologique\b": "ark\u00e9ologique",
+        r"\barch\u00e9ologiques\b": "ark\u00e9ologiques",
+        r"\barch\u00e9type\b": "ark\u00e9type",
+        r"\barch\u00e9types\b": "ark\u00e9types",
         r"\bpsychose\b": "psycose",
         r"\bah\b": "ah",
     }
 
     ROMAN_NUMERALS_MAP = {
-        r"\bXXI(?:e|ème|eme)?\s+siècle\b": "vingt et unième siècle",
-        r"\bXX(?:e|ème|eme)?\s+siècle\b": "vingtième siècle",
-        r"\bXIX(?:e|ème|eme)?\s+siècle\b": "dix-neuvième siècle",
-        r"\bXVIII(?:e|ème|eme)?\s+siècle\b": "dix-huitième siècle",
-        r"\bXVII(?:e|ème|eme)?\s+siècle\b": "dix-septième siècle",
-        r"\bXVI(?:e|ème|eme)?\s+siècle\b": "seizième siècle",
-        r"\bXV(?:e|ème|eme)?\s+siècle\b": "quinzième siècle",
-        r"\bXIV(?:e|ème|eme)?\s+siècle\b": "quatorzième siècle",
-        r"\bXIII(?:e|ème|eme)?\s+siècle\b": "treizième siècle",
-        r"\bXII(?:e|ème|eme)?\s+siècle\b": "douzième siècle",
-        r"\bXI(?:e|ème|eme)?\s+siècle\b": "onzième siècle",
-        r"\bX(?:e|ème|eme)?\s+siècle\b": "dixième siècle",
-        r"\bIX(?:e|ème|eme)?\s+siècle\b": "neuvième siècle",
-        r"\bVIII(?:e|ème|eme)?\s+siècle\b": "huitième siècle",
-        r"\bVII(?:e|ème|eme)?\s+siècle\b": "septième siècle",
-        r"\bVI(?:e|ème|eme)?\s+siècle\b": "sixième siècle",
-        r"\bV(?:e|ème|eme)?\s+siècle\b": "cinquième siècle",
-        r"\bIV(?:e|ème|eme)?\s+siècle\b": "quatrième siècle",
-        r"\bIII(?:e|ème|eme)?\s+siècle\b": "troisième siècle",
-        r"\bII(?:e|ème|eme)?\s+siècle\b": "deuxième siècle",
-        r"\bI(?:er|er|er)?\s+siècle\b": "premier siècle",
+        r"\bXXI(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "vingt et unieme siecle",
+        r"\bXX(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "vingtieme siecle",
+        r"\bXIX(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "dix-neuvieme siecle",
+        r"\bXVIII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "dix-huitieme siecle",
+        r"\bXVII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "dix-septieme siecle",
+        r"\bXVI(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "seizieme siecle",
+        r"\bXV(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "quinzieme siecle",
+        r"\bXIV(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "quatorzieme siecle",
+        r"\bXIII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "treizieme siecle",
+        r"\bXII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "douzieme siecle",
+        r"\bXI(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "onzieme siecle",
+        r"\bX(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "dixieme siecle",
+        r"\bIX(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "neuvieme siecle",
+        r"\bVIII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "huitieme siecle",
+        r"\bVII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "septieme siecle",
+        r"\bVI(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "sixieme siecle",
+        r"\bV(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "cinquieme siecle",
+        r"\bIV(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "quatrieme siecle",
+        r"\bIII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "troisieme siecle",
+        r"\bII(?:e|\u00e8me|eme)?\s+si\u00e8cle\b": "deuxieme siecle",
+        r"\bI(?:er|er|er)?\s+si\u00e8cle\b": "premier siecle",
         r"\bLouis\s+XIV\b": "Louis quatorze",
         r"\bLouis\s+XV\b": "Louis quinze",
         r"\bLouis\s+XVI\b": "Louis seize",
         r"\bLouis\s+XIII\b": "Louis treize",
-        r"\bNapoléon\s+Ier\b": "Napoléon premier",
-        r"\bNapoléon\s+III\b": "Napoléon trois",
+        r"\bNapol\u00e9on\s+Ier\b": "Napoleon premier",
+        r"\bNapol\u00e9on\s+III\b": "Napoleon trois",
     }
 
     def __init__(self):
@@ -73,13 +72,10 @@ class AudioEngine:
         os.makedirs(self.audio_dir, exist_ok=True)
         self.min_scene_duration = 3.0
 
-        # 📌 SIGNATURE VOCALE STRICTE
-        # Henri : Voix principale (grave, posée, documentaire)
         self.VOICE_NARRATOR = "fr-FR-HenriNeural"
         self.RATE_NARRATOR = "-12%"
         self.PITCH_NARRATOR = "-4Hz"
 
-        # Claude : Voix secondaire (pour les citations, témoins)
         self.VOICE_WITNESS = "fr-FR-ClaudeNeural"
         self.RATE_WITNESS = "-8%"
         self.PITCH_WITNESS = "-2Hz"
@@ -100,11 +96,11 @@ class AudioEngine:
         for pattern, replacement in self.PRONUNCIATION_DICT.items():
             sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
 
-        sanitized = re.sub(r"\bav\.\s*J\.-C\.\b", "avant Jésus-Christ", sanitized, flags=re.IGNORECASE)
-        sanitized = re.sub(r"\bap\.\s*J\.-C\.\b", "après Jésus-Christ", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"\bav\.\s*J\.-C\.\b", "avant Jesus-Christ", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"\bap\.\s*J\.-C\.\b", "apres Jesus-Christ", sanitized, flags=re.IGNORECASE)
         sanitized = re.sub(r"\benv\.\b", "environ", sanitized, flags=re.IGNORECASE)
-        sanitized = re.sub(r"\bkm\b", "kilomètres", sanitized, flags=re.IGNORECASE)
-        sanitized = re.sub(r"\bm\b", "mètres", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"\bkm\b", "kilometres", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r"\bm\b", "metres", sanitized, flags=re.IGNORECASE)
 
         return sanitized
 
@@ -125,17 +121,34 @@ class AudioEngine:
         )
         await communicate.save(output_path)
 
-    def process_script_audio(self, script_data, retries=2):
-        print("🎙️ Génération audio (Signature 2 voix strictes)...")
-        
+    async def process_script_audio(self, script_data, retries=2):
+        """
+        CORRECTIF (bug asyncio.run dans une boucle deja active) :
+
+        Cette methode etait auparavant synchrone (def) et appelait
+        asyncio.run(self._generate_tts(...)) pour chaque scene. Comme
+        main.py tourne deja dans une boucle asyncio active (lancee par
+        asyncio.run(main()) et propagee via "await audio_engine.process_script(...)"),
+        ce second appel a asyncio.run() a l'interieur d'une boucle deja
+        active levait systematiquement :
+        "RuntimeError: asyncio.run() cannot be called from a running event loop".
+
+        La methode est desormais "async def" et utilise "await" directement
+        sur la coroutine _generate_tts(), ce qui la rend compatible avec
+        la boucle asyncio deja active de main(). L'appelant (main.py /
+        process_script) doit desormais faire :
+            script = await audio_engine.process_script_audio(script)
+        au lieu de l'appeler comme une fonction synchrone.
+        """
+        print("\U0001f3a4 Generation audio (Signature 2 voix strictes)...")
+
         scenes = script_data.get("scenes", []) if isinstance(script_data, dict) else script_data
-        
+
         for scene in scenes:
             scene_id = scene["id"]
             text = scene.get("text", "")
             voice_type = scene.get("voice_type", "narrator")
-            
-            # Routage strict de la voix et des paramètres
+
             if voice_type == "witness":
                 chosen_voice = self.VOICE_WITNESS
                 chosen_rate = self.RATE_WITNESS
@@ -144,34 +157,43 @@ class AudioEngine:
                 chosen_voice = self.VOICE_NARRATOR
                 chosen_rate = self.RATE_NARRATOR
                 chosen_pitch = self.PITCH_NARRATOR
-                
+
             output_path = os.path.join(self.audio_dir, f"scene_{scene_id}.mp3")
-            
+
             success = False
             for attempt in range(retries + 1):
                 try:
-                    asyncio.run(self._generate_tts(text, output_path, chosen_voice, chosen_rate, chosen_pitch))
-                    
+                    await self._generate_tts(text, output_path, chosen_voice, chosen_rate, chosen_pitch)
+
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                         scene["audio_path"] = output_path
                         scene["tts_engine"] = "edge-tts"
-                        
+
                         duration = self.get_audio_duration(output_path)
                         scene["duration"] = max(duration, self.min_scene_duration)
-                        
-                        print(f"      ✅ Audio {scene_id} ({voice_type}) généré ({scene['duration']:.2f}s).")
+
+                        current_duration = scene["duration"]
+                        print(f"      \u2705 Audio {scene_id} ({voice_type}) genere ({current_duration:.2f}s).")
                         success = True
                         break
-                        
+
                 except Exception as e:
                     if attempt < retries:
-                        print(f"      ⚠️ Erreur TTS, nouvelle tentative ({attempt+1}/{retries})...")
-                        time.sleep(2)
+                        print(f"      \u26a0\ufe0f Erreur TTS, nouvelle tentative ({attempt+1}/{retries})...")
+                        await asyncio.sleep(2)
                     else:
-                        print(f"      ❌ Échec définitif TTS pour la scène {scene_id} : {e}")
-            
+                        print(f"      \u274c Echec definitif TTS pour la scene {scene_id} : {e}")
+
             if not success:
                 scene["audio_path"] = None
                 scene["duration"] = self.min_scene_duration
 
         return script_data
+
+    async def process_script(self, script_data, retries=2):
+        """
+        Alias asynchrone attendu par main.py ("await audio_engine.process_script(script)").
+        Delegue simplement a process_script_audio(), qui porte desormais
+        la logique reelle (maintenant asynchrone -- voir le correctif ci-dessus).
+        """
+        return await self.process_script_audio(script_data, retries=retries)
