@@ -55,20 +55,23 @@ def generate_caption_with_groq(prompt_legende):
 
 
 def generate_caption(full_text, video_title):
+    # 📌 PROMPT V3 : Optimisé pour la rétention, l'engagement et le mystère
     prompt_legende = f"""
-Voici le texte exact de ma vidéo TikTok/Shorts ({video_title}) :
+Voici le texte exact d'un court documentaire mystère ({video_title}) :
 "{full_text}"
 
-Rédige une légende ultra-captivante.
-Règles :
-1. 1ère ligne très accrocheuse avec un emoji.
-2. 1 ou 2 phrases courtes pour teaser le contenu sans le spoiler.
-3. Termine par une question courte pour inciter aux commentaires.
-4. Ajoute 4 hashtags pertinents dont #MinuteMystère.
+Rédige une légende ultra-captivante pour TikTok/Shorts.
+RÈGLES STRICTES DE RÉTENTION :
+1. 1ère ligne très accrocheuse avec un emoji, qui agit comme un "Hook" textuel.
+2. 1 ou 2 phrases courtes pour teaser le contenu, MAIS TU DOIS GARDER LE MYSTÈRE INTACT. Ne révèle SURTOUT PAS la conclusion, le twist ou le secret final de l'histoire.
+3. Termine par une question courte pour inciter aux commentaires et prolonger la curiosité (ex: "Et toi, tu y crois ?").
+4. Interdiction de demander de s'abonner (pas de "Abonne-toi").
+5. Ajoute 4 hashtags pertinents dont #MinuteMystère.
 Ne mets pas de guillemets autour de ta réponse.
 """
 
-    fallback = f"{video_title} 🧠✨ #MinuteMystère #Decouverte #Pourtoi #Secretscachés"
+    # 📌 FALLBACK V3 : Plus dramatique et mystérieux
+    fallback = f"{video_title} 🧠✨ L'histoire qu'ils ont essayé d'effacer... #MinuteMystère #HistoireVraie #Pourtoi #Secretscachés"
 
     try:
         print("🧠 Tentative de génération de la légende avec Gemini...")
