@@ -7,7 +7,7 @@ from modules.audio import AudioEngine
 from modules.composer import Composer
 from modules.sound_design import SoundDesigner
 from modules.quality_control import QualityControl
-from modules.performance_brain import PerformanceLearner
+from modules.performance_learner import PerformanceLearner # Correction du nom d'import ici
 
 
 def clean_cache():
@@ -35,7 +35,12 @@ async def main():
 
     # 2. Topic & Hook basés sur l'apprentissage
     best_patterns = learner.get_best_patterns()
-    raw_topic = brain.get_trending_topic()
+    
+    # --- INJECTION DU CONTEXTE D'APPRENTISSAGE ---
+    learning_context = learner.build_brain_context()
+    raw_topic = brain.get_trending_topic(learning_context=learning_context)
+    # ---------------------------------------------
+    
     topic = brain.refine_topic_angle(raw_topic)
     
     print(f"🎯 Sujet retenu : {topic}")
