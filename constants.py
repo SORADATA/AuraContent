@@ -8,7 +8,7 @@ DIRECT_URL_FINANCE = "https://huggingface.co/datasets/soradata/ai_videos_Finance
 # 🛠️ NOMS DE MODÈLES
 GEMINI_MODEL = "gemini-3.6-flash"
 #GROQ_MODEL = "openai/gpt-oss-120b"
-GROQ_MODEL = "llama3-70b-8192"
+#GROQ_MODEL = "llama3-70b-8192"
 
 # ============================================================
 # OPENROUTER FALLBACKS
