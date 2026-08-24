@@ -1980,47 +1980,75 @@ FORMAT :
     # ========================================================
 
     def _check_geography_consistency(
-        self,
-        topic,
-        scenes
-    ):
+    self,
+    topic,
+    scenes
+):
 
-        hint_country = (
-            _guess_country_hint(
-                topic
-            )
+    hint_country = (
+        _guess_country_hint(
+            topic
         )
+    )
 
-        if not hint_country:
-
-            return None
-
-        for scene in scenes:
-
-            country = str(
-                scene.get(
-                    "location_country",
-                    ""
-                )
-            ).strip()
-
-            if (
-                country
-                and not _countries_match(
-                    hint_country,
-                    country
-                )
-            ):
-
-                return (
-                    f"Lieu incohérent : "
-                    f"{scene.get('location_name')} "
-                    f"est déclaré en {country} "
-                    f"alors que le sujet indique "
-                    f"{hint_country}."
-                )
+    if not hint_country:
 
         return None
+
+    # CORRECTIF : une histoire reelle mentionne souvent des lieux
+    # secondaires legitimes dans d'autres pays (archives, enqueteurs,
+    # temoins, contexte historique) sans que ce soit une erreur
+    # factuelle. L'ancienne version rejetait TOUT le script (via
+    # `continue` dans l'appelant) dès qu'UNE SEULE scène avait un pays
+    # different du sujet principal, ce qui empechait quasiment toute
+    # convergence et provoquait des boucles de 3 tentatives >60s
+    # chacune, jusqu'au timeout du workflow CI.
+    #
+    # Nouvelle regle : on ne signale une incoherence que si une
+    # MAJORITE stricte des scenes localisees (pays declare non vide)
+    # sont incoherentes avec le pays du sujet. Une ou deux scenes
+    # secondaires dans un autre pays restent tolerees.
+    mismatches = []
+    total_located = 0
+
+    for scene in scenes:
+
+        country = str(
+            scene.get(
+                "location_country",
+                ""
+            )
+        ).strip()
+
+        if not country:
+            continue
+
+        total_located += 1
+
+        if not _countries_match(
+            hint_country,
+            country
+        ):
+
+            mismatches.append(
+                f"{scene.get('location_name')} ({country})"
+            )
+
+    if total_located == 0:
+        return None
+
+    mismatch_ratio = len(mismatches) / total_located
+
+    if mismatch_ratio > 0.5:
+
+        return (
+            f"Incoherence geographique majeure : "
+            f"{len(mismatches)}/{total_located} lieux localises "
+            f"({', '.join(mismatches)}) ne correspondent pas au "
+            f"pays attendu ({hint_country})."
+        )
+
+    return None
 
     def _check_wikidata_locations(
         self,
