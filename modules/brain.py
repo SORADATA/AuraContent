@@ -1941,7 +1941,7 @@ FORMAT :
                     location_issues
                 )
 
-                continue
+                pass
 
             # ------------------------------------------------
             # FACT CHECK
