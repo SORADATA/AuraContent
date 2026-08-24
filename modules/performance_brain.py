@@ -1313,8 +1313,8 @@ class PerformanceLearner:
 
             lines.append(
                 "Dernier breakout : "
-                f"{best.get('title')} "
-                f"({best.get('views')} vues)"
+                + f"{best.get('title')} "
+                + f"({best.get('views')} vues)"
             )
 
             if best.get(
