@@ -7,7 +7,7 @@ from modules.audio import AudioEngine
 from modules.composer import Composer
 from modules.sound_design import SoundDesigner
 from modules.quality_control import QualityControl
-from modules.utils.performance_learner import PerformanceLearner
+from modules.performance_brain import PerformanceLearner
 
 
 def clean_cache():
