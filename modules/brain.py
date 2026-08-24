@@ -22,35 +22,16 @@ load_dotenv()
 # CONSTANTS
 # ============================================================
 
-try:
-    from constants import (
-        GROQ_MODEL,
-        OPENROUTER_FALLBACK_MODEL_1,
-        OPENROUTER_FALLBACK_MODEL_2,
-        BRAIN_MAX_RETRIES_PER_PROVIDER,
-        BRAIN_RETRY_DELAY,
-        BRAIN_PROVIDER_COOLDOWN,
-        BRAIN_HARD_TOKEN_CAP,
-        BRAIN_SAFETY_MARGIN_TOKENS,
-    )
-
-except ImportError:
-
-    GROQ_MODEL = "llama-3.3-70b-versatile"
-
-    OPENROUTER_FALLBACK_MODEL_1 = (
-        "meta-llama/llama-3.3-70b-instruct"
-    )
-
-    OPENROUTER_FALLBACK_MODEL_2 = (
-        "google/gemma-3-27b-it:free"
-    )
-
-    BRAIN_MAX_RETRIES_PER_PROVIDER = 2
-    BRAIN_RETRY_DELAY = 1.5
-    BRAIN_PROVIDER_COOLDOWN = 30
-    BRAIN_HARD_TOKEN_CAP = 7500
-    BRAIN_SAFETY_MARGIN_TOKENS = 400
+# Import strict et direct depuis constants.py
+from constants import (
+    OPENROUTER_FALLBACK_MODEL_1,
+    OPENROUTER_FALLBACK_MODEL_2,
+    BRAIN_MAX_RETRIES_PER_PROVIDER,
+    BRAIN_RETRY_DELAY,
+    BRAIN_PROVIDER_COOLDOWN,
+    BRAIN_HARD_TOKEN_CAP,
+    BRAIN_SAFETY_MARGIN_TOKENS,
+)
 
 
 # ============================================================
@@ -105,7 +86,7 @@ ACCENT_INSTRUCTION = (
 NO_META_AI_INSTRUCTION = (
     "INTERDICTION ABSOLUE : ne jamais mentionner "
     "l'intelligence artificielle, l'IA, un algorithme, "
-    "ChatGPT, Groq, OpenRouter ou la génération de contenu. "
+    "ChatGPT, OpenRouter ou la génération de contenu. "
     "Le sujet doit uniquement parler de l'histoire, du mystère "
     "ou du fait réel."
 )
@@ -141,7 +122,6 @@ AI_MENTION_PATTERNS = [
     r"artificial\s+intelligence",
     r"\balgorithme\b",
     r"\bchatgpt\b",
-    r"\bgroq\b",
     r"\bopenrouter\b",
     r"\bgemini\b",
 ]
@@ -681,40 +661,10 @@ class ContentBrain:
     def __init__(self):
 
         logger.info(
-            "🧠 Initialisation AuraBrain multi-modèles..."
+            "🧠 Initialisation AuraBrain (OpenRouter uniquement)..."
         )
 
-        self.groq_client = None
         self.openrouter_client = None
-
-        # ------------------------------------------------------
-        # GROQ
-        # ------------------------------------------------------
-
-        groq_key = os.getenv(
-            "GROQ_API_KEY"
-        )
-
-        if groq_key:
-
-            self.groq_client = OpenAI(
-                api_key=groq_key,
-                base_url=(
-                    "https://api.groq.com/openai/v1"
-                ),
-                timeout=60,
-            )
-
-            logger.info(
-                "✅ Groq activé : %s",
-                GROQ_MODEL
-            )
-
-        else:
-
-            logger.warning(
-                "⚠️ GROQ_API_KEY absente."
-            )
 
         # ------------------------------------------------------
         # OPENROUTER
@@ -749,12 +699,6 @@ class ContentBrain:
         # ------------------------------------------------------
 
         self.providers = [
-
-            {
-                "name": "Groq",
-                "client": self.groq_client,
-                "model": GROQ_MODEL,
-            },
 
             {
                 "name": "OpenRouter-1",
@@ -999,12 +943,8 @@ class ContentBrain:
                         "max_tokens": max_tokens,
                     }
 
-                    # JSON uniquement quand explicitement demandé.
-                    # Groq est le plus susceptible de respecter ce mode.
-                    if (
-                        json_mode
-                        and provider_name == "Groq"
-                    ):
+                    # JSON uniquement quand explicitement demandé
+                    if json_mode:
 
                         kwargs[
                             "response_format"
