@@ -1159,11 +1159,17 @@ class ContentBrain:
     # ========================================================
     # TOPIC
     # ========================================================
+    # ========================================================
+    # TOPIC
+    # ========================================================
 
     def get_trending_topic(
         self,
-        previous_stats_list=None
+        previous_stats_list=None,
+        learning_context=None
     ):
+        
+        context_str = f"\n\nCONTEXTE D'APPRENTISSAGE :\n{learning_context}" if learning_context else ""
 
         messages = [
 
@@ -1177,6 +1183,7 @@ class ContentBrain:
                     f"{ACCENT_INSTRUCTION} "
                     f"{NO_META_AI_INSTRUCTION} "
                     f"{VERACITY_INSTRUCTION}"
+                    f"{context_str}" # <-- On injecte les recommandations du Learner ici
                 )
             },
 
@@ -1220,6 +1227,8 @@ class ContentBrain:
         return (
             "Le mystère historique que presque personne ne connaît"
         )
+    
+
 
     # ========================================================
     # REFINE TOPIC
