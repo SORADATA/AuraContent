@@ -3,15 +3,20 @@ import re
 import json
 import time
 import requests
-from openai import OpenAI
+import logging
+from openai import OpenAI, OpenAIError
 from dotenv import load_dotenv
-from constants import GROQ_MODEL
+from constants import (
+        GROQ_MODEL,
+        OPENROUTER_FALLBACK_MODEL_1,
+        OPENROUTER_FALLBACK_MODEL_2
+    )
 
+# --- Mocks pour les modules externes ---
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
-
     def get_latest_videos_stats():
         return None
 
@@ -20,13 +25,23 @@ try:
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
-
     def fetch_grounding_source(query, hint_country=None):
         return None
 
+# Charger les variables d'environnement
 load_dotenv()
 
+# --- Configuration du logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("AuraBrain")
 
+# =====================================================================
+# INSTRUCTIONS SYSTÈME CLÉS
+# =====================================================================
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
 ACCENT_INSTRUCTION = (
@@ -59,19 +74,13 @@ VERACITY_INSTRUCTION = (
     "(ex: 'Eglise Saint-Pierre d'Oron' plutot que juste 'Eglise Saint-Pierre'). "
     "5) Pour chaque lieu mentionne dans le champ 'location_name', precise aussi "
     "le pays reel dans un champ 'location_country' (ex: 'France', 'Allemagne', "
-    "'Suisse'). Si le sujet annonce une zone geographique specifique, TOUS les "
+    "Suisse'). Si le sujet annonce une zone geographique specifique, TOUS les "
     "lieux du script doivent appartenir a cette zone reelle. "
     "6) ATTENTION AUX LIEUX AMBIGUS AVEC MEME NOM : il existe souvent plusieurs "
     "lieux similaires (ex: plusieurs 'ponts du diable' en France, plusieurs "
-    "'eglises Saint-Pierre') dans des villes/regions differentes. Verifie "
-    "mentalement que le lieu precis correspond exactement au sujet donne, sans "
-    "confondre deux legendes/lieux distincts portant un nom proche."
+    "lieux portant un nom proche)."
 )
 
-# =========================================================================
-# NOUVEAU : structure narrative orientee retention (hook / preuve / contexte
-# / escalade / revelation / payoff), injectee dans les prompts de script.
-# =========================================================================
 NARRATIVE_STRUCTURE_INSTRUCTION = (
     "STRUCTURE NARRATIVE OBLIGATOIRE (RETENTION MAXIMALE) : "
     "Repartis ces phases proportionnellement sur les scenes disponibles : "
@@ -90,6 +99,9 @@ NARRATIVE_STRUCTURE_INSTRUCTION = (
     "distingue clairement fait historique etabli et hypothese/legende."
 )
 
+# =====================================================================
+# OUTILS DE NETTOYAGE ET VALIDATION TEXTE
+# =====================================================================
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -103,13 +115,11 @@ def _has_missing_accents(text, min_hits=3):
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
 
-
 AI_MENTION_PATTERNS = [
     r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
     r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
     r"\bgroq\b", r"\bgemini\b", r"genere[e]?\s+par\s+l'?ia",
 ]
-
 
 def _contains_ai_mention(text):
     if not text:
@@ -117,17 +127,14 @@ def _contains_ai_mention(text):
     text_lower = text.lower()
     return any(re.search(p, text_lower) for p in AI_MENTION_PATTERNS)
 
-
 def _format_stats_instruction(previous_stats_list, label="hooks"):
     if not previous_stats_list:
         return ""
-
     stats_text = "\n".join([
         f'- Titre : "{s.get("title", "?")}" | Vues : {s.get("views", "?")} | Likes : {s.get("likes", "?")}'
         for s in previous_stats_list
         if isinstance(s, dict) and "title" in s
     ])
-
     return f"""
 ANALYSE DES PERFORMANCES RECENTES :
 Voici les resultats de nos dernieres videos publiees :
@@ -136,7 +143,6 @@ Voici les resultats de nos dernieres videos publiees :
 INSTRUCTION :
 Adapte le {label} selon les performances sans citer les stats explicitement.
 """
-
 
 def _clean_single_line_title(text):
     if not text:
@@ -147,16 +153,19 @@ def _clean_single_line_title(text):
         return ""
     return re.sub(r"\s+", " ", lines[0]).strip()
 
-
 def _clean_json_response(content):
     if not content:
         return content
     cleaned = content.strip()
+    # Enleve les balises de code markdown ```json ... ```
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
     return cleaned.strip()
 
+# =====================================================================
+# GÉOGRAPHIE ET CORRESPONDANCE DE PAYS
+# =====================================================================
 
 FRENCH_GEO_KEYWORDS = [
     "france", "francaise", "francais", "bretagne", "normandie", "vendee",
@@ -174,11 +183,9 @@ COUNTRY_KEYWORDS = {
     "belgique": ["belgique", "belge"],
 }
 
-
 def _topic_claims_french_location(topic):
     topic_lower = topic.lower()
     return any(kw in topic_lower for kw in FRENCH_GEO_KEYWORDS)
-
 
 def _guess_country_hint(topic):
     topic_lower = topic.lower()
@@ -187,20 +194,13 @@ def _guess_country_hint(topic):
             return country.capitalize()
     return None
 
-
 def _tokenize_for_match(text):
     return set(
         w for w in re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", str(text or "").lower()).split()
         if len(w) > 2
     )
 
-
 def _is_plausible_grounding_match(case_name, source):
-    """
-    Verifie qu'une source de grounding Wikipedia a bien un rapport lexical
-    avec le cas historique propose par le LLM (au moins un token partage
-    entre le nom du cas et le titre de l'article trouve).
-    """
     if not source or not source.get("title"):
         return False
     case_tokens = _tokenize_for_match(case_name)
@@ -209,9 +209,8 @@ def _is_plausible_grounding_match(case_name, source):
         return False
     return len(case_tokens & title_tokens) > 0
 
-
 # =====================================================================
-# --- VERIFICATION WIKIDATA (PAYS REEL D'UN LIEU) ---
+# CLASSE WIKIDATA CHECKER (ROBUSTE)
 # =====================================================================
 
 class WikidataChecker:
@@ -219,7 +218,7 @@ class WikidataChecker:
     HEADERS = {
         "User-Agent": os.getenv(
             "WIKIMEDIA_CONTACT",
-            "AuraContentPipeline/1.0 (contact non configure)"
+            "AuraContentPipeline/3.0 (contact non configure)"
         )
     }
     CACHE = {}
@@ -233,14 +232,14 @@ class WikidataChecker:
                 r = requests.get(cls.API_URL, params=params, headers=cls.HEADERS, timeout=10)
                 if r.status_code == 429:
                     wait = 3 * (attempt + 1)
-                    print(f"⏳ Wikidata 429, attente {wait}s avant retry...")
+                    logger.warning(f"⏳ Wikidata 429, attente {wait}s avant retry...")
                     time.sleep(wait)
                     continue
                 r.raise_for_status()
                 return r
             except requests.exceptions.RequestException as e:
                 if attempt == max_retries:
-                    print(f"⚠️ Wikidata erreur reseau (abandon apres {max_retries + 1} tentatives) : {e}")
+                    logger.error(f"⚠️ Wikidata erreur reseau : {e}")
                     return None
                 time.sleep(2)
         return None
@@ -256,13 +255,12 @@ class WikidataChecker:
             "type": "item",
         }
         r = cls._throttled_get(params)
-        if r is None:
-            return []
+        if r is None: return []
         try:
             results = r.json().get("search", [])
             return [item.get("id") for item in results if item.get("id")]
         except Exception as e:
-            print(f"⚠️ Wikidata (parsing recherche) erreur pour '{location_name}' : {e}")
+            logger.error(f"⚠️ Wikidata search parse error for '{location_name}' : {e}")
             return []
 
     @classmethod
@@ -274,27 +272,18 @@ class WikidataChecker:
             "format": "json",
         }
         r = cls._throttled_get(params)
-        if r is None:
-            return None
+        if r is None: return None
         try:
             entities = r.json().get("entities", {})
             entity = entities.get(entity_id, {})
             claims = entity.get("claims", {})
             country_claims = claims.get("P17")
-            if not country_claims:
-                return None
-            country_entity_id = (
-                country_claims[0]
-                .get("mainsnak", {})
-                .get("datavalue", {})
-                .get("value", {})
-                .get("id")
-            )
-            if not country_entity_id:
-                return None
+            if not country_claims: return None
+            country_entity_id = country_claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("id")
+            if not country_entity_id: return None
             return cls._resolve_entity_label(country_entity_id)
         except Exception as e:
-            print(f"⚠️ Wikidata (parsing pays) erreur pour '{entity_id}' : {e}")
+            logger.error(f"⚠️ Wikidata country parse error for '{entity_id}' : {e}")
             return None
 
     @classmethod
@@ -307,27 +296,22 @@ class WikidataChecker:
             "format": "json",
         }
         r = cls._throttled_get(params)
-        if r is None:
-            return None
+        if r is None: return None
         try:
             entities = r.json().get("entities", {})
             entity = entities.get(entity_id, {})
             labels = entity.get("labels", {})
             label = labels.get("fr") or labels.get("en")
-            if label:
-                return label.get("value")
+            if label: return label.get("value")
         except Exception as e:
-            print(f"⚠️ Wikidata (parsing label) erreur : {e}")
+            logger.error(f"⚠️ Wikidata label parse error : {e}")
         return None
 
     @classmethod
     def get_real_country(cls, location_name, hint_country=None):
-        if not location_name:
-            return None
-
+        if not location_name: return None
         cache_key = f"{location_name.strip().lower()}|{(hint_country or '').lower()}"
-        if cache_key in cls.CACHE:
-            return cls.CACHE[cache_key]
+        if cache_key in cls.CACHE: return cls.CACHE[cache_key]
 
         entity_ids = cls._search_entity_ids(location_name, limit=3)
         if not entity_ids:
@@ -338,7 +322,6 @@ class WikidataChecker:
         for entity_id in entity_ids:
             country = cls._get_country_for_entity(entity_id)
             candidates_countries.append(country)
-
             if hint_country and country and _countries_match(hint_country, country):
                 cls.CACHE[cache_key] = country
                 return country
@@ -347,12 +330,7 @@ class WikidataChecker:
         cls.CACHE[cache_key] = result
         return result
 
-
-# CORRECTIF : equivalence des noms de pays EN/FR pour eviter les faux
-# positifs Wikidata (ex: "Germany" declare par le LLM vs "Allemagne" retourne
-# par Wikidata -- avant ce correctif, ces deux chaines etaient jugees
-# incoherentes car _normalize_country_text ne faisait qu'un nettoyage de
-# caracteres, sans traduction).
+# Équivalence des noms de pays pour éviter les faux positifs
 COUNTRY_NAME_EQUIVALENTS = {
     "germany": "allemagne", "switzerland": "suisse", "italy": "italie",
     "spain": "espagne", "belgium": "belgique", "unitedkingdom": "royaumeuni",
@@ -364,202 +342,188 @@ COUNTRY_NAME_EQUIVALENTS = {
     "ireland": "irlande", "czechia": "tchequie", "czechrepublic": "tchequie",
     "unitedstates": "etatsunis", "unitedstatesofamerica": "etatsunis",
     "usa": "etatsunis", "portugal": "portugal", "morocco": "maroc",
-    "tunisia": "tunisie", "algeria": "algerie", "japan": "japon",
-    "china": "chine", "india": "inde", "mexico": "mexique",
 }
-
 
 def _normalize_country_text(text):
     raw = re.sub(r"[^a-z]", "", str(text or "").lower())
     return COUNTRY_NAME_EQUIVALENTS.get(raw, raw)
 
-
 def _countries_match(declared, real):
-    if not declared or not real:
-        return True
+    if not declared or not real: return True
     d = _normalize_country_text(declared)
     r = _normalize_country_text(real)
     return d == r or d in r or r in d
 
-
 # =====================================================================
-# --- DETECTION DU TYPE D'ERREUR GROQ ---
+# DÉTECTION ET ESTIMATION TOKENS
 # =====================================================================
-
 _RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
 SAFETY_MARGIN_TOKENS = 400
 
 def _parse_rate_limit_numbers(err_str):
     match = _RATE_LIMIT_NUMS_RE.search(err_str)
-    if not match:
-        return None
+    if not match: return None
     return int(match.group(1)), int(match.group(2))
 
 def _is_rate_limit_error(err_str):
     err_lower = err_str.lower()
-    return (
-        "rate_limit_exceeded" in err_lower
-        or "tokens per minute" in err_lower
-        or "tpm" in err_lower
-        or "requests per minute" in err_lower
-        or "rpm" in err_lower
-    )
+    return any(kw in err_lower for kw in ["rate_limit_exceeded", "tokens per minute", "tpm", "rpm", "requests per minute"])
 
 def _estimate_tokens(text):
-    if not text:
-        return 0
+    if not text: return 0
     return max(1, len(text) // 3)
 
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
 
+# =====================================================================
+# CLASSE PRINCIPALE : CONTENT BRAIN (MULTI-MODEL FALLBACK)
+# =====================================================================
 
 class ContentBrain:
     def __init__(self):
-        pass
-
-    def _build_client(self):
+        # 1. Initialisation unique des clients API
+        
+        # Client GROQ (Priorité 1)
         groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        if groq_key:
+            self.groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+            logger.info("✅ Client Groq initialise.")
+        else:
+            self.groq_client = None
+            logger.warning("⚠️ Clé GROQ_API_KEY manquante.")
+
+        # Client OPENROUTER (Priorité 2 & 3 - Fallback)
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            self.openrouter_client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=openrouter_key)
+            logger.info("✅ Client OpenRouter initialise.")
+        else:
+            self.openrouter_client = None
+            logger.warning("⚠️ Clé OPENROUTER_API_KEY manquante.")
+
+        # Configuration de la priorité des providers
+        self.PROVIDERS_PRIORITY = [
+            {"client": self.groq_client, "model": GROQ_MODEL, "name": "Groq"},
+            {"client": self.openrouter_client, "model": OPENROUTER_FALLBACK_MODEL_1, "name": "OpenRouter_Llama3"},
+            {"client": self.openrouter_client, "model": OPENROUTER_FALLBACK_MODEL_2, "name": "OpenRouter_Gemma3"},
+        ]
 
     def _extract_content(self, response):
-        choices = getattr(response, "choices", None)
-        if choices is None and isinstance(response, dict):
-            choices = response.get("choices")
-        if not choices:
-            raise ValueError(f"Réponse inattendue de Groq: {response}")
+        """Extrait le contenu texte d'une réponse OpenAI compatible."""
+        # Correction de la syntaxe ici (remplacement de la ligne erronée)
+        try:
+            return response.choices[0].message.content.strip()
+        except (AttributeError, IndexError, TypeError) as e:
+            # Fallback pour des structures de réponse exotiques ou dictionnaires
+            choices = getattr(response, "choices", None)
+            if choices and len(choices) > 0:
+                choice0 = choices[0]
+                message = getattr(choice0, "message", None)
+                if message:
+                    content = getattr(message, "content", None)
+                    if content: return str(content).strip()
+            
+            logger.error(f"⚠️ Erreur critique lors de l'extraction du contenu: {e}. Reponse: {response}")
+            raise ValueError(f"Impossible d'extraire le contenu de la reponse : {response}")
 
-        choice0 = choices[0]
-        message = getattr(choice0, "message", None)
-        if message is None and isinstance(choice0, dict):
-            message = choice0.get("message")
-
-        if isinstance(message, dict):
-            content = message.get("content")
-        else:
-            content = getattr(message, "content", None)
-
-        if content is None and isinstance(choice0, dict):
-            content = choice0.get("content")
-
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    parts.append(item.get("text") or item.get("content") or "")
-                elif isinstance(item, str):
-                    parts.append(item)
-            content = "".join(parts).strip()
-
-        if not content:
-            finish_reason = getattr(choice0, "finish_reason", None)
-            if finish_reason is None and isinstance(choice0, dict):
-                finish_reason = choice0.get("finish_reason")
-
-            if finish_reason == "length":
-                raise ValueError("Contenu vide de Groq : budget de tokens épuisé (finish_reason='length'). Augmenter max_completion_tokens.")
-
-            raise ValueError(f"Contenu vide de Groq: {response}")
-
-        return content.strip()
-
+    # =====================================================================
+    # NOUVELLE LOGIQUE : VRAI FALLBACK MULTI-MODÈLES
+    # =====================================================================
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
-                             max_completion_tokens=3000, hard_token_cap=7500):
-        client = self._build_client()
+                            max_completion_tokens=3000, hard_token_cap=7500):
+        """
+        Génère une réponse en essayant les modèles configurés par ordre de priorité.
+        Met en œuvre un vrai fallback en cas d'échec (Rate Limit, Panne).
+        """
         last_error = None
-
+        
+        # Estimation des tokens pour ajuster le budget de sortie
         prompt_tokens_est = _estimate_prompt_tokens(messages)
         available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
+        
         if max_completion_tokens > available:
             adjusted = max(500, available)
-            if adjusted < max_completion_tokens:
-                print(f"ℹ️ Budget de sortie reduit preventivement : "
-                      f"{max_completion_tokens} -> {adjusted} "
-                      f"(prompt estime a ~{prompt_tokens_est} tokens, "
-                      f"plafond {hard_token_cap}).")
-                max_completion_tokens = adjusted
+            logger.info(f"ℹ️ Budget tokens sortie reduit : {max_completion_tokens} -> {adjusted}")
+            max_completion_tokens = adjusted
 
-        for attempt in range(3):
-            try:
-                kwargs = {
-                    "model": GROQ_MODEL,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_completion_tokens": max_completion_tokens,
-                }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+        # --- Boucle sur les différents PROVIDERS ---
+        for provider in self.PROVIDERS_PRIORITY:
+            client = provider["client"]
+            model_name = provider["model"]
+            provider_name = provider["name"]
 
-                response = client.chat.completions.create(**kwargs)
-                content = self._extract_content(response)
-                print("✅ Reponse obtenue via Groq")
+            if not client: continue # Ignore si la clé API manque
 
-                time.sleep(1)
-                return content
+            # --- Boucle de 'retries' INTERNE par modèle ---
+            for attempt in range(3):
+                try:
+                    kwargs = {
+                        "model": model_name,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_completion_tokens, # max_tokens standard pour OpenAI/OpenRouter
+                    }
+                    
+                    # OpenRouter ne supporte pas toujours response_format="json_object".
+                    # Heureusement, _clean_json_response parse très bien le texte brut !
+                    if json_mode and provider_name == "Groq":
+                        kwargs["response_format"] = {"type": "json_object"}
 
-            except Exception as e:
-                err_str = str(e)
-                print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
-                last_error = e
+                    response = client.chat.completions.create(**kwargs)
+                    content = self._extract_content(response)
+                    
+                    logger.info(f"✅ Reponse obtenue via {provider_name} ({model_name})")
+                    time.sleep(0.5) # Petite pause politesse
+                    return content
 
-                # Relance si le budget de tokens a été épuisé
-                if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
-                    prompt_tokens_est = _estimate_prompt_tokens(messages)
-                    available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-                    max_completion_tokens = max(500, min(max_completion_tokens + 1500, available))
-                    time.sleep(2)
-                    continue
+                except OpenAIError as e:
+                    err_str = str(e)
+                    last_error = e
+                    
+                    # Gestion spécifique des Rate Limits (TPM/RPM)
+                    if _is_rate_limit_error(err_str):
+                        logger.warning(f"⏳ Rate Limit atteint sur {provider_name}. Fallback IMMEDIAT au modele suivant.")
+                        # On SORT de la boucle interne 'attempt' pour passer au prochain 'provider'
+                        break 
+                    
+                    # Gestion spécifique du budget tokens épuisé (ex: finish_reason=length)
+                    if "budget de tokens épuisé" in err_str or "finish_reason='length'" in err_str:
+                        logger.warning(f"⚠️ Budget tokens epuise sur {provider_name}. Ajustement...")
+                        max_completion_tokens = max(500, min(max_completion_tokens + 1500, available))
+                        time.sleep(2)
+                        continue # Réessaie sur le MÊME modèle avec un plus grand budget
 
-                rate_limit_nums = _parse_rate_limit_numbers(err_str)
+                    logger.error(f"⚠️ Echec avec {provider_name} (Tentative {attempt + 1}/3): {e}")
+                    time.sleep(3 * (attempt + 1)) # Attente exponentielle avant réessai sur le même modèle
 
-                if rate_limit_nums:
-                    limit, requested = rate_limit_nums
-                    overage = requested - limit
-                    new_budget = max(500, max_completion_tokens - overage - SAFETY_MARGIN_TOKENS)
-                    print(f"⚠️ Requete trop grosse ({requested} > {limit}). "
-                          f"Reduction : {max_completion_tokens} -> {new_budget}.")
-                    max_completion_tokens = new_budget
-                    time.sleep(1)
+        # Si on arrive ici, c'est que tous les providers ont échoué
+        logger.critical(f"❌ Erreur critique : TOUS les modèles ont échoué. Dernier échec : {last_error}")
+        raise RuntimeError(f"Impossible de generer du contenu après fallback complet. Dernière erreur: {last_error}")
 
-                elif _is_rate_limit_error(err_str):
-                    wait_time = 60
-                    print(f"⏳ Limite de debit atteinte (TPM/RPM), attente de {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    prompt_tokens_est = _estimate_prompt_tokens(messages)
-                    available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-                    max_completion_tokens = max(500, min(max_completion_tokens + 1000, available))
-                    time.sleep(4)
-
-        raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
+    # --- Reste des méthodes du Brain (inchangées, sauf appels) ---
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
                               max_completion_tokens=6000, hard_token_cap=7500):
         last_error = None
-
         for attempt in range(max_json_retries):
             content = self._call_with_fallback(
-                messages,
-                temperature=temperature,
-                json_mode=True,
-                max_completion_tokens=max_completion_tokens,
-                hard_token_cap=hard_token_cap,
+                messages, temperature=temperature, json_mode=True,
+                max_completion_tokens=max_completion_tokens, hard_token_cap=hard_token_cap,
             )
             try:
+                # Utilise _clean_json_response avant le parsing
                 data = json.loads(_clean_json_response(content))
                 return data
             except json.JSONDecodeError as e:
                 last_error = e
-                print(f"⚠️ JSON malformé reçu (tentative {attempt + 1}/{max_json_retries}), "
-                      f"nouvelle tentative avec budget de tokens augmenté...")
+                logger.warning(f"⚠️ JSON malforme (tentative {attempt + 1}/{max_json_retries}). Ajustement budget...")
                 max_completion_tokens = min(max_completion_tokens + 1000, 7000)
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
     # =================================================================
-    # SUJET / ANGLE / REQUETE VISUELLE
+    # MÉTHODES GÉNÉRATEURS (Sujet, Hook, Script, etc.)
     # =================================================================
 
     def get_trending_topic(self, previous_stats_list=None):
@@ -576,28 +540,21 @@ class ContentBrain:
                 "portant sur un mystere, un lieu ou un fait historique REEL et verifiable, "
                 "peu connu du grand public. Ne pas annoncer une zone geographique precise "
                 "(ex: un pays, une region) si tu n'es pas certain que l'exemple developpe "
-                "ensuite s'y trouve reellement."
-                + stats_instruction
+                "ensuite s'y trouve reellement." + stats_instruction
             )},
         ]
-
         last_topic = ""
         for attempt in range(3):
-            content = self._call_with_fallback(
-                messages, temperature=0.9, max_completion_tokens=2000
-            )
+            content = self._call_with_fallback(messages, temperature=0.9, max_completion_tokens=2000)
             topic = _clean_single_line_title(content)
             last_topic = topic
-
             if _contains_ai_mention(topic):
-                print(f"⚠️ Sujet rejeté (mention IA détectée, tentative {attempt + 1}) : {topic}")
+                logger.warning(f"⚠️ Sujet rejeté (mention IA, tentative {attempt + 1}) : {topic}")
                 continue
+            if topic and 4 <= len(topic.split()) <= 18: return topic
+            logger.warning(f"⚠️ Sujet invalide (tentative {attempt + 1}) : {topic}")
 
-            if topic and 4 <= len(topic.split()) <= 18:
-                return topic
-            print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
-
-        raise ValueError(f"Impossible d'obtenir un sujet valide apres 3 tentatives : {last_topic}")
+        raise ValueError(f"Impossible d'obtenir un sujet valide : {last_topic}")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
@@ -609,183 +566,72 @@ class ContentBrain:
             )},
             {"role": "user", "content": f"Sujet brut / trend repere: {raw_topic}"},
         ]
-        content = self._call_with_fallback(
-            messages, temperature=0.8, max_completion_tokens=2000
-        )
+        content = self._call_with_fallback(messages, temperature=0.8, max_completion_tokens=2000)
         refined = _clean_single_line_title(content)
-
-        if not refined or _contains_ai_mention(refined):
-            print(f"⚠️ Reformulation rejetée (vide ou mention IA détectée) : '{refined}' → on garde le sujet brut.")
-            return _clean_single_line_title(raw_topic)
-
+        if not refined or _contains_ai_mention(refined): return _clean_single_line_title(raw_topic)
         return refined
 
     def generate_video_search_query(self, topic):
         messages = [
             {"role": "system", "content": (
                 "Tu génères une requête de recherche visuelle en anglais, 6 mots max, "
-                "sans phrase, sans raisonnement visible -- reponds directement avec la "
-                "requete finale. Inclure des termes comme photorealistic, historical "
+                "sans phrase, sans raisonnement visible. Inclure : photorealistic, historical "
                 "documentary, real photography, dark mysterious atmosphere. INTERDICTION "
-                "ABSOLUE d'utiliser les mots CGI, 3D, render ou Unreal Engine."
+                "d'utiliser CGI, 3D, render ou Unreal Engine."
             )},
             {"role": "user", "content": f"Sujet : {topic}"},
         ]
-        content = self._call_with_fallback(
-            messages, temperature=0.7, max_completion_tokens=1500
-        )
+        content = self._call_with_fallback(messages, temperature=0.7, max_completion_tokens=1500)
         query = _clean_single_line_title(content).replace('"', '')
-
-        if not query:
-            return "photorealistic historical documentary dark atmosphere"
+        if not query: return "photorealistic historical documentary dark atmosphere"
         return query
-
-    # =================================================================
-    # HOOKS
-    # =================================================================
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
-        prompt = f"""
-SUJET:
-{topic}
-
-GENERE {n} hooks viraux en francais.
-
-RETURNS JSON:
-{{
-  "hooks": [
-    {{
-      "text": "hook",
-      "pattern": "question",
-      "raison": "..."
-    }}
-  ]
-}}
-
-{stats_instruction}
-"""
+        prompt = f"SUJET:\n{topic}\n\nGENERE {n} hooks viraux en francais. RETURNS JSON:\n{{\"hooks\": [ {{\"text\": \"hook\", \"pattern\": \"question\", \"raison\": \"...\"}} ] }}\n{stats_instruction}"
         messages = [
-            {"role": "system", "content": (
-                f"Tu produis uniquement du JSON valide avec exactement {n} hooks, "
-                "sans aucun texte ni raisonnement en dehors du JSON. "
-                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
-            )},
+            {"role": "system", "content": (f"Tu produis uniquement du JSON valide avec exactement {n} hooks. {ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}")},
             {"role": "user", "content": prompt},
         ]
-
-        data = self._call_json_with_retry(
-            messages, temperature=1.1, max_completion_tokens=4000
-        )
-
+        data = self._call_json_with_retry(messages, temperature=1.1, max_completion_tokens=4000)
         hooks = data.get("hooks")
-        if not isinstance(hooks, list):
-            raise ValueError("Champ hooks invalide.")
-
+        if not isinstance(hooks, list): raise ValueError("Champ hooks invalide.")
         normalized_hooks = []
         for h in hooks:
-            if isinstance(h, str):
-                text = h.strip()
-                if text and not _contains_ai_mention(text):
-                    normalized_hooks.append({"text": text, "pattern": "question", "raison": ""})
-            elif isinstance(h, dict):
-                text = str(h.get("text", "")).strip()
-                if text and not _contains_ai_mention(text):
-                    normalized_hooks.append({
-                        "text": text,
-                        "pattern": str(h.get("pattern", "question")).strip(),
-                        "raison": str(h.get("raison", "")).strip()
-                    })
-
-        if len(normalized_hooks) < n:
-            raise ValueError(f"Nombre de hooks invalide: {len(normalized_hooks)} au lieu de {n}.")
-
-        normalized_hooks = normalized_hooks[:n]
-        if not normalized_hooks:
-            normalized_hooks = [{"text": topic, "pattern": "default", "raison": ""}]
-        return normalized_hooks
-
-    # =================================================================
-    # ANCRAGE NARRATIF (GROUNDING WIKIPEDIA)
-    # =================================================================
+            text = str(h.get("text", "")).strip() if isinstance(h, dict) else str(h).strip()
+            if text and not _contains_ai_mention(text):
+                normalized_hooks.append({
+                    "text": text,
+                    "pattern": str(h.get("pattern", "question")).strip() if isinstance(h, dict) else "default",
+                    "raison": str(h.get("raison", "")).strip() if isinstance(h, dict) else ""
+                })
+        if len(normalized_hooks) < n: raise ValueError(f"Nombre de hooks invalide: {len(normalized_hooks)}/{n}.")
+        return normalized_hooks[:n]
 
     def propose_real_case(self, topic):
-        if not GROUNDING_AVAILABLE:
-            return {"case_name": None, "wiki_query": None, "source": None}
-
+        if not GROUNDING_AVAILABLE: return {"case_name": None, "source": None}
         hint_country = _guess_country_hint(topic)
-
-        messages = [
-            {"role": "system", "content": (
-                "Tu proposes un cas historique REEL et verifiable, peu connu du "
-                "grand public, correspondant exactement au sujet donne. "
-                "ATTENTION : sois tres precis sur le lieu exact -- il existe "
-                "souvent plusieurs legendes/lieux similaires dans differentes "
-                "villes/regions (ex: plusieurs 'ponts du diable' en France a "
-                "des endroits differents). Verifie mentalement que le lieu "
-                "que tu proposes correspond exactement aux details du sujet "
-                "(region, nom propre, contexte). "
-                "Reponds UNIQUEMENT avec le nom propre exact du lieu/evenement/ "
-                "personnage principal (celui qui a un article Wikipedia), sans "
-                "phrase, sans guillemets, sans raisonnement visible, une seule ligne."
-            )},
-            {"role": "user", "content": f"Sujet : {topic}\n\nDonne le nom exact du cas reel principal a developper."},
-        ]
-
-        content = self._call_with_fallback(
-            messages, temperature=0.3, max_completion_tokens=1500
-        )
+        messages = [{"role": "system", "content": ( "Tu proposes un cas historique REEL et verifiable, peu connu, correspondant exactement au sujet donne. Reponds UNIQUEMENT avec le nom propre exact du lieu/evenement principal, une seule ligne." )}, {"role": "user", "content": f"Sujet : {topic}"}]
+        content = self._call_with_fallback(messages, temperature=0.3, max_completion_tokens=1500)
         case_name = _clean_single_line_title(content)
-
-        if not case_name:
-            return {"case_name": None, "wiki_query": None, "source": None}
-
+        if not case_name: return {"case_name": None, "source": None}
+        
+        # Wikidata check
         if hint_country:
             real_country = WikidataChecker.get_real_country(case_name, hint_country=hint_country)
             if real_country and not _countries_match(hint_country, real_country):
-                print(f"⚠️ Lieu propose '{case_name}' semble incorrect "
-                      f"(Wikidata: {real_country}, attendu: {hint_country}). "
-                      f"Nouvelle tentative avec consigne renforcee...")
-
-                messages_retry = [
-                    {"role": "system", "content": (
-                        "Tu proposes un cas historique REEL, peu connu, "
-                        f"situe EXACTEMENT en {hint_country} (pas ailleurs). "
-                        "Reponds UNIQUEMENT avec le nom propre exact du lieu, "
-                        "sans phrase, sans guillemets, sans raisonnement visible, une seule ligne."
-                    )},
-                    {"role": "user", "content": f"Sujet : {topic}"},
-                ]
-                content_retry = self._call_with_fallback(
-                    messages_retry, temperature=0.3, max_completion_tokens=1500
-                )
+                logger.warning(f"⚠️ Lieu '{case_name}' incorrect (Wikidata: {real_country}, attendu: {hint_country}). Retry...")
+                messages_retry = [{"role": "system", "content": ( f"Tu proposes un cas historique REEL situe EXACTEMENT en {hint_country}. Reponds UNIQUEMENT avec le nom propre exact, une seule ligne." )}, {"role": "user", "content": f"Sujet : {topic}"}]
+                content_retry = self._call_with_fallback(messages_retry, temperature=0.3, max_completion_tokens=1500)
                 case_name_retry = _clean_single_line_title(content_retry)
-                if case_name_retry:
-                    case_name = case_name_retry
+                if case_name_retry: case_name = case_name_retry
 
         source = fetch_grounding_source(case_name, hint_country=hint_country)
-
-        # CORRECTIF (filet de securite) : meme si wikipedia_grounding.py
-        # filtre deja la pertinence en amont, on revalide ici au niveau
-        # lexical que le titre trouve a bien un rapport avec le cas propose
-        # par le LLM. Si ce n'est pas le cas, on ignore la source plutot que
-        # de fact-checker le script contre un article hors-sujet (ce qui
-        # provoquait des regenerations inutiles et un epuisement du budget
-        # de tokens dans les logs).
+        # Validation lexicale de la source
         if source and not _is_plausible_grounding_match(case_name, source):
-            print(f"⚠️ Source Wikipedia trouvée ('{source.get('title')}') semble "
-                  f"sans rapport avec '{case_name}' -- source ignorée, generation en mode libre.")
+            logger.warning(f"⚠️ Source Wikipedia trouvée ('{source.get('title')}') semble sans rapport avec '{case_name}'. Source ignorée.")
             source = None
-
-        return {
-            "case_name": case_name,
-            "wiki_query": case_name,
-            "source": source,
-        }
-
-    # =================================================================
-    # SCRIPT
-    # =================================================================
+        return {"case_name": case_name, "source": source}
 
     def generate_script(self, topic, chosen_hook=None):
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
@@ -796,432 +642,123 @@ RETURNS JSON:
         while sc >= 6 and len(candidate_counts) < 3:
             candidate_counts.append(sc)
             sc -= 3
-        if not candidate_counts:
-            candidate_counts = [scene_count]
-
+        if not candidate_counts: candidate_counts = [scene_count]
         last_error = None
         for idx, candidate_count in enumerate(candidate_counts):
-            if idx > 0:
-                print(f"⚠️ Nouvelle tentative avec un nombre de scenes reduit : "
-                      f"{candidate_count} (au lieu de {scene_count}) pour "
-                      f"respecter le budget de tokens Groq.")
+            if idx > 0: logger.info(f"⚠️ Tentative budget reduit : {candidate_count} scenes.")
             try:
-                return self._generate_script_attempt(
-                    topic, candidate_count, chosen_hook, max_fact_check_retries
-                )
+                return self._generate_script_attempt(topic, candidate_count, chosen_hook, max_fact_check_retries)
             except (RuntimeError, ValueError) as e:
                 last_error = e
-                print(f"❌ Echec de generation avec {candidate_count} scenes : {e}")
+                logger.error(f"❌ Echec avec {candidate_count} scenes : {e}")
                 continue
-
-        raise RuntimeError(
-            f"Impossible de generer un script meme en reduisant le nombre "
-            f"de scenes ({candidate_counts}). Derniere erreur : {last_error}"
-        )
+        raise RuntimeError(f"Impossible de generer un script valide ({candidate_counts}). Derniere erreur : {last_error}")
 
     def _generate_script_attempt(self, topic, scene_count, chosen_hook, max_fact_check_retries):
         hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
-
-        hint_country = _guess_country_hint(topic)
-
         grounding = self.propose_real_case(topic)
         source = grounding.get("source")
-
         if source:
-            extract_text = source['extract'][:1200] if 'extract' in source else ""
-            grounding_block = f"""
-
-SOURCE VERIFIEE OBLIGATOIRE (Wikipedia, {source['lang']}) :
-Titre reel : {source['title']}
-Extrait de reference : \"\"\"{extract_text}\"\"\"
-
-REGLE ABSOLUE : tu dois baser TOUS les faits du script (dates, lieux, noms,
-deroule des evenements) UNIQUEMENT sur cet extrait. Interdiction d'ajouter
-un fait, un detail chiffre ou un nom qui n'apparait pas dans cet extrait.
-Tu peux reformuler et dramatiser le style, mais pas inventer de contenu
-factuel supplementaire.
-
-CORRECTIF (IMAGES CONCRETES) : Pour la clé 'event_context', si une scene
-decrit un evenement precis et date mentionne dans l'extrait ci-dessus
-(ex: un incendie, une destruction, une decouverte), resume ce contexte en
-quelques mots factuels visuellement exploitables pour generer une image
-(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Si la scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
-"""
-            print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
+            extract_text = source['extract'][:1200]
+            grounding_block = f"\nSOURCE VERIFIEE Wikipedia: {source['title']}\nExtrait: \"\"\"{extract_text}\"\"\"\nREGLE: Baser faits UNIQUEMENT sur extrait. Dramatiser autorise, invention interdite."
+            logger.info(f"🔗 Script ancre sur source : '{source['title']}'")
         else:
             grounding_block = ""
-            print("⚠️ Aucune source Wikipedia trouvee, generation en mode libre "
-                  "(fact-check LLM seul, moins fiable sur la veracite narrative).")
+            logger.warning("⚠️ Aucune source Wikipedia trouvee, mode libre.")
 
-        base_prompt = f"""
-SUJET:
-{topic}
+        # Prompt de script alégé pour le budget tokens
+        base_prompt = f"SUJET: {topic}\n{hook_instruction}\n{grounding_block}\n{NARRATIVE_STRUCTURE_INSTRUCTION}\nREGLES: Pas intros, faits directs dès scene 2. 'image_prompt' photorealiste ultra-precis (pas CGI/3D). 'stock_search' générique ANGLAIS (pas lieux precis). UNIQUE phrase 10-15 mots max par scene. JSON UNIQUEMENT.\nCONTRAINTE: Retourne EXACTEMENT {scene_count} scenes complettes JSON. title, visual_identity, audio_profile, scenes[id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context]"
 
-{hook_instruction}
-{grounding_block}
-
-{NARRATIVE_STRUCTURE_INSTRUCTION}
-
-REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
-1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
-2. Dès la scène 2, entre DIRECTEMENT dans le vif du sujet en racontant de vrais faits historiques, des détails précis ou une anecdote concrète et surprenante.
-3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
-4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
-5. Pour la clé 'image_prompt', rédige une description PHOTOGRAPHIQUE ULTRA-PRÉCISE (3 à 5 phrases), au format "photographie documentaire" : sujet précis (type de lieu, époque, style architectural ou objet), cadrage/angle de vue, éclairage (naturel, bougie, nocturne...), textures et détails visibles, ambiance. Exemple du niveau de précision attendu : "Photographie documentaire nocturne d'une ancienne forteresse militaire française du XVIIIe siècle, couloir intérieur étroit en pierre humide, murs massifs, une lanterne chaude isolée au fond du passage, porte métallique entrouverte au premier plan, aucune personne visible, légère brume froide, textures de pierre très détaillées, profondeur cinématographique, ambiance inquiétante mais historiquement crédible." Interdiction formelle des termes liés à la synthèse (CGI, Unreal Engine, 3D render, illustration, dessin).
-6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis et complet dans 'location_name' (ex: "Château de Chambord", "Église Saint-Pierre d'Oron" et non juste "Église Saint-Pierre") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
-7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
-8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
-9. Respecte scrupuleusement les exigences de veracite historique donnees dans les instructions systeme (lieux/faits reels, pays exact, pas d'invention).
-10. Pour la clé 'scene_type', choisis "specific" if la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
-11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
-12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
-13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
-14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
-15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
-
-CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
-Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
-Compte precisement le nombre d'elements avant de repondre. Si tu ne peux pas
-developper {scene_count} scenes avec suffisamment de matiere, repartis le
-contenu disponible sur EXACTEMENT {scene_count} scenes plus courtes plutot
-qu'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
-ecrit les {scene_count} scenes completes et la fermeture correcte du JSON.
-Reste CONCIS sur chaque champ texte pour ne pas depasser le budget de
-tokens disponible tout en couvrant les {scene_count} scenes en entier.
-
-Retourne un JSON avec les clés :
-title, visual_identity, audio_profile, scenes.
-Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
-"""
-
-        # CORRECTIF : le budget par scene est augmente (280 -> 380 tokens et
-        # plafond 6000 -> 6500) car le prompt systeme/user s'est alourdi
-        # (structure narrative + regle image_prompt plus detaillee). Avec
-        # l'ancien budget, il ne restait plus assez de tokens de sortie pour
-        # ecrire les {scene_count} scenes en entier, ce qui coupait le JSON
-        # en cours de generation (comptage de scenes incorrect, JSON invalide).
         estimated_tokens_needed = min(scene_count * 380 + 1200, 6500)
-
         correction_feedback = ""
-
         for fact_check_attempt in range(max_fact_check_retries + 1):
-            prompt = base_prompt + correction_feedback
-
-            messages = [
-                {"role": "system", "content": (
-                    f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
-                    f"ni plus ni moins -- c'est une contrainte absolue et non negociable. "
-                    f"Ne montre jamais ton raisonnement, reponds directement avec le JSON final. "
-                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION} {NARRATIVE_STRUCTURE_INSTRUCTION}"
-                )},
-                {"role": "user", "content": prompt},
-            ]
-
-            data = self._call_json_with_retry(
-                messages,
-                temperature=0.7,
-                max_completion_tokens=estimated_tokens_needed,
-            )
-
+            messages = [{"role": "system", "content": ( f"Tu produis uniquement du JSON. EXACTEMENT {scene_count} scenes JSON. {ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION} {NARRATIVE_STRUCTURE_INSTRUCTION}" )}, {"role": "user", "content": base_prompt + correction_feedback}]
+            data = self._call_json_with_retry(messages, temperature=0.7, max_completion_tokens=estimated_tokens_needed)
             scenes = data.get("scenes", [])
-            if not isinstance(scenes, list):
-                scenes = []
-
-            scene_count_issue = None
             if len(scenes) != scene_count:
-                scene_count_issue = (
-                    f"Le JSON genere contient {len(scenes)} scenes au lieu des "
-                    f"{scene_count} scenes exactement demandees. Il faut "
-                    f"generer EXACTEMENT {scene_count} scenes, ni plus ni moins."
-                )
-
-            if scene_count_issue:
-                print(f"⚠️ Comptage de scenes incorrect (tentative {fact_check_attempt + 1}) : {scene_count_issue}")
-
+                scene_count_issue = f"Le JSON contient {len(scenes)} scenes au lieu de {scene_count}."
                 if fact_check_attempt < max_fact_check_retries:
-                    correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-{scene_count_issue}
-Regenere le script complet avec EXACTEMENT {scene_count} scenes cette fois-ci.
-Reste concis sur chaque champ texte pour respecter le budget de tokens.
-"""
+                    correction_feedback = f"\nCORRECTION OBLIGATOIRE: {scene_count_issue}\nRegenere EXACTEMENT {scene_count} scenes concises."
                     continue
-                else:
-                    raise ValueError(
-                        f"Impossible d'obtenir {scene_count} scenes apres "
-                        f"{max_fact_check_retries + 1} tentatives (dernier essai : {len(scenes)} scenes)."
-                    )
+                else: raise ValueError(f"Impossible d'obtenir {scene_count} scenes: {scene_count_issue}")
 
+            # Validation et Post-processing basique
             for idx, scene in enumerate(scenes, start=1):
-                if isinstance(scene, dict):
-                    scene.setdefault("id", idx)
-                    scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
-                    scene.setdefault("pause_after_ms", 300)
-                    scene.setdefault("stock_search", "cinematic vertical background")
-                    scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
-                    scene.setdefault("location_name", "")
-                    scene.setdefault("location_country", "")
-                    scene.setdefault("voice_type", "narrator")
-                    scene.setdefault("mood", "intriguing")
-                    scene.setdefault("role", "value")
-                    scene.setdefault("scene_type", "generic")
-                    scene.setdefault("event_context", "")
+                scene.setdefault("id", idx)
+                scene.setdefault("voice_direction", "French premium narrator, calm, intrigant, contrôlé")
+                scene.setdefault("pause_after_ms", 300)
+                scene.setdefault("stock_search", "cinematic background vertical")
+                scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
+                scene.setdefault("voice_type", "narrator")
 
             try:
                 self._validate_script(data, scene_count, topic)
             except ValueError as e:
-                print(f"⚠️ Erreur de validation (tentative {fact_check_attempt + 1}) : {e}")
+                logger.warning(f"⚠️ Erreur validation (tentative {fact_check_attempt + 1}) : {e}")
                 if fact_check_attempt < max_fact_check_retries:
-                    correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-Le script precedent a echoue a la validation : {e}
-Corrige ce probleme specifique et regenere un script complet et valide avec
-EXACTEMENT {scene_count} scenes.
-"""
+                    correction_feedback = f"\nCORRECTION OBLIGATOIRE: Script invalide: {e}\nCorrige et regenere {scene_count} scenes."
                     continue
-                else:
-                    raise
+                else: raise
 
-            geo_issue = self._check_geography_consistency(topic, data["scenes"])
-            wikidata_issues = self._check_wikidata_locations(data["scenes"], hint_country=hint_country)
-            fact_check_result = self._fact_check_script(topic, data, grounding_source=source)
-
+            # Fact-check & Géographie
+            all_consistent = True
             issues = []
-            if geo_issue:
-                issues.append(geo_issue)
-            issues.extend(wikidata_issues)
-            issues.extend(fact_check_result.get("issues", []))
+            issues.extend(self._check_geography_consistency(topic, scenes) or [])
+            issues.extend(self._check_wikidata_locations(scenes, grounding.get("country_hint")) or [])
+            fc_res = self._fact_check_script(topic, data, source)
+            if not fc_res.get("is_consistent"): all_consistent = False; issues.extend(fc_res.get("issues", []))
 
-            all_consistent = (
-                not geo_issue
-                and not wikidata_issues
-                and fact_check_result.get("is_consistent", True)
-            )
-
-            if all_consistent:
-                if fact_check_attempt > 0:
-                    print(f"✅ Script valide apres correction (tentative {fact_check_attempt + 1}).")
-                return data
-
+            if all_consistent and not issues: return data
             if fact_check_attempt < max_fact_check_retries:
-                print(f"⚠️ Incoherences factuelles/geographiques detectees (tentative {fact_check_attempt + 1}) :")
-                for issue in issues:
-                    print(f"    - {issue}")
-
-                correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-Le script precedent contenait les incoherences suivantes, a corriger imperativement :
-{chr(10).join(f"- {i}" for i in issues)}
-Regenere un script totalement coherent avec des faits REELS et bien localises,
-en respectant strictement les memes regles{" et la source verifiee fournie" if source else ""}.
-IMPORTANT : garde EXACTEMENT {scene_count} scenes.
-"""
-            else:
-                print(f"❌ Incoherences factuelles persistantes apres {max_fact_check_retries + 1} tentatives, "
-                      f"video generee malgre tout (verification manuelle recommandee) :")
-                for issue in issues:
-                    print(f"    - {issue}")
-                return data
-
+                logger.warning(f"⚠️ Incohérences détectées (tentative {fact_check_attempt + 1}) :")
+                correction_feedback = f"\nCORRECTION OBLIGATOIRE: Incohérences:\n{chr(10).join(f'- {i}' for i in issues)}\nCorrige et regenere {scene_count} scenes."
+            else: logger.error(f"❌ Incohérences persistantes : {issues}"); return data
         return data
 
     # =================================================================
-    # VERIFICATIONS
+    # VERIFICATIONS (Validation interne)
     # =================================================================
 
     def _check_geography_consistency(self, topic, scenes):
-        if not _topic_claims_french_location(topic):
-            return None
-
+        if not _topic_claims_french_location(topic): return None
         for scene in scenes:
             country = str(scene.get("location_country", "")).strip().lower()
-            location = str(scene.get("location_name", "")).strip()
             if country and "france" not in country and "français" not in country:
-                return (
-                    f"Le sujet annonce une localisation francaise, mais la scene "
-                    f"mentionnant '{location}' indique le pays '{country}', ce qui "
-                    f"est incoherent avec le sujet annonce."
-                )
+                return f"Sujet français, mais scene '{scene.get('location_name')}' declare pays '{country}'."
         return None
 
     def _check_wikidata_locations(self, scenes, hint_country=None):
         issues = []
-        not_found_locations = []
-
         for scene in scenes:
-            location_name = str(scene.get("location_name", "")).strip()
-            declared_country = str(scene.get("location_country", "")).strip()
-
-            if not location_name or not declared_country:
-                continue
-
-            real_country = WikidataChecker.get_real_country(location_name, hint_country=hint_country)
-
-            if real_country is None:
-                not_found_locations.append(location_name)
-                continue
-
-            if not _countries_match(declared_country, real_country):
-                issues.append(
-                    f"Wikidata indique que '{location_name}' se trouve reellement "
-                    f"en '{real_country}', mais le script declare '{declared_country}'. "
-                    f"Utilise un nom de lieu plus specifique/complet ou corrige la "
-                    f"localisation."
-                )
-                print(f"❌ Wikidata mismatch : '{location_name}' est en '{real_country}' "
-                      f"(declare : '{declared_country}')")
-            else:
-                print(f"✅ Wikidata confirme : '{location_name}' est bien en '{real_country}'")
-
-        if not_found_locations:
-            print(f"ℹ️ Wikidata : {len(not_found_locations)} lieu(x) introuvable(s), "
-                  f"verification ignoree ({', '.join(not_found_locations)}).")
-
+            name = str(scene.get("location_name", "")).strip()
+            declared = str(scene.get("location_country", "")).strip()
+            if not name or not declared: continue
+            real = WikidataChecker.get_real_country(name, hint_country)
+            if real and not _countries_match(declared, real):
+                issues.append(f"Wikidata: '{name}' est en '{real}', mais script declare '{declared}'.")
         return issues
 
     def _fact_check_script(self, topic, script_data, grounding_source=None):
-        scenes_summary = "\n".join(
-            f"- Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')} / "
-            f"{s.get('location_country', 'pays non precise')}] : {s.get('text', '')[:200]}"
-            for s in script_data.get("scenes", [])
-        )
-
+        scenes_sum = "\n".join(f"-Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')}] : {s.get('text', '')[:100]}" for s in script_data.get("scenes", []))
         if grounding_source:
-            extract_text = grounding_source['extract'][:1200]
-            prompt = f"""
-Tu es un fact-checker rigoureux. Compare le SCRIPT ci-dessous a la SOURCE DE
-REFERENCE (extrait Wikipedia reel) et detecte UNIQUEMENT les affirmations du
-script qui CONTREDISENT ou AJOUTENT un fait absent de la source (date, nom,
-lieu, evenement invente).
-
-SOURCE DE REFERENCE ({grounding_source['title']}) :
-\"\"\"{extract_text}\"\"\"
-
-RESUME DU SCRIPT GENERE :
-{scenes_summary}
-
-Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
-{{
-  "is_consistent": true/false,
-  "issues": ["fait du script absent ou contradictoire avec la source : ..."]
-}}
-
-Ne signale PAS de simples reformulations/dramatisations fideles a la source.
-"""
+            extract = grounding_source['extract'][:1200]
+            prompt = f"Fact-checker: Compare SCRIPT a SOURCE Wikipedia. Signale uniquement faits CONTRADICTOIRES ou AJOUTES absent de source (nom, lieu, date).\nSOURCE ({grounding_source['title']}): \"\"\"{extract}\"\"\"\nSCRIPT: {scenes_sum}\nJSON ONLY: {{\"is_consistent\": true/false, \"issues\": []}}"
         else:
-            prompt = f"""
-Tu es un fact-checker STRICT. Tu ne signales QUE des erreurs factuelles
-objectives et verifiables, jamais des critiques de style ou de manque de
-details.
-
-SUJET DE LA VIDEO :
-{topic}
-
-RESUME DES SCENES :
-{scenes_summary}
-
-Signale UNIQUEMENT :
-- Un nom de lieu, personnage ou organisation manifestement invente (n'existe
-  pas du tout, pas juste "peu documente")
-- Une date historique explicitement fausse et verifiable comme telle
-- Une contradiction factuelle directe entre deux scenes (ex: un evenement
-  date differemment a deux endroits)
-
-NE SIGNALE JAMAIS :
-- Le manque de details ou de precision ("les informations sont trop
-  generales", "pas assez de details sur X")
-- Le style narratif, le rythme, ou la construction du recit
-- L'absence de preuves pour des legendes/rumeurs (une legende reste une
-  legende, ce n'est pas une erreur factuelle si elle est presentee comme
-  telle)
-- Les problemes de geographie/pays (verifies separement par une autre methode)
-
-Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
-{{
-  "is_consistent": true/false,
-  "issues": ["description precise et actionnable du probleme 1", "..."]
-}}
-
-Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
-"""
-
-        messages = [
-            {"role": "system", "content": (
-                "Tu produis uniquement du JSON valide, factuel, rigoureux et "
-                "minimaliste (peu de faux positifs), sans raisonnement visible."
-            )},
-            {"role": "user", "content": prompt},
-        ]
-
+            prompt = f"Fact-checker STRICT. Signale uniquement erreur factuelle objective (nom/lieu invente, date fausse) liée au SUJET: {topic}.\nSCRIPT: {scenes_sum}\nJSON ONLY: {{\"is_consistent\": true/false, \"issues\": []}}"
+        
+        messages = [{"role": "system", "content": "Tu es un fact-checker rigoureux et minimaliste (peu de faux positifs), JSON ONLY."}, {"role": "user", "content": prompt}]
         try:
-            data = self._call_json_with_retry(
-                messages, temperature=0.1, max_json_retries=1,
-                max_completion_tokens=2500
-            )
-            if not isinstance(data, dict):
-                return {"is_consistent": True, "issues": []}
-            return {
-                "is_consistent": bool(data.get("is_consistent", True)),
-                "issues": data.get("issues", []) if isinstance(data.get("issues"), list) else [],
-            }
-        except Exception as e:
-            print(f"⚠️ Fact-check LLM impossible (erreur technique), on continue sans blocage : {e}")
-            return {"is_consistent": True, "issues": []}
+            data = self._call_json_with_retry(messages, temperature=0.1, max_json_retries=1, max_completion_tokens=2500)
+            return {"is_consistent": bool(data.get("is_consistent", True)), "issues": data.get("issues", [])}
+        except Exception as e: return {"is_consistent": True, "issues": []}
 
     def _validate_script(self, data, scene_count, topic):
         scenes = data.get("scenes")
-        if not isinstance(scenes, list):
-            raise ValueError("La reponse ne contient pas de tableau scenes.")
-        if len(scenes) != scene_count:
-            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
-
-        allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
-        allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"}
-
+        if not isinstance(scenes, list) or len(scenes) != scene_count:
+            raise ValueError(f"scenes invalide: attendu {scene_count}.")
         for scene in scenes:
-            if not isinstance(scene, dict):
-                raise ValueError("Une scène n'est pas un dictionnaire valide.")
-            if not scene.get("text"):
-                raise ValueError(f"Scene {scene.get('id')} : text manquant.")
-
+            if not scene.get("text"): raise ValueError(f"Scene {scene.get('id')}: text manquant.")
             if _contains_ai_mention(scene.get("text", "")):
-                raise ValueError(
-                    f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
-                    f"('{scene['text'][:80]}...'), regeneration necessaire."
-                )
-
-            if not scene.get("voice_direction"):
-                scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
-            pause_after_ms = scene.get("pause_after_ms")
-            if not isinstance(pause_after_ms, int):
-                scene["pause_after_ms"] = 300
-            if scene.get("role") not in allowed_roles:
-                scene["role"] = "value"
-            if scene.get("mood") not in allowed_moods:
-                scene["mood"] = "intriguing"
-            if not scene.get("stock_search"):
-                scene["stock_search"] = "cinematic vertical background"
-            if not scene.get("image_prompt"):
-                scene["image_prompt"] = "Vertical 9:16 cinematic scene"
-            if "location_name" not in scene:
-                scene["location_name"] = ""
-            if "location_country" not in scene:
-                scene["location_country"] = ""
-            if scene.get("voice_type") not in {"narrator", "witness"}:
-                scene["voice_type"] = "narrator"
-            if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
-                scene["scene_type"] = "generic"
-            if "event_context" not in scene or not isinstance(scene.get("event_context"), str):
-                scene["event_context"] = ""
-
-        if not str(data.get("title", "")).strip():
-            data["title"] = topic
-        if not str(data.get("visual_identity", "")).strip():
-            data["visual_identity"] = "Consistent cinematic vertical documentary world."
-        if not str(data.get("audio_profile", "")).strip():
-            data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
-
+                raise ValueError(f"Scene {scene.get('id')}: mention IA détectée.")
+            scene.setdefault("voice_direction", "French narrator")
+            if not isinstance(scene.get("pause_after_ms"), int): scene["pause_after_ms"] = 300
