@@ -80,7 +80,7 @@ class Composer:
 
         available_tracks = [f for f in os.listdir(self.music_dir) if f.endswith('.mp3')]
         if not available_tracks:
-            print("      \u26a0\ufe0f Aucune musique trouvee dans assets/music/ !")
+            print("      ⚠️ Aucune musique trouvee dans assets/music/ !")
             self.current_bg_music_path = None
             return
 
@@ -88,7 +88,7 @@ class Composer:
         chosen_track = random.choice(matching_tracks) if matching_tracks else random.choice(available_tracks)
 
         self.current_bg_music_path = os.path.join(self.music_dir, chosen_track)
-        print(f"      \U0001f3b5 Musique selectionnee : {chosen_track} (Mood cible: {mood})")
+        print(f"      🎵 Musique selectionnee : {chosen_track} (Mood cible: {mood})")
 
     def _get_transition_for_scene(self, scene):
         transition = scene.get("transition", "cut")
@@ -133,12 +133,13 @@ class Composer:
 
     def add_watermark(self, input_video_path, output_video_path):
         if not os.path.exists(self.watermark_path):
-            print(f"\u26a0\ufe0f Filigrane introuvable : {self.watermark_path}")
+            print(f"⚠️ Filigrane introuvable : {self.watermark_path}")
             return False
 
         try:
             video = ffmpeg.input(input_video_path)
-            logo = ffmpeg.input(self.watermark_path, loop=1, framerate=self.fps).video
+            # CORRECTIF ICI: On force le format "image2" pour que loop=1 soit reconnu sans erreur
+            logo = ffmpeg.input(self.watermark_path, format="image2", loop=1, framerate=self.fps).video
             logo = (
                 logo
                 .filter("scale", self.watermark_width, -1, force_original_aspect_ratio="decrease")
@@ -158,7 +159,7 @@ class Composer:
             runner.run(overwrite_output=True, quiet=True)
             return True
         except ffmpeg.Error as e:
-            print(f"\u26a0\ufe0f Watermark failed: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            print(f"⚠️ Watermark failed: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
             return False
         except Exception:
             return False
@@ -173,17 +174,9 @@ class Composer:
         total_duration = float(scene["duration"])
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
 
-        # GARDE DEFENSIVE (correctif) : si le TTS a echoue pour cette scene
-        # (audio_path est None ou le fichier n'existe pas sur disque), on ne
-        # tente plus ffmpeg.input(None). Cela provoquait auparavant un
-        # "TypeError: expected str, bytes or os.PathLike object, not
-        # NoneType" peu comprehensible, remonte tardivement par le bloc
-        # except generique. On le detecte maintenant explicitement en amont,
-        # avec un message clair, et on abandonne proprement cette scene :
-        # elle sera filtree par render_all_scenes() sans casser le reste du
-        # pipeline.
+        # GARDE DEFENSIVE : si le TTS a echoue pour cette scene
         if not audio_path or not os.path.exists(audio_path):
-            print(f"      \u26a0\ufe0f Scene {scene_id} ignoree : aucun fichier audio valide (TTS probablement en echec).")
+            print(f"      ⚠️ Scene {scene_id} ignoree : aucun fichier audio valide (TTS probablement en echec).")
             return None
 
         try:
@@ -232,8 +225,9 @@ class Composer:
                         frames = max(int(chunk_duration * self.fps), 1)
                         zoom_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
 
+                        # CORRECTIF ICI: On force explicitement le format "image2"
                         stream = (
-                            ffmpeg.input(path, loop=1, t=chunk_duration)
+                            ffmpeg.input(path, format="image2", loop=1, framerate=self.fps, t=chunk_duration)
                             .filter("scale", 2200, -1)
                             .filter(
                                 "zoompan",
@@ -278,10 +272,10 @@ class Composer:
             return output_path
 
         except ffmpeg.Error as e:
-            print(f"\u274c Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
             return None
         except Exception as e:
-            print(f"\u274c Render Fail Scene {scene_id}: {e}")
+            print(f"❌ Render Fail Scene {scene_id}: {e}")
             return None
 
     def render_all_scenes(self, script_data, video_asset_lists, bg_video_path=None):
