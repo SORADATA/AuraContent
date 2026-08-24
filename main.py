@@ -50,7 +50,7 @@ async def main():
     script_data["scenes"] = planner.plan(raw_script_data["scenes"])
     
     # 4. Génération Audio (Stricte 2 voix)
-    script_data = audio.process_script_audio(script_data)
+    script_data = await audio.process_script_audio(script_data)
     
     # 5. Génération Visuelle (Micro-plans variants)
     video_asset_lists = []
