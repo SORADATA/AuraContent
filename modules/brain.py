@@ -68,7 +68,10 @@ VERACITY_INSTRUCTION = (
     "confondre deux legendes/lieux distincts portant un nom proche."
 )
 
-# 📌 NOUVELLE INSTRUCTION NARRATIVE AJOUTÉE
+# =========================================================================
+# NOUVEAU : structure narrative orientee retention (hook / preuve / contexte
+# / escalade / revelation / payoff), injectee dans les prompts de script.
+# =========================================================================
 NARRATIVE_STRUCTURE_INSTRUCTION = (
     "STRUCTURE NARRATIVE OBLIGATOIRE (RETENTION MAXIMALE) : "
     "Repartis ces phases proportionnellement sur les scenes disponibles : "
@@ -86,6 +89,7 @@ NARRATIVE_STRUCTURE_INSTRUCTION = (
     "ne jamais inventer une source ou un evenement historique ; "
     "distingue clairement fait historique etabli et hypothese/legende."
 )
+
 
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
@@ -182,6 +186,28 @@ def _guess_country_hint(topic):
         if any(kw in topic_lower for kw in keywords):
             return country.capitalize()
     return None
+
+
+def _tokenize_for_match(text):
+    return set(
+        w for w in re.sub(r"[^a-zA-ZÀ-ÿ0-9 ]", " ", str(text or "").lower()).split()
+        if len(w) > 2
+    )
+
+
+def _is_plausible_grounding_match(case_name, source):
+    """
+    Verifie qu'une source de grounding Wikipedia a bien un rapport lexical
+    avec le cas historique propose par le LLM (au moins un token partage
+    entre le nom du cas et le titre de l'article trouve).
+    """
+    if not source or not source.get("title"):
+        return False
+    case_tokens = _tokenize_for_match(case_name)
+    title_tokens = _tokenize_for_match(source["title"])
+    if not case_tokens or not title_tokens:
+        return False
+    return len(case_tokens & title_tokens) > 0
 
 
 # =====================================================================
@@ -322,8 +348,30 @@ class WikidataChecker:
         return result
 
 
+# CORRECTIF : equivalence des noms de pays EN/FR pour eviter les faux
+# positifs Wikidata (ex: "Germany" declare par le LLM vs "Allemagne" retourne
+# par Wikidata -- avant ce correctif, ces deux chaines etaient jugees
+# incoherentes car _normalize_country_text ne faisait qu'un nettoyage de
+# caracteres, sans traduction).
+COUNTRY_NAME_EQUIVALENTS = {
+    "germany": "allemagne", "switzerland": "suisse", "italy": "italie",
+    "spain": "espagne", "belgium": "belgique", "unitedkingdom": "royaumeuni",
+    "greatbritain": "royaumeuni", "england": "angleterre", "scotland": "ecosse",
+    "wales": "paysdegalles", "netherlands": "paysbas", "holland": "paysbas",
+    "austria": "autriche", "greece": "grece", "poland": "pologne",
+    "egypt": "egypte", "turkey": "turquie", "russia": "russie",
+    "sweden": "suede", "norway": "norvege", "denmark": "danemark",
+    "ireland": "irlande", "czechia": "tchequie", "czechrepublic": "tchequie",
+    "unitedstates": "etatsunis", "unitedstatesofamerica": "etatsunis",
+    "usa": "etatsunis", "portugal": "portugal", "morocco": "maroc",
+    "tunisia": "tunisie", "algeria": "algerie", "japan": "japon",
+    "china": "chine", "india": "inde", "mexico": "mexique",
+}
+
+
 def _normalize_country_text(text):
-    return re.sub(r"[^a-z]", "", str(text or "").lower())
+    raw = re.sub(r"[^a-z]", "", str(text or "").lower())
+    return COUNTRY_NAME_EQUIVALENTS.get(raw, raw)
 
 
 def _countries_match(declared, real):
@@ -455,7 +503,7 @@ class ContentBrain:
                 err_str = str(e)
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
-                
+
                 # Relance si le budget de tokens a été épuisé
                 if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
                     prompt_tokens_est = _estimate_prompt_tokens(messages)
@@ -717,6 +765,18 @@ RETURNS JSON:
 
         source = fetch_grounding_source(case_name, hint_country=hint_country)
 
+        # CORRECTIF (filet de securite) : meme si wikipedia_grounding.py
+        # filtre deja la pertinence en amont, on revalide ici au niveau
+        # lexical que le titre trouve a bien un rapport avec le cas propose
+        # par le LLM. Si ce n'est pas le cas, on ignore la source plutot que
+        # de fact-checker le script contre un article hors-sujet (ce qui
+        # provoquait des regenerations inutiles et un epuisement du budget
+        # de tokens dans les logs).
+        if source and not _is_plausible_grounding_match(case_name, source):
+            print(f"⚠️ Source Wikipedia trouvée ('{source.get('title')}') semble "
+                  f"sans rapport avec '{case_name}' -- source ignorée, generation en mode libre.")
+            source = None
+
         return {
             "case_name": case_name,
             "wiki_query": case_name,
@@ -793,13 +853,13 @@ quelques mots factuels visuellement exploitables pour generer une image
             print("⚠️ Aucune source Wikipedia trouvee, generation en mode libre "
                   "(fact-check LLM seul, moins fiable sur la veracite narrative).")
 
-        # 📌 INJECTION DES NOUVELLES RÈGLES 5 ET NARRATIVE
         base_prompt = f"""
 SUJET:
 {topic}
 
 {hook_instruction}
 {grounding_block}
+
 {NARRATIVE_STRUCTURE_INSTRUCTION}
 
 REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
@@ -835,14 +895,19 @@ Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
 
-        estimated_tokens_needed = min(scene_count * 280 + 1200, 6000)
+        # CORRECTIF : le budget par scene est augmente (280 -> 380 tokens et
+        # plafond 6000 -> 6500) car le prompt systeme/user s'est alourdi
+        # (structure narrative + regle image_prompt plus detaillee). Avec
+        # l'ancien budget, il ne restait plus assez de tokens de sortie pour
+        # ecrire les {scene_count} scenes en entier, ce qui coupait le JSON
+        # en cours de generation (comptage de scenes incorrect, JSON invalide).
+        estimated_tokens_needed = min(scene_count * 380 + 1200, 6500)
 
         correction_feedback = ""
 
         for fact_check_attempt in range(max_fact_check_retries + 1):
             prompt = base_prompt + correction_feedback
 
-            # 📌 INJECTION DE NARRATIVE_STRUCTURE_INSTRUCTION DANS LE SYSTEME
             messages = [
                 {"role": "system", "content": (
                     f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
@@ -1159,3 +1224,4 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             data["visual_identity"] = "Consistent cinematic vertical documentary world."
         if not str(data.get("audio_profile", "")).strip():
             data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
+
