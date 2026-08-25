@@ -72,6 +72,15 @@ class AudioEngine:
         os.makedirs(self.audio_dir, exist_ok=True)
         self.min_scene_duration = 3.0
 
+        # Timeout (secondes) applique a chaque appel edge_tts.Communicate.save().
+        # CORRECTIF : edge_tts n'a pas de timeout interne. Si le websocket
+        # Microsoft ne repond jamais (latence reseau, throttling silencieux
+        # cote CI, etc.), l'await restait bloque INDEFINIMENT sans lever
+        # d'exception ni logguer quoi que ce soit -- ce qui provoquait des
+        # runs bloques 40+ minutes jusqu'au timeout du job CI. On borne
+        # desormais explicitement l'appel avec asyncio.wait_for.
+        self.tts_timeout = 30
+
         self.VOICE_NARRATOR = "fr-FR-HenriNeural"
         self.RATE_NARRATOR = "-12%"
         self.PITCH_NARRATOR = "-4Hz"
@@ -111,6 +120,24 @@ class AudioEngine:
             return 0.0
 
     async def _generate_tts(self, text, output_path, voice, rate, pitch):
+        """
+        CORRECTIF (hang silencieux) :
+
+        edge_tts.Communicate.save() ouvre une connexion websocket vers
+        l'endpoint Microsoft et n'a AUCUN timeout interne. En cas de
+        connexion qui ne repond jamais (latence reseau du runner CI,
+        throttling silencieux cote serveur...), l'await restait bloque
+        indefiniment : pas d'exception, pas de log, pas de retry -- juste
+        un pipeline fige jusqu'au timeout du job (observe : 42m52s puis
+        annulation par GitHub Actions).
+
+        On borne desormais explicitement l'appel avec asyncio.wait_for :
+        au-dela de self.tts_timeout secondes, une asyncio.TimeoutError est
+        levee. Cette exception est une sous-classe d'Exception standard,
+        donc elle est correctement capturee par le try/except existant
+        dans process_script_audio(), qui declenche alors le retry normal
+        (ou le fallback audio_path=None si tous les essais echouent).
+        """
         phonetic_text = self.sanitize_for_phonetics(text)
         communicate = edge_tts.Communicate(
             text=phonetic_text,
@@ -119,7 +146,10 @@ class AudioEngine:
             pitch=pitch,
             volume="+0%"
         )
-        await communicate.save(output_path)
+        await asyncio.wait_for(
+            communicate.save(output_path),
+            timeout=self.tts_timeout
+        )
 
     async def process_script_audio(self, script_data, retries=2):
         """
@@ -176,6 +206,16 @@ class AudioEngine:
                         print(f"      \u2705 Audio {scene_id} ({voice_type}) genere ({current_duration:.2f}s).")
                         success = True
                         break
+
+                except asyncio.TimeoutError:
+                    print(
+                        f"      \u23f1\ufe0f Timeout TTS ({self.tts_timeout}s) scene {scene_id} "
+                        f"(tentative {attempt + 1}/{retries + 1})..."
+                    )
+                    if attempt < retries:
+                        await asyncio.sleep(2)
+                    else:
+                        print(f"      \u274c Echec definitif TTS (timeout) pour la scene {scene_id}.")
 
                 except Exception as e:
                     if attempt < retries:
