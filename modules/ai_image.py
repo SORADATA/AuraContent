@@ -76,6 +76,16 @@ class AIImageGenerator:
 
         self.hf_client = None
 
+        # CORRECTIF : quand Hugging Face repond 402 (credits mensuels
+        # epuises), c'est une erreur DEFINITIVE pour le reste du mois --
+        # pas un aleas reseau. Sans ce flag, chaque scene retentait HF a
+        # chaque echec Pollinations, ajoutant plusieurs secondes d'appel
+        # HTTP voue a l'echec (401/402) sur chacune des ~11 scenes d'une
+        # video, ce qui a contribue au depassement du timeout CI de 85
+        # minutes. Une fois desactive, on ne retente plus HF du tout pour
+        # le reste de l'execution.
+        self.hf_disabled_for_run = False
+
         if HF_AVAILABLE and self.hf_token:
             try:
                 self.hf_client = InferenceClient(
@@ -407,6 +417,17 @@ class AIImageGenerator:
             )
             return False
 
+        # CORRECTIF : si un 402 (credits mensuels epuises) a deja ete
+        # detecte plus tot dans cette execution, on ne retente plus du
+        # tout Hugging Face -- inutile de perdre du temps sur un appel
+        # dont on sait deja qu'il echouera avec la meme erreur.
+        if self.hf_disabled_for_run:
+            print(
+                "    ⏭️ Hugging Face desactive pour cette execution "
+                "(credits mensuels epuises detectes precedemment)."
+            )
+            return False
+
         prompt = self._build_prompt(
             prompt_text,
             visual_identity=visual_identity,
@@ -469,10 +490,35 @@ class AIImageGenerator:
 
         except Exception as error:
 
-            print(
-                f"    ❌ Hugging Face image error: "
-                f"{error}"
-            )
+            error_str = str(error)
+
+            # CORRECTIF : detection specifique du quota mensuel epuise
+            # (HTTP 402 "Payment Required" / "depleted your monthly
+            # included credits"). Cette erreur est DEFINITIVE pour le
+            # reste du mois calendaire -- ce n'est pas un aleas reseau
+            # transitoire comme un timeout. On desactive donc HF pour
+            # le reste de cette execution afin d'eviter de perdre du
+            # temps sur des appels systematiquement voues a l'echec sur
+            # chacune des scenes restantes.
+            if (
+                "402" in error_str
+                or "payment required" in error_str.lower()
+                or "depleted your monthly included credits" in error_str.lower()
+            ):
+
+                self.hf_disabled_for_run = True
+
+                print(
+                    "    🚫 Hugging Face : quota mensuel epuise (402). "
+                    "Desactivation pour le reste de cette execution."
+                )
+
+            else:
+
+                print(
+                    f"    ❌ Hugging Face image error: "
+                    f"{error}"
+                )
 
             return False
 
