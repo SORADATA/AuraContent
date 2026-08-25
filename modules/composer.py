@@ -7,13 +7,9 @@ import ffmpeg
 class Composer:
     """
     Compositeur video verticale 1080x1920 oriente documentaire / mystere.
-
-    Pipeline visuel :
-        scenes (avec micro-plans) -> sous-titres -> credit source
-               -> assemblage discret par fondus
-               -> mix voix + musique avec ducking
-               -> normalisation finale
-               -> filigrane de marque premium
+    OPTIMISATION PERFORMANCE (fix timeout CI) : fusion globale xfade en
+    un seul appel ffmpeg (O(n)) au lieu de N-1 appels sequentiels
+    (O(n^2)), + preset veryfast pour les encodages intermediaires.
     """
 
     def __init__(self):
@@ -26,8 +22,6 @@ class Composer:
             os.makedirs(d, exist_ok=True)
 
         self.transitions = ["fade", "fade"]
-
-        # La musique de fond est desormais dynamique
         self.current_bg_music_path = None
 
         self.watermark_path = os.path.join(self.images_dir, "minute_mystere_watermark.png")
@@ -44,6 +38,9 @@ class Composer:
         self.music_gain = 0.055
         self.music_fade_duration = 2.5
         self.transition_duration = 0.22
+
+        self.fast_preset = "veryfast"
+        self.final_preset = "medium"
 
         self.subtitle_style = (
             "FontName=DejaVu Sans,FontSize=24,Bold=1,"
@@ -70,23 +67,16 @@ class Composer:
         }
 
     def set_background_music(self, mood="intriguing"):
-        """
-        Choisit une musique de fond en fonction de l'ambiance (mood).
-        Cherche dans le dossier assets/music/ un fichier qui contient le mot-cle.
-        """
         if not os.path.exists(self.music_dir):
             self.current_bg_music_path = None
             return
-
         available_tracks = [f for f in os.listdir(self.music_dir) if f.endswith('.mp3')]
         if not available_tracks:
             print("      ⚠️ Aucune musique trouvee dans assets/music/ !")
             self.current_bg_music_path = None
             return
-
         matching_tracks = [f for f in available_tracks if mood.lower() in f.lower()]
         chosen_track = random.choice(matching_tracks) if matching_tracks else random.choice(available_tracks)
-
         self.current_bg_music_path = os.path.join(self.music_dir, chosen_track)
         print(f"      🎵 Musique selectionnee : {chosen_track} (Mood cible: {mood})")
 
@@ -106,8 +96,7 @@ class Composer:
             return 0.0
 
     def _escape_path_for_filter(self, path):
-        escaped = str(path).replace("\\", "/").replace(":", "\\:").replace("'", r"\'")
-        return escaped
+        return str(path).replace("\\", "/").replace(":", "\\:").replace("'", r"\'")
 
     def _escape_drawtext(self, text):
         return str(text).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace(",", r"\,")
@@ -120,7 +109,6 @@ class Composer:
         for token, label in self.source_credit_labels.items():
             if f"_{token}_" in file_name or file_name.startswith(f"{token}_"):
                 return label
-
         if "wiki" in file_name or "wikimedia" in file_name:
             return "Source : Wikimedia Commons"
         if "openverse" in file_name:
@@ -135,10 +123,8 @@ class Composer:
         if not os.path.exists(self.watermark_path):
             print(f"⚠️ Filigrane introuvable : {self.watermark_path}")
             return False
-
         try:
             video = ffmpeg.input(input_video_path)
-            # CORRECTIF ICI: On force le format "image2" pour que loop=1 soit reconnu sans erreur
             logo = ffmpeg.input(self.watermark_path, format="image2", loop=1, framerate=self.fps).video
             logo = (
                 logo
@@ -146,15 +132,13 @@ class Composer:
                 .filter("format", "rgba")
                 .filter("colorchannelmixer", aa=self.watermark_opacity)
             )
-
             watermarked_video = ffmpeg.overlay(
                 video.video, logo, x=self.watermark_x, y=self.watermark_y, eof_action="repeat", shortest=1
             )
-
             runner = ffmpeg.output(
                 watermarked_video, video.audio, output_video_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", r=self.fps, crf=18, preset="medium", movflags="faststart", shortest=None
+                pix_fmt="yuv420p", r=self.fps, crf=18, preset=self.final_preset, movflags="faststart", shortest=None
             )
             runner.run(overwrite_output=True, quiet=True)
             return True
@@ -165,16 +149,11 @@ class Composer:
             return False
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
-        """
-        Moteur de micro-plans.
-        'assets' est une liste contenant de 1 a plusieurs chemins d'images/videos.
-        """
         scene_id = scene["id"]
         audio_path = scene.get("audio_path")
         total_duration = float(scene["duration"])
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
 
-        # GARDE DEFENSIVE : si le TTS a echoue pour cette scene
         if not audio_path or not os.path.exists(audio_path):
             print(f"      ⚠️ Scene {scene_id} ignoree : aucun fichier audio valide (TTS probablement en echec).")
             return None
@@ -193,25 +172,20 @@ class Composer:
                     .setpts("PTS-STARTPTS")
                 )
                 source_for_credit = None
-
             else:
                 if not assets:
                     raise ValueError(f"Scene {scene_id}: aucun asset fourni.")
-
                 if not isinstance(assets, list):
                     if isinstance(assets, dict):
                         assets = list(assets.values())
                     else:
                         assets = [assets]
-
                 valid_assets = [p for p in assets if p and os.path.exists(p)]
                 if not valid_assets:
                     raise ValueError(f"Scene {scene_id}: les assets fournis sont introuvables.")
-
                 num_assets = len(valid_assets)
                 chunk_duration = total_duration / num_assets
                 streams = []
-
                 for idx, path in enumerate(valid_assets):
                     if self._is_video_file(path):
                         stream = (
@@ -224,27 +198,17 @@ class Composer:
                     else:
                         frames = max(int(chunk_duration * self.fps), 1)
                         zoom_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
-
-                        # CORRECTIF ICI: On force explicitement le format "image2"
                         stream = (
                             ffmpeg.input(path, format="image2", loop=1, framerate=self.fps, t=chunk_duration)
                             .filter("scale", 2200, -1)
-                            .filter(
-                                "zoompan",
-                                z=zoom_expr,
-                                d=frames,
-                                s=f"{self.video_width}x{self.video_height}",
-                                fps=self.fps
-                            )
+                            .filter("zoompan", z=zoom_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
                             .setpts("PTS-STARTPTS")
                         )
                     streams.append(stream)
-
                 if len(streams) > 1:
                     video_stream = ffmpeg.concat(*streams, v=1, a=0)
                 else:
                     video_stream = streams[0]
-
                 source_for_credit = valid_assets[0]
 
             if source_for_credit:
@@ -266,11 +230,10 @@ class Composer:
             runner = ffmpeg.output(
                 video_stream, input_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", r=self.fps, crf=18, preset="medium", movflags="faststart", shortest=None
+                pix_fmt="yuv420p", r=self.fps, crf=20, preset=self.fast_preset, movflags="faststart", shortest=None
             )
             runner.run(overwrite_output=True, quiet=True)
             return output_path
-
         except ffmpeg.Error as e:
             print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
             return None
@@ -279,12 +242,8 @@ class Composer:
             return None
 
     def render_all_scenes(self, script_data, video_asset_lists, bg_video_path=None):
-        """
-        video_asset_lists: liste de listes. Chaque sous-liste contient les assets d'une scene.
-        """
         rendered_paths = []
         bg_cursor = 0.0
-
         for i, scene in enumerate(script_data):
             current_assets = video_asset_lists[i] if i < len(video_asset_lists) else None
             output_path = self.process_scene(scene, current_assets, bg_video_path=bg_video_path, bg_offset=bg_cursor)
@@ -297,52 +256,75 @@ class Composer:
         dur_a = self.get_duration(clip_a)
         input_a = ffmpeg.input(clip_a)
         input_b = ffmpeg.input(clip_b)
-
         if not use_transition:
             joined_video = ffmpeg.concat(input_a.video, input_b.video, v=1, a=0)
             joined_audio = ffmpeg.concat(input_a.audio, input_b.audio, v=0, a=1)
             runner = ffmpeg.output(
                 joined_video, joined_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", crf=18, preset="medium", movflags="faststart"
+                pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
             )
             runner.run(overwrite_output=True, quiet=True)
             return "cut", 0
-
         trans_dur = trans_dur if trans_dur is not None else self.transition_duration
         offset = max(dur_a - trans_dur, 0)
-
         v_stream = ffmpeg.filter([input_a.video, input_b.video], "xfade", transition="fade", duration=trans_dur, offset=offset)
         a_stream = ffmpeg.filter([input_a.audio, input_b.audio], "acrossfade", d=trans_dur)
-
         runner = ffmpeg.output(
             v_stream, a_stream, output_path,
             vcodec="libx264", acodec="aac", audio_bitrate="192k",
-            pix_fmt="yuv420p", crf=18, preset="medium", movflags="faststart"
+            pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
         )
         runner.run(overwrite_output=True, quiet=True)
         return "fade", offset
 
+    def _concat_all_with_xfade(self, video_paths, output_path):
+        if len(video_paths) == 1:
+            shutil.copy2(video_paths[0], output_path)
+            return True
+        durations = [self.get_duration(p) for p in video_paths]
+        if any(d <= 0 for d in durations):
+            print("⚠️ Duree invalide detectee, fallback vers fusion sequentielle.")
+            return False
+        inputs = [ffmpeg.input(p) for p in video_paths]
+        trans_dur = self.transition_duration
+        video_stream = inputs[0].video
+        audio_stream = inputs[0].audio
+        cumulative_duration = durations[0]
+        for i in range(1, len(inputs)):
+            offset = max(cumulative_duration - trans_dur, 0)
+            video_stream = ffmpeg.filter([video_stream, inputs[i].video], "xfade", transition="fade", duration=trans_dur, offset=offset)
+            audio_stream = ffmpeg.filter([audio_stream, inputs[i].audio], "acrossfade", d=trans_dur)
+            cumulative_duration = cumulative_duration + durations[i] - trans_dur
+        try:
+            runner = ffmpeg.output(
+                video_stream, audio_stream, output_path,
+                vcodec="libx264", acodec="aac", audio_bitrate="192k",
+                pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
+            )
+            runner.run(overwrite_output=True, quiet=True)
+            return True
+        except ffmpeg.Error as e:
+            print(f"⚠️ Fusion globale xfade echouee, fallback sequentiel : "
+                  f"{e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            return False
+
     def _mix_background_music(self, stitched_path, output_path):
         if not self.current_bg_music_path or not os.path.exists(self.current_bg_music_path):
             return False
-
         try:
             video_duration = self.get_duration(stitched_path)
             if video_duration <= 0:
                 raise ValueError("Duree video invalide.")
-
             fade_start = max(video_duration - self.music_fade_duration, 0)
             voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(self.current_bg_music_path, stream_loop=-1)
-
             voice_audio = (
                 voice.audio
                 .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
                 .filter("volume", self.voice_gain)
                 .filter("atrim", duration=video_duration).filter("asetpts", "PTS-STARTPTS")
             )
-
             music_audio = (
                 music.audio
                 .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
@@ -351,24 +333,20 @@ class Composer:
                 .filter("afade", type="in", start_time=0, duration=min(1.2, video_duration))
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
-
             voice_for_duck, voice_for_mix = voice_audio.filter_multi_output("asplit", 2)
             music_for_duck, music_for_mix = music_audio.filter_multi_output("asplit", 2)
-
             ducked_music = ffmpeg.filter(
                 [music_for_duck, voice_for_duck], "sidechaincompress",
                 threshold=0.035, ratio=5, attack=30, release=450, makeup=1
             )
-
             mixed_audio = (
                 ffmpeg.filter([voice_for_mix, ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0)
                 .filter("loudnorm", I=-16, TP=-1.5, LRA=9)
             )
-
             final_runner = ffmpeg.output(
                 voice.video, mixed_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", movflags="faststart", preset="medium"
+                pix_fmt="yuv420p", movflags="faststart", preset=self.fast_preset
             )
             final_runner.run(overwrite_output=True, quiet=True)
             return True
@@ -394,52 +372,47 @@ class Composer:
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
         raw_final_output_path = os.path.join(self.temp_dir, "raw_final_stitched.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
-
         if os.path.exists(output_path):
             try: os.remove(output_path)
             except Exception: pass
-
         if not video_paths:
             return None
-
         merge_step_files = []
-        if len(video_paths) == 1:
-            stitched_path = video_paths[0]
-        else:
-            courant = video_paths[0]
-            for i in range(1, len(video_paths)):
-                suivant = video_paths[i]
-                merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
-                try:
-                    effect, offset = self._merge_two_clips(courant, suivant, merge_output)
-                except ffmpeg.Error:
-                    self._cleanup_temp_files(merge_step_files)
-                    return None
-
-                if courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
-                    merge_step_files.append(courant)
-                courant = merge_output
-            stitched_path = courant
-
+        stitched_path = os.path.join(self.temp_dir, "stitched_all.mp4")
+        success = self._concat_all_with_xfade(video_paths, stitched_path)
+        if not success:
+            print("↩️ Fallback : fusion sequentielle clip par clip.")
+            if len(video_paths) == 1:
+                stitched_path = video_paths[0]
+            else:
+                courant = video_paths[0]
+                for i in range(1, len(video_paths)):
+                    suivant = video_paths[i]
+                    merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
+                    try:
+                        effect, offset = self._merge_two_clips(courant, suivant, merge_output)
+                    except ffmpeg.Error:
+                        self._cleanup_temp_files(merge_step_files)
+                        return None
+                    if courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
+                        merge_step_files.append(courant)
+                    courant = merge_output
+                stitched_path = courant
         if self.current_bg_music_path and os.path.exists(self.current_bg_music_path):
-            success = self._mix_background_music(stitched_path, raw_final_output_path)
-            if not success:
+            music_success = self._mix_background_music(stitched_path, raw_final_output_path)
+            if not music_success:
                 self._fallback_no_music(stitched_path, raw_final_output_path)
         else:
             self._fallback_no_music(stitched_path, raw_final_output_path)
-
         watermark_success = self.add_watermark(raw_final_output_path, output_path)
         if not watermark_success:
             shutil.copy2(raw_final_output_path, output_path)
-
         if os.path.exists(raw_final_output_path):
             try: os.remove(raw_final_output_path)
             except Exception: pass
-
         self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
         if stitched_path not in video_paths and stitched_path != output_path:
             self._cleanup_temp_files([stitched_path], keep=output_path)
-
         return output_path
 
     def _fallback_no_music(self, stitched_path, raw_final_output_path):
