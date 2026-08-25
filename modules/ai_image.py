@@ -13,10 +13,6 @@ except ImportError:
 
 class AIImageGenerator:
 
-    # ============================================================
-    # CONFIGURATION
-    # ============================================================
-
     BASE_STYLE = (
         "cinematic realistic documentary still, "
         "photorealistic real-world photography, "
@@ -42,59 +38,26 @@ class AIImageGenerator:
         "oversaturated colors"
     )
 
-    # ------------------------------------------------------------
-    # Pollinations
-    # ------------------------------------------------------------
-
-    POLLINATIONS_MODEL = os.getenv(
-        "POLLINATIONS_IMAGE_MODEL",
-        ""
+    DEFAULT_MODEL = os.getenv(
+        "AI_IMAGE_MODEL",
+        "black-forest-labs/FLUX.1-dev"
     )
-
-    POLLINATIONS_TIMEOUT = int(
-        os.getenv(
-            "POLLINATIONS_TIMEOUT",
-            "45"
-        )
-    )
-
-    # ------------------------------------------------------------
-    # Hugging Face
-    # ------------------------------------------------------------
 
     HF_MODEL = os.getenv(
         "HF_IMAGE_MODEL",
         "black-forest-labs/FLUX.1-dev"
     )
 
-    HF_TIMEOUT = int(
-        os.getenv(
-            "HF_IMAGE_TIMEOUT",
-            "120"
-        )
-    )
+    # ---------------------------------------------------------------
+    # TIMEOUTS
+    # ---------------------------------------------------------------
 
-    # ------------------------------------------------------------
-    # Image dimensions
-    # ------------------------------------------------------------
+    POLLINATIONS_CONNECT_TIMEOUT = 10
+    POLLINATIONS_READ_TIMEOUT = 45
 
-    IMAGE_WIDTH = int(
-        os.getenv(
-            "AI_IMAGE_WIDTH",
-            "1080"
-        )
-    )
-
-    IMAGE_HEIGHT = int(
-        os.getenv(
-            "AI_IMAGE_HEIGHT",
-            "1920"
-        )
-    )
-
-    # ============================================================
+    # ---------------------------------------------------------------
     # INIT
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def __init__(self):
 
@@ -114,30 +77,25 @@ class AIImageGenerator:
         self.hf_client = None
 
         if HF_AVAILABLE and self.hf_token:
-
             try:
                 self.hf_client = InferenceClient(
                     api_key=self.hf_token
                 )
 
             except Exception as exc:
-
                 print(
-                    f"⚠️ Hugging Face client indisponible : "
-                    f"{exc}"
+                    f"⚠️ Hugging Face client indisponible: {exc}"
                 )
 
         print(
-            "🤖 AI Image Generator V4 initialisé | "
-            f"Pollinations="
-            f"{self.POLLINATIONS_MODEL or 'défaut'} | "
-            f"HF={self.HF_MODEL} | "
-            f"{self.IMAGE_WIDTH}x{self.IMAGE_HEIGHT}"
+            "🤖 AI Image Generator V3 initialisé | "
+            f"Pollinations={self.DEFAULT_MODEL} | "
+            f"HF={self.HF_MODEL}"
         )
 
-    # ============================================================
+    # ---------------------------------------------------------------
     # SEED
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _stable_seed(
         self,
@@ -162,14 +120,11 @@ class AIImageGenerator:
             int(digest[:8], 16) % 999999
         ) + 1
 
-    # ============================================================
+    # ---------------------------------------------------------------
     # PROMPT
-    # ============================================================
+    # ---------------------------------------------------------------
 
-    def _variant_instruction(
-        self,
-        variant
-    ):
+    def _variant_instruction(self, variant):
 
         variants = {
 
@@ -223,9 +178,7 @@ class AIImageGenerator:
             variants["b"]
         )
 
-    # ============================================================
-    # BUILD PROMPT
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _build_prompt(
         self,
@@ -240,18 +193,14 @@ class AIImageGenerator:
         ]
 
         if visual_identity:
-
             parts.append(
                 "visual continuity: "
                 + visual_identity.strip().rstrip(",.")
             )
 
         if variant:
-
             parts.append(
-                self._variant_instruction(
-                    variant
-                )
+                self._variant_instruction(variant)
             )
 
         parts.append(
@@ -261,9 +210,9 @@ class AIImageGenerator:
 
         return ", ".join(parts)
 
-    # ============================================================
+    # ---------------------------------------------------------------
     # VALIDATION
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _file_is_valid(
         self,
@@ -271,21 +220,21 @@ class AIImageGenerator:
         min_bytes=5000
     ):
 
-        try:
+        if not os.path.exists(output_path):
+            return False
 
+        try:
             return (
-                os.path.isfile(output_path)
-                and os.path.getsize(output_path)
+                os.path.getsize(output_path)
                 >= min_bytes
             )
 
         except OSError:
-
             return False
 
-    # ============================================================
+    # ---------------------------------------------------------------
     # POLLINATIONS URL
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _build_pollinations_url(
         self,
@@ -298,35 +247,20 @@ class AIImageGenerator:
             safe=""
         )
 
-        url = (
+        return (
             "https://image.pollinations.ai/prompt/"
             f"{encoded_prompt}"
-            f"?width={self.IMAGE_WIDTH}"
-            f"&height={self.IMAGE_HEIGHT}"
+            "?width=1080"
+            "&height=1920"
             f"&seed={seed}"
+            f"&model={self.DEFAULT_MODEL}"
             "&nologo=true"
+            "&enhance=true"
         )
 
-        # IMPORTANT :
-        # On n'impose plus FLUX.1-dev par défaut.
-        # On ajoute le modèle uniquement s'il est explicitement
-        # configuré.
-
-        if self.POLLINATIONS_MODEL:
-
-            url += (
-                "&model="
-                + requests.utils.quote(
-                    self.POLLINATIONS_MODEL,
-                    safe=""
-                )
-            )
-
-        return url
-
-    # ============================================================
+    # ---------------------------------------------------------------
     # POLLINATIONS
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _try_pollinations(
         self,
@@ -344,7 +278,6 @@ class AIImageGenerator:
         )
 
         if seed is None:
-
             seed = self._stable_seed(
                 prompt_text,
                 visual_identity,
@@ -356,106 +289,83 @@ class AIImageGenerator:
             seed
         )
 
-        print(
-            f"    🟣 Pollinations "
-            f"(seed={seed})..."
-        )
-
-        temporary_path = (
-            output_path + ".part"
-        )
-
         try:
+
+            print(
+                f"    🌐 Pollinations "
+                f"(seed={seed})..."
+            )
 
             response = requests.get(
                 api_url,
-                timeout=self.POLLINATIONS_TIMEOUT,
-                headers=self.headers,
-                stream=True
+                timeout=(
+                    self.POLLINATIONS_CONNECT_TIMEOUT,
+                    self.POLLINATIONS_READ_TIMEOUT
+                ),
+                headers=self.headers
             )
 
-            print(
-                f"    🟣 Pollinations HTTP "
-                f"{response.status_code}"
-            )
-
-            content_type = (
-                response.headers.get(
-                    "Content-Type",
-                    ""
-                )
+            content_type = response.headers.get(
+                "Content-Type",
+                ""
             )
 
             if (
-                response.status_code != 200
-                or not content_type.startswith("image/")
+                response.status_code == 200
+                and content_type.startswith("image/")
+                and len(response.content) > 5000
             ):
 
-                print(
-                    "    ❌ Pollinations réponse invalide : "
-                    f"{content_type}"
+                output_dir = (
+                    os.path.dirname(output_path)
+                    or "."
                 )
 
-                return False
+                os.makedirs(
+                    output_dir,
+                    exist_ok=True
+                )
 
-            os.makedirs(
-                os.path.dirname(
-                    output_path
-                ) or ".",
-                exist_ok=True
-            )
+                temporary_path = (
+                    output_path + ".tmp"
+                )
 
-            total_bytes = 0
+                with open(
+                    temporary_path,
+                    "wb"
+                ) as file:
+                    file.write(response.content)
 
-            with open(
-                temporary_path,
-                "wb"
-            ) as file:
-
-                for chunk in response.iter_content(
-                    chunk_size=1024 * 64
+                if self._file_is_valid(
+                    temporary_path
                 ):
 
-                    if chunk:
+                    os.replace(
+                        temporary_path,
+                        output_path
+                    )
 
-                        file.write(chunk)
-                        total_bytes += len(chunk)
+                    return True
 
-            if total_bytes < 5000:
-
-                print(
-                    f"    ❌ Image trop petite : "
-                    f"{total_bytes} octets"
-                )
-
-                try:
+                if os.path.exists(
+                    temporary_path
+                ):
                     os.remove(
                         temporary_path
                     )
-                except OSError:
-                    pass
-
-                return False
-
-            os.replace(
-                temporary_path,
-                output_path
-            )
 
             print(
-                f"    ✅ Pollinations image reçue "
-                f"({total_bytes / 1024:.0f} Ko)"
+                "    ❌ Pollinations : "
+                f"HTTP {response.status_code}"
             )
 
-            return self._file_is_valid(
-                output_path
-            )
+            return False
 
-        except requests.Timeout:
+        except requests.Timeout as error:
 
             print(
-                "    ⏱️ Pollinations timeout "
-                f"({self.POLLINATIONS_TIMEOUT}s)"
+                f"    ⏱️ Pollinations timeout : "
+                f"{error}"
             )
 
             return False
@@ -478,22 +388,9 @@ class AIImageGenerator:
 
             return False
 
-        finally:
-
-            if os.path.exists(
-                temporary_path
-            ):
-
-                try:
-                    os.remove(
-                        temporary_path
-                    )
-                except OSError:
-                    pass
-
-    # ============================================================
+    # ---------------------------------------------------------------
     # HUGGING FACE
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def _try_huggingface(
         self,
@@ -505,11 +402,9 @@ class AIImageGenerator:
     ):
 
         if not self.hf_client:
-
             print(
-                "    ⚠️ Hugging Face non configuré"
+                "    ℹ️ Hugging Face indisponible."
             )
-
             return False
 
         prompt = self._build_prompt(
@@ -518,82 +413,92 @@ class AIImageGenerator:
             variant=variant
         )
 
-        print(
-            f"    🟢 Hugging Face "
-            f"({self.HF_MODEL})..."
-        )
-
         try:
+
+            print(
+                f"    🤗 Hugging Face "
+                f"(seed={seed})..."
+            )
 
             image = self.hf_client.text_to_image(
                 prompt=prompt,
                 model=self.HF_MODEL,
                 negative_prompt=self.NEGATIVE_PROMPT,
-                width=self.IMAGE_WIDTH,
-                height=self.IMAGE_HEIGHT,
+                width=1080,
+                height=1920,
                 seed=seed or 42,
             )
 
+            output_dir = (
+                os.path.dirname(output_path)
+                or "."
+            )
+
             os.makedirs(
-                os.path.dirname(
-                    output_path
-                ) or ".",
+                output_dir,
                 exist_ok=True
             )
 
+            temporary_path = (
+                output_path + ".tmp"
+            )
+
             image.save(
-                output_path
+                temporary_path
             )
 
             if self._file_is_valid(
-                output_path
+                temporary_path
             ):
 
-                print(
-                    "    ✅ Hugging Face image générée"
+                os.replace(
+                    temporary_path,
+                    output_path
                 )
 
                 return True
 
-            print(
-                "    ❌ Hugging Face fichier invalide"
-            )
+            if os.path.exists(
+                temporary_path
+            ):
+                os.remove(
+                    temporary_path
+                )
 
             return False
 
         except Exception as error:
 
             print(
-                f"    ❌ Hugging Face image error : "
+                f"    ❌ Hugging Face image error: "
                 f"{error}"
             )
 
             return False
 
-    # ============================================================
+    # ---------------------------------------------------------------
     # PUBLIC
-    # ============================================================
+    # ---------------------------------------------------------------
 
     def generate_image(
         self,
         prompt_text,
         output_path,
         visual_identity=None,
-        retries=1,
+        retries=2,
         seed=None,
         variant=None,
         scene_id=None
     ):
 
         print(
-            f"\n🎨 IA image "
-            f"scene={scene_id or '?'} : "
+            f"🎨 IA image : "
             f"{prompt_text[:120]}"
         )
 
-        # --------------------------------------------------------
-        # CACHE
-        # --------------------------------------------------------
+        # -----------------------------------------------------------
+        # IMAGE EXISTANTE
+        # -----------------------------------------------------------
 
         if self._file_is_valid(
             output_path
@@ -606,9 +511,9 @@ class AIImageGenerator:
 
             return True
 
-        # --------------------------------------------------------
+        # -----------------------------------------------------------
         # SEED STABLE
-        # --------------------------------------------------------
+        # -----------------------------------------------------------
 
         base_seed = seed or self._stable_seed(
             prompt_text,
@@ -617,27 +522,30 @@ class AIImageGenerator:
             scene_id
         )
 
-        # --------------------------------------------------------
+        # -----------------------------------------------------------
         # RETRIES
-        # --------------------------------------------------------
+        # -----------------------------------------------------------
 
         for attempt in range(
             retries + 1
         ):
 
+            if attempt > 0:
+
+                print(
+                    f"    🔄 Nouvelle tentative "
+                    f"{attempt}/{retries}..."
+                )
+
+                time.sleep(2)
+
             current_seed = (
                 base_seed + attempt
             )
 
-            print(
-                f"    🔁 Tentative "
-                f"{attempt + 1}/{retries + 1} "
-                f"(seed={current_seed})"
-            )
-
-            # ====================================================
+            # =======================================================
             # 1. POLLINATIONS
-            # ====================================================
+            # =======================================================
 
             success = self._try_pollinations(
                 prompt_text,
@@ -655,14 +563,15 @@ class AIImageGenerator:
             ):
 
                 print(
-                    "    ✅ Image finale = Pollinations"
+                    f"    ✅ Pollinations "
+                    f"(seed={current_seed})"
                 )
 
                 return True
 
-            # ====================================================
+            # =======================================================
             # 2. HUGGING FACE
-            # ====================================================
+            # =======================================================
 
             success = self._try_huggingface(
                 prompt_text,
@@ -680,22 +589,14 @@ class AIImageGenerator:
             ):
 
                 print(
-                    "    ✅ Image finale = Hugging Face"
+                    "    ✅ Hugging Face image"
                 )
 
                 return True
 
-            # ====================================================
-            # RETRY
-            # ====================================================
-
-            if attempt < retries:
-
-                print(
-                    "    ⏳ Nouvelle tentative dans 2s..."
-                )
-
-                time.sleep(2)
+        # -----------------------------------------------------------
+        # ECHEC
+        # -----------------------------------------------------------
 
         print(
             f"    ❌ Génération impossible : "
