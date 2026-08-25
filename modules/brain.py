@@ -5,11 +5,11 @@ import re
 import json
 import time
 import logging
-from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+
 
 # ============================================================
 # ENV
@@ -22,7 +22,6 @@ load_dotenv()
 # CONSTANTS
 # ============================================================
 
-# Import strict et direct depuis constants.py
 from constants import (
     OPENROUTER_FALLBACK_MODEL_1,
     OPENROUTER_FALLBACK_MODEL_2,
@@ -72,10 +71,6 @@ logger = logging.getLogger("AuraBrain")
 # ============================================================
 # GLOBAL INSTRUCTIONS
 # ============================================================
-
-ACCENTED_CHARS = (
-    "éèêëàâäùûüçîïôœ"
-)
 
 ACCENT_INSTRUCTION = (
     "IMPÉRATIF ORTHOGRAPHE : "
@@ -232,7 +227,7 @@ def _estimate_prompt_tokens(messages):
 
 
 # ============================================================
-# RATE LIMIT DETECTION
+# ERROR DETECTION
 # ============================================================
 
 def _is_rate_limit_error(error):
@@ -321,6 +316,9 @@ COUNTRY_NAME_EQUIVALENTS = {
     "egypt": "egypte",
     "turkey": "turquie",
     "russia": "russie",
+    "unitedkingdom": "royaumeuni",
+    "uk": "royaumeuni",
+    "england": "royaumeuni",
 }
 
 
@@ -402,6 +400,17 @@ COUNTRY_KEYWORDS = {
         "catalogne",
         "andalousie",
     ],
+
+    "Royaume-Uni": [
+        "royaume-uni",
+        "royaume uni",
+        "angleterre",
+        "anglais",
+        "londres",
+        "écosse",
+        "galles",
+        "britannique",
+    ],
 }
 
 
@@ -423,7 +432,7 @@ def _guess_country_hint(topic):
 
 
 # ============================================================
-# WIKIDATA
+# WIKIDATA CHECKER
 # ============================================================
 
 class WikidataChecker:
@@ -447,7 +456,7 @@ class WikidataChecker:
     def _get(
         cls,
         params,
-        retries=2
+        retries=1
     ):
 
         for attempt in range(
@@ -464,16 +473,20 @@ class WikidataChecker:
                     cls.API_URL,
                     params=params,
                     headers=cls.HEADERS,
-                    timeout=10
+                    timeout=8
                 )
 
                 if response.status_code == 429:
 
-                    time.sleep(
-                        2 * (attempt + 1)
-                    )
+                    if attempt < retries:
 
-                    continue
+                        time.sleep(
+                            2 * (attempt + 1)
+                        )
+
+                        continue
+
+                    return None
 
                 response.raise_for_status()
 
@@ -510,6 +523,7 @@ class WikidataChecker:
         )
 
         if cache_key in cls.CACHE:
+
             return cls.CACHE[
                 cache_key
             ]
@@ -544,6 +558,7 @@ class WikidataChecker:
             ]
 
         except Exception:
+
             return None
 
         for entity_id in ids:
@@ -624,25 +639,16 @@ class WikidataChecker:
 
                 if country:
 
-                    value = country[
-                        "value"
-                    ]
+                    value = country["value"]
 
-                    if (
-                        not hint_country
-                        or _countries_match(
-                            hint_country,
-                            value
-                        )
-                    ):
+                    cls.CACHE[
+                        cache_key
+                    ] = value
 
-                        cls.CACHE[
-                            cache_key
-                        ] = value
-
-                        return value
+                    return value
 
             except Exception:
+
                 continue
 
         cls.CACHE[
@@ -665,10 +671,6 @@ class ContentBrain:
         )
 
         self.openrouter_client = None
-
-        # ------------------------------------------------------
-        # OPENROUTER
-        # ------------------------------------------------------
 
         openrouter_key = os.getenv(
             "OPENROUTER_API_KEY"
@@ -694,10 +696,6 @@ class ContentBrain:
                 "⚠️ OPENROUTER_API_KEY absente."
             )
 
-        # ------------------------------------------------------
-        # PROVIDERS
-        # ------------------------------------------------------
-
         self.providers = [
 
             {
@@ -713,10 +711,6 @@ class ContentBrain:
             },
 
         ]
-
-        # ------------------------------------------------------
-        # COOLDOWN
-        # ------------------------------------------------------
 
         self.provider_cooldown = {}
 
@@ -744,7 +738,8 @@ class ContentBrain:
 
         seconds = (
             seconds
-            or BRAIN_PROVIDER_COOLDOWN
+            if seconds is not None
+            else BRAIN_PROVIDER_COOLDOWN
         )
 
         self.provider_cooldown[
@@ -773,6 +768,7 @@ class ContentBrain:
         )
 
         if not choices:
+
             raise ValueError(
                 "Réponse API sans choices."
             )
@@ -786,6 +782,7 @@ class ContentBrain:
         )
 
         if message is None:
+
             raise ValueError(
                 "Réponse API sans message."
             )
@@ -829,6 +826,7 @@ class ContentBrain:
             )
 
         if not content:
+
             raise ValueError(
                 "Réponse API vide."
             )
@@ -883,30 +881,16 @@ class ContentBrain:
 
         last_error = None
 
-        # ====================================================
-        # LOOP PROVIDERS
-        # ====================================================
-
         for provider in self.providers:
 
-            provider_name = provider[
-                "name"
-            ]
-
-            client = provider[
-                "client"
-            ]
-
-            model = provider[
-                "model"
-            ]
+            provider_name = provider["name"]
+            client = provider["client"]
+            model = provider["model"]
 
             if not client:
-
                 continue
 
             if not model:
-
                 continue
 
             if not self._provider_available(
@@ -926,12 +910,18 @@ class ContentBrain:
                 model
             )
 
-            # ================================================
-            # RETRIES PROVIDER
-            # ================================================
+            # IMPORTANT :
+            # On borne le nombre réel de retries.
+            max_attempts = max(
+                1,
+                min(
+                    BRAIN_MAX_RETRIES_PER_PROVIDER + 1,
+                    3
+                )
+            )
 
             for attempt in range(
-                BRAIN_MAX_RETRIES_PER_PROVIDER + 1
+                max_attempts
             ):
 
                 try:
@@ -943,7 +933,6 @@ class ContentBrain:
                         "max_tokens": max_tokens,
                     }
 
-                    # JSON uniquement quand explicitement demandé
                     if json_mode:
 
                         kwargs[
@@ -990,13 +979,9 @@ class ContentBrain:
                         "(tentative %s/%s): %s",
                         provider_name,
                         attempt + 1,
-                        BRAIN_MAX_RETRIES_PER_PROVIDER + 1,
+                        max_attempts,
                         error
                     )
-
-                    # ----------------------------------------
-                    # RATE LIMIT
-                    # ----------------------------------------
 
                     if _is_rate_limit_error(
                         error
@@ -1007,15 +992,7 @@ class ContentBrain:
                             30
                         )
 
-                        logger.warning(
-                            "🚀 Fallback immédiat vers le modèle suivant."
-                        )
-
                         break
-
-                    # ----------------------------------------
-                    # FATAL PROVIDER
-                    # ----------------------------------------
 
                     if _is_provider_fatal_error(
                         error
@@ -1026,22 +1003,13 @@ class ContentBrain:
                             300
                         )
 
-                        logger.error(
-                            "❌ Provider %s probablement indisponible.",
-                            provider_name
-                        )
-
                         break
-
-                    # ----------------------------------------
-                    # TEMPORARY ERROR
-                    # ----------------------------------------
 
                     if _is_temporary_error(
                         error
                     ):
 
-                        if attempt < BRAIN_MAX_RETRIES_PER_PROVIDER:
+                        if attempt < max_attempts - 1:
 
                             time.sleep(
                                 BRAIN_RETRY_DELAY
@@ -1051,11 +1019,7 @@ class ContentBrain:
 
                         break
 
-                    # ----------------------------------------
-                    # UNKNOWN ERROR
-                    # ----------------------------------------
-
-                    if attempt < BRAIN_MAX_RETRIES_PER_PROVIDER:
+                    if attempt < max_attempts - 1:
 
                         time.sleep(
                             BRAIN_RETRY_DELAY
@@ -1065,12 +1029,8 @@ class ContentBrain:
 
                         break
 
-        # ====================================================
-        # EVERYTHING FAILED
-        # ====================================================
-
-        logger.critical(
-            "❌ TOUS LES MODÈLES IA ONT ÉCHOUÉ."
+        logger.error(
+            "❌ Tous les modèles IA ont échoué."
         )
 
         raise RuntimeError(
@@ -1079,21 +1039,30 @@ class ContentBrain:
         )
 
     # ========================================================
-    # JSON FALLBACK
+    # JSON
     # ========================================================
 
     def _call_json_with_retry(
         self,
         messages,
         temperature=0.5,
-        max_json_retries=2,
+        max_json_retries=1,
         max_completion_tokens=4000,
     ):
 
         last_error = None
 
+        # Sécurité : jamais plus de 2 générations JSON
+        max_attempts = max(
+            1,
+            min(
+                max_json_retries + 1,
+                2
+            )
+        )
+
         for attempt in range(
-            max_json_retries + 1
+            max_attempts
         ):
 
             try:
@@ -1127,10 +1096,10 @@ class ContentBrain:
                     "⚠️ JSON invalide "
                     "(tentative %s/%s)",
                     attempt + 1,
-                    max_json_retries + 1
+                    max_attempts
                 )
 
-                if attempt < max_json_retries:
+                if attempt < max_attempts - 1:
 
                     time.sleep(0.5)
 
@@ -1145,7 +1114,9 @@ class ContentBrain:
                     error
                 )
 
-                if attempt < max_json_retries:
+                if attempt < max_attempts - 1:
+
+                    time.sleep(0.5)
 
                     continue
 
@@ -1159,17 +1130,19 @@ class ContentBrain:
     # ========================================================
     # TOPIC
     # ========================================================
-    # ========================================================
-    # TOPIC
-    # ========================================================
 
     def get_trending_topic(
         self,
         previous_stats_list=None,
         learning_context=None
     ):
-        
-        context_str = f"\n\nCONTEXTE D'APPRENTISSAGE :\n{learning_context}" if learning_context else ""
+
+        context_str = (
+            f"\n\nCONTEXTE D'APPRENTISSAGE :\n"
+            f"{learning_context}"
+            if learning_context
+            else ""
+        )
 
         messages = [
 
@@ -1183,7 +1156,7 @@ class ContentBrain:
                     f"{ACCENT_INSTRUCTION} "
                     f"{NO_META_AI_INSTRUCTION} "
                     f"{VERACITY_INSTRUCTION}"
-                    f"{context_str}" # <-- On injecte les recommandations du Learner ici
+                    f"{context_str}"
                 )
             },
 
@@ -1200,7 +1173,9 @@ class ContentBrain:
 
         ]
 
-        for attempt in range(3):
+        # IMPORTANT :
+        # Le retry de topic est borné.
+        for attempt in range(2):
 
             content = (
                 self._call_with_fallback(
@@ -1227,8 +1202,6 @@ class ContentBrain:
         return (
             "Le mystère historique que presque personne ne connaît"
         )
-    
-
 
     # ========================================================
     # REFINE TOPIC
@@ -1389,7 +1362,7 @@ Patterns possibles :
             self._call_json_with_retry(
                 messages,
                 temperature=1.0,
-                max_json_retries=2,
+                max_json_retries=1,
                 max_completion_tokens=3000
             )
         )
@@ -1420,7 +1393,6 @@ Patterns possibles :
                 hook,
                 dict
             ):
-
                 continue
 
             text = str(
@@ -1516,34 +1488,6 @@ Patterns possibles :
                 "source": None
             }
 
-        if hint_country:
-
-            real_country = (
-                WikidataChecker
-                .get_real_country(
-                    case_name,
-                    hint_country
-                )
-            )
-
-            if (
-                real_country
-                and not _countries_match(
-                    hint_country,
-                    real_country
-                )
-            ):
-
-                logger.warning(
-                    "⚠️ Pays incohérent pour %s",
-                    case_name
-                )
-
-                return {
-                    "case_name": None,
-                    "source": None
-                }
-
         source = (
             fetch_grounding_source(
                 case_name,
@@ -1577,24 +1521,30 @@ Patterns possibles :
         topic,
         scene_count=11,
         chosen_hook=None,
-        max_fact_check_retries=2
+        max_fact_check_retries=0
     ):
 
         # IMPORTANT :
-        # On garde le même nombre de scènes autant que possible.
-        # Si le budget est trop gros, on réduit progressivement.
+        # On ne fait plus une cascade 11 -> 9 -> 7 -> 6
+        # à chaque erreur de validation.
+        #
+        # On tente le nombre demandé.
+        # Si le modèle produit un JSON incorrect, on effectue
+        # au maximum une nouvelle génération.
 
-        candidate_counts = []
+        candidate_counts = [
+            scene_count
+        ]
 
-        current = scene_count
+        if scene_count > 6:
 
-        while current >= 6:
+            fallback_count = scene_count - 2
 
-            candidate_counts.append(
-                current
-            )
+            if fallback_count >= 6:
 
-            current -= 2
+                candidate_counts.append(
+                    fallback_count
+                )
 
         last_error = None
 
@@ -1641,8 +1591,6 @@ Patterns possibles :
         max_fact_check_retries
     ):
 
-        # CORRECTION IMPORTANTE :
-        # hint_country doit être calculé ici.
         hint_country = (
             _guess_country_hint(
                 topic
@@ -1732,6 +1680,20 @@ RÈGLES :
 - aucune invention
 - exactement {scene_count} scènes
 
+IMPORTANT GÉOGRAPHIE :
+
+location_country doit correspondre au pays MODERNE
+du lieu géographique indiqué.
+
+Ne transforme jamais une entité historique comme
+"Empire romain" en pays moderne incorrectement.
+
+Si l'événement historique s'est déroulé dans
+Londres sous l'Empire romain, par exemple :
+
+location_name = "Londres"
+location_country = "Royaume-Uni"
+
 JSON UNIQUEMENT.
 
 FORMAT :
@@ -1744,8 +1706,16 @@ FORMAT :
 }}
 """
 
+        last_data = None
+
+        # ====================================================
+        # GENERATION UNIQUE + UN RETRY MAXIMUM
+        # ====================================================
+
+        generation_attempts = 2
+
         for attempt in range(
-            max_fact_check_retries + 1
+            generation_attempts
         ):
 
             messages = [
@@ -1774,7 +1744,7 @@ FORMAT :
                 self._call_json_with_retry(
                     messages,
                     temperature=0.7,
-                    max_json_retries=2,
+                    max_json_retries=1,
                     max_completion_tokens=min(
                         6000,
                         scene_count * 400
@@ -1784,9 +1754,16 @@ FORMAT :
 
             if not data:
 
-                raise ValueError(
-                    "JSON script vide."
+                logger.warning(
+                    "⚠️ Aucun JSON reçu "
+                    "(tentative %s/%s)",
+                    attempt + 1,
+                    generation_attempts
                 )
+
+                continue
+
+            last_data = data
 
             scenes = data.get(
                 "scenes"
@@ -1802,18 +1779,20 @@ FORMAT :
 
                 logger.warning(
                     "⚠️ Nombre scènes incorrect : %s/%s",
-                    len(scenes) if isinstance(
+                    len(scenes)
+                    if isinstance(
                         scenes,
                         list
-                    ) else 0,
+                    )
+                    else 0,
                     scene_count
                 )
 
                 continue
 
-            # ------------------------------------------------
+            # ================================================
             # NORMALISATION
-            # ------------------------------------------------
+            # ================================================
 
             moods = {
                 "ominous",
@@ -1829,6 +1808,15 @@ FORMAT :
                 scenes,
                 start=1
             ):
+
+                if not isinstance(
+                    scene,
+                    dict
+                ):
+
+                    raise ValueError(
+                        f"Scene {index} invalide."
+                    )
 
                 scene["id"] = index
 
@@ -1893,9 +1881,9 @@ FORMAT :
                         "intriguing"
                     )
 
-            # ------------------------------------------------
-            # VALIDATION
-            # ------------------------------------------------
+            # ================================================
+            # VALIDATION STRUCTURELLE
+            # ================================================
 
             self._validate_script(
                 data,
@@ -1903,9 +1891,14 @@ FORMAT :
                 topic
             )
 
-            # ------------------------------------------------
-            # GEOGRAPHY
-            # ------------------------------------------------
+            # ================================================
+            # GEOGRAPHIE
+            #
+            # IMPORTANT :
+            # Une incohérence géographique majeure bloque
+            # uniquement cette génération.
+            # Wikidata, lui, ne bloque JAMAIS.
+            # ================================================
 
             geo_issue = (
                 self._check_geography_consistency(
@@ -1917,15 +1910,28 @@ FORMAT :
             if geo_issue:
 
                 logger.warning(
-                    "⚠️ %s",
+                    "⚠️ Géographie principale incohérente : %s",
                     geo_issue
                 )
 
-                continue
+                # On tente une seconde génération seulement
+                # si le pays principal est réellement incohérent.
+                if attempt == 0:
 
-            # ------------------------------------------------
+                    continue
+
+                logger.warning(
+                    "⚠️ Géographie encore incohérente après "
+                    "le dernier essai : script conservé."
+                )
+
+            # ================================================
             # WIKIDATA
-            # ------------------------------------------------
+            #
+            # IMPORTANT :
+            # Wikidata est désormais informatif uniquement.
+            # Aucun continue ici.
+            # ================================================
 
             location_issues = (
                 self._check_wikidata_locations(
@@ -1937,15 +1943,17 @@ FORMAT :
             if location_issues:
 
                 logger.warning(
-                    "⚠️ Problèmes géographiques : %s",
+                    "⚠️ Problèmes géographiques tolérés : %s",
                     location_issues
                 )
 
-                pass
-
-            # ------------------------------------------------
+            # ================================================
             # FACT CHECK
-            # ------------------------------------------------
+            #
+            # IMPORTANT :
+            # Le fact-check ne déclenche PAS une régénération.
+            # Il sert uniquement de garde-fou informatif.
+            # ================================================
 
             fact_check = (
                 self._fact_check_script(
@@ -1960,24 +1968,43 @@ FORMAT :
                 True
             ):
 
-                return data
+                logger.info(
+                    "✅ Fact-check cohérent."
+                )
+
+            else:
+
+                logger.warning(
+                    "⚠️ Fact-check signalé, "
+                    "script conservé : %s",
+                    fact_check.get(
+                        "issues",
+                        []
+                    )
+                )
+
+            # ================================================
+            # SUCCÈS FINAL
+            # ================================================
+
+            return data
+
+        # ====================================================
+        # FALLBACK : conserver le dernier script exploitable
+        # ====================================================
+
+        if last_data is not None:
 
             logger.warning(
-                "⚠️ Fact-check échoué : %s",
-                fact_check.get(
-                    "issues",
-                    []
-                )
+                "⚠️ Retour du dernier script exploitable."
             )
 
-        # Si tout est passé sauf le fact-check,
-        # on retourne le dernier résultat plutôt que
-        # de tuer toute la pipeline.
-        return data
+            return last_data
 
-    # ========================================================
-    # GEOGRAPHY
-    # ========================================================
+        raise RuntimeError(
+            "Impossible de générer un script JSON valide."
+        )
+
     # ========================================================
     # GEOGRAPHY
     # ========================================================
@@ -1998,19 +2025,6 @@ FORMAT :
 
             return None
 
-        # CORRECTIF : une histoire reelle mentionne souvent des lieux
-        # secondaires legitimes dans d'autres pays (archives, enqueteurs,
-        # temoins, contexte historique) sans que ce soit une erreur
-        # factuelle. L'ancienne version rejetait TOUT le script (via
-        # `continue` dans l'appelant) dès qu'UNE SEULE scène avait un pays
-        # different du sujet principal, ce qui empechait quasiment toute
-        # convergence et provoquait des boucles de 3 tentatives >60s
-        # chacune, jusqu'au timeout du workflow CI.
-        #
-        # Nouvelle regle : on ne signale une incoherence que si une
-        # MAJORITE stricte des scenes localisees (pays declare non vide)
-        # sont incoherentes avec le pays du sujet. Une ou deux scenes
-        # secondaires dans un autre pays restent tolerees.
         mismatches = []
         total_located = 0
 
@@ -2034,25 +2048,34 @@ FORMAT :
             ):
 
                 mismatches.append(
-                    f"{scene.get('location_name')} ({country})"
+                    f"{scene.get('location_name')} "
+                    f"({country})"
                 )
 
         if total_located == 0:
             return None
 
-        mismatch_ratio = len(mismatches) / total_located
+        mismatch_ratio = (
+            len(mismatches)
+            / total_located
+        )
 
+        # Une majorité stricte doit être incohérente
+        # avant de considérer le script comme problématique.
         if mismatch_ratio > 0.5:
 
             return (
-                f"Incoherence geographique majeure : "
-                f"{len(mismatches)}/{total_located} lieux localises "
+                f"Incohérence géographique majeure : "
+                f"{len(mismatches)}/{total_located} lieux localisés "
                 f"({', '.join(mismatches)}) ne correspondent pas au "
                 f"pays attendu ({hint_country})."
             )
 
         return None
 
+    # ========================================================
+    # WIKIDATA
+    # ========================================================
 
     def _check_wikidata_locations(
         self,
@@ -2079,16 +2102,27 @@ FORMAT :
             ).strip()
 
             if not name or not declared:
-
                 continue
 
-            real = (
-                WikidataChecker
-                .get_real_country(
-                    name,
-                    hint_country
+            try:
+
+                real = (
+                    WikidataChecker
+                    .get_real_country(
+                        name,
+                        hint_country
+                    )
                 )
-            )
+
+            except Exception as error:
+
+                logger.warning(
+                    "⚠️ Wikidata erreur pour %s : %s",
+                    name,
+                    error
+                )
+
+                continue
 
             if (
                 real
@@ -2198,12 +2232,19 @@ JSON :
             self._call_json_with_retry(
                 messages,
                 temperature=0.1,
-                max_json_retries=1,
+                max_json_retries=0,
                 max_completion_tokens=1500
             )
         )
 
+        # Si le fact-check ne répond pas :
+        # on ne bloque PAS la pipeline.
         if not result:
+
+            logger.warning(
+                "⚠️ Fact-check indisponible : "
+                "script considéré comme exploitable."
+            )
 
             return {
                 "is_consistent": True,
@@ -2267,6 +2308,15 @@ JSON :
             scenes,
             start=1
         ):
+
+            if not isinstance(
+                scene,
+                dict
+            ):
+
+                raise ValueError(
+                    f"Scene {index}: objet invalide."
+                )
 
             text = str(
                 scene.get(
