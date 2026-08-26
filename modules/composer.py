@@ -117,29 +117,84 @@ class Composer:
         (le process est alors tué proprement par subprocess).
         Lève ffmpeg.Error si ffmpeg retourne un code non nul.
         """
+        # On force ffmpeg à émettre sa progression (frame=N, speed=...) sur
+        # stderr à intervalle régulier (-stats_period), pour pouvoir
+        # distinguer en cas de timeout :
+        #   - un VRAI hang (aucune frame produite, "frame=0" jusqu'à la fin)
+        #   - une simple LENTEUR CPU (les frames avancent, juste trop lentement
+        #     pour le budget de timeout donné -> augmenter le timeout suffit)
+        # Sans ça, un TIMEOUT ne nous dit que "ça a dépassé Xs", pas pourquoi.
         args = runner.compile(overwrite_output=True)
+        args = [args[0], "-stats_period", "5", "-nostdin"] + args[1:]
+
         t0 = time.time()
         print(f"      ⏳ [{label}] ffmpeg démarré (timeout={timeout}s)...", flush=True)
+
+        last_progress_line = ""
+        stderr_lines = []
+
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 args,
-                timeout=timeout,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
-        except subprocess.TimeoutExpired:
-            elapsed = time.time() - t0
-            print(f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué.", flush=True)
-            raise FFmpegTimeoutError(f"{label}: timeout après {timeout}s")
+        except FileNotFoundError as e:
+            raise RuntimeError(f"[{label}] ffmpeg introuvable sur ce runner : {e}")
+
+        try:
+            while True:
+                line = proc.stderr.readline()
+                if line:
+                    stderr_lines.append(line)
+                    if len(stderr_lines) > 40:
+                        stderr_lines.pop(0)
+                    if "frame=" in line:
+                        last_progress_line = line.strip()
+                        elapsed_now = time.time() - t0
+                        print(f"         … [{label}] {elapsed_now:.0f}s écoulées | {last_progress_line}", flush=True)
+                elif proc.poll() is not None:
+                    break
+
+                if time.time() - t0 > timeout:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                    elapsed = time.time() - t0
+                    if last_progress_line:
+                        print(
+                            f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
+                            f"Dernière progression connue : {last_progress_line}",
+                            flush=True,
+                        )
+                        raise FFmpegTimeoutError(
+                            f"{label}: timeout après {timeout}s (encodage en cours mais trop lent — "
+                            f"dernière progression : {last_progress_line})"
+                        )
+                    else:
+                        print(
+                            f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
+                            f"AUCUNE progression détectée (vrai blocage, pas juste de la lenteur).",
+                            flush=True,
+                        )
+                        raise FFmpegTimeoutError(
+                            f"{label}: timeout après {timeout}s (0 frame produite — hang probable, "
+                            f"pas un simple problème de vitesse)"
+                        )
+        finally:
+            if proc.stderr:
+                proc.stderr.close()
 
         elapsed = time.time() - t0
-        if result.returncode != 0:
-            stderr_text = result.stderr.decode("utf8", errors="ignore") if result.stderr else ""
-            print(f"      ❌ [{label}] échec ffmpeg (code {result.returncode}) en {elapsed:.1f}s", flush=True)
-            raise ffmpeg.Error("ffmpeg", result.stdout, result.stderr)
+        returncode = proc.returncode
+        if returncode != 0:
+            stderr_text = "".join(stderr_lines)
+            print(f"      ❌ [{label}] échec ffmpeg (code {returncode}) en {elapsed:.1f}s", flush=True)
+            raise ffmpeg.Error("ffmpeg", None, stderr_text.encode("utf8"))
 
         print(f"      ✅ [{label}] terminé en {elapsed:.1f}s", flush=True)
-        return result
+        return returncode
 
     def set_background_music(self, mood="intriguing"):
         if not os.path.exists(self.music_dir):
