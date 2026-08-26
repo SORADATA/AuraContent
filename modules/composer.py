@@ -1,7 +1,10 @@
 import os
+import queue
 import random
 import shutil
+import signal
 import subprocess
+import threading
 import time
 import ffmpeg
 
@@ -130,9 +133,23 @@ class Composer:
         t0 = time.time()
         print(f"      ⏳ [{label}] ffmpeg démarré (timeout={timeout}s)...", flush=True)
 
-        last_progress_line = ""
-        stderr_lines = []
-
+        # CORRECTIF CRITIQUE : la version précédente appelait
+        # proc.stderr.readline() DIRECTEMENT dans la boucle de contrôle du
+        # timeout. Or readline() est BLOQUANT : si ffmpeg ne produit plus
+        # aucune sortie (un vrai hang total, sans même une ligne de
+        # progression), le programme reste coincé DANS cet appel et ne
+        # revient jamais vérifier "time.time() - t0 > timeout". Le
+        # garde-fou se neutralisait donc lui-même exactement dans le pire
+        # cas (hang complet) — ce qui a été confirmé en pratique : le job
+        # est resté bloqué jusqu'au timeout externe du workflow (1500s)
+        # sans jamais logguer notre propre timeout de 240s.
+        #
+        # Fix : la lecture de stderr se fait maintenant dans un thread
+        # démon séparé, qui pousse chaque ligne dans une Queue. La boucle
+        # principale ne fait JAMAIS d'appel bloquant : elle vérifie le
+        # timeout en continu et ne fait que des `queue.get(timeout=0.5)`,
+        # donc le kill se déclenche au maximum 0.5s après le dépassement
+        # du budget, que ffmpeg produise de la sortie ou non.
         try:
             proc = subprocess.Popen(
                 args,
@@ -140,51 +157,95 @@ class Composer:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                preexec_fn=os.setsid if os.name == "posix" else None,
             )
         except FileNotFoundError as e:
             raise RuntimeError(f"[{label}] ffmpeg introuvable sur ce runner : {e}")
 
-        try:
-            while True:
-                line = proc.stderr.readline()
-                if line:
-                    stderr_lines.append(line)
-                    if len(stderr_lines) > 40:
-                        stderr_lines.pop(0)
-                    if "frame=" in line:
-                        last_progress_line = line.strip()
-                        elapsed_now = time.time() - t0
-                        print(f"         … [{label}] {elapsed_now:.0f}s écoulées | {last_progress_line}", flush=True)
-                elif proc.poll() is not None:
-                    break
+        line_queue = queue.Queue()
 
-                if time.time() - t0 > timeout:
+        def _reader():
+            try:
+                for line in iter(proc.stderr.readline, ""):
+                    line_queue.put(line)
+            except Exception:
+                pass
+            finally:
+                line_queue.put(None)  # sentinelle de fin de flux
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
+        def _kill_process():
+            """Tue le process (et son groupe, pour attraper d'éventuels
+            enfants orphelins) de façon robuste."""
+            try:
+                if os.name == "posix":
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else:
                     proc.kill()
-                    proc.wait(timeout=10)
-                    elapsed = time.time() - t0
-                    if last_progress_line:
-                        print(
-                            f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
-                            f"Dernière progression connue : {last_progress_line}",
-                            flush=True,
-                        )
-                        raise FFmpegTimeoutError(
-                            f"{label}: timeout après {timeout}s (encodage en cours mais trop lent — "
-                            f"dernière progression : {last_progress_line})"
-                        )
-                    else:
-                        print(
-                            f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
-                            f"AUCUNE progression détectée (vrai blocage, pas juste de la lenteur).",
-                            flush=True,
-                        )
-                        raise FFmpegTimeoutError(
-                            f"{label}: timeout après {timeout}s (0 frame produite — hang probable, "
-                            f"pas un simple problème de vitesse)"
-                        )
-        finally:
-            if proc.stderr:
-                proc.stderr.close()
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+
+        last_progress_line = ""
+        stderr_lines = []
+        reader_done = False
+
+        while True:
+            elapsed = time.time() - t0
+            if elapsed > timeout:
+                _kill_process()
+                if last_progress_line:
+                    print(
+                        f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
+                        f"Dernière progression connue : {last_progress_line}",
+                        flush=True,
+                    )
+                    raise FFmpegTimeoutError(
+                        f"{label}: timeout après {timeout}s (encodage en cours mais trop lent — "
+                        f"dernière progression : {last_progress_line})"
+                    )
+                print(
+                    f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué. "
+                    f"AUCUNE progression détectée (vrai blocage, pas juste de la lenteur).",
+                    flush=True,
+                )
+                raise FFmpegTimeoutError(
+                    f"{label}: timeout après {timeout}s (0 frame produite — hang probable, "
+                    f"pas un simple problème de vitesse)"
+                )
+
+            try:
+                line = line_queue.get(timeout=0.5)
+            except queue.Empty:
+                # Rien de nouveau côté ffmpeg dans les 0.5 dernières
+                # secondes : on reboucle simplement pour re-vérifier le
+                # timeout, sans jamais rester bloqué en attente de sortie.
+                if reader_done and proc.poll() is not None:
+                    break
+                continue
+
+            if line is None:
+                reader_done = True
+                if proc.poll() is not None:
+                    break
+                continue
+
+            stderr_lines.append(line)
+            if len(stderr_lines) > 40:
+                stderr_lines.pop(0)
+            if "frame=" in line:
+                last_progress_line = line.strip()
+                print(f"         … [{label}] {time.time() - t0:.0f}s écoulées | {last_progress_line}", flush=True)
+
+        reader_thread.join(timeout=5)
 
         elapsed = time.time() - t0
         returncode = proc.returncode
