@@ -1,15 +1,33 @@
 import os
 import random
 import shutil
+import subprocess
+import time
 import ffmpeg
+
+
+class FFmpegTimeoutError(Exception):
+    """Levée quand un appel ffmpeg dépasse le timeout dur configuré."""
+    pass
 
 
 class Composer:
     """
     Compositeur video verticale 1080x1920 oriente documentaire / mystere.
-    OPTIMISATION PERFORMANCE (fix timeout CI) : fusion globale xfade en
-    un seul appel ffmpeg (O(n)) au lieu de N-1 appels sequentiels
-    (O(n^2)), + preset veryfast pour les encodages intermediaires.
+
+    OPTIMISATION PERFORMANCE (fix timeout CI) :
+    - fusion globale xfade en un seul appel ffmpeg (O(n)) au lieu de N-1
+      appels sequentiels (O(n^2)), + preset veryfast pour les encodages
+      intermediaires ;
+    - logs de progression avec timestamp + flush=True à CHAQUE étape
+      ffmpeg (le code d'origine ne loguait qu'en cas d'erreur, ce qui
+      rendait impossible de savoir où un run se bloquait) ;
+    - timeout dur par appel ffmpeg via subprocess.run(timeout=...) : un
+      appel qui dépasse son budget est tué et lève FFmpegTimeoutError au
+      lieu de bloquer le pipeline jusqu'à la limite globale de 85 min ;
+    - zoompan : prescale ramené de 2200px à 1400px de large avant le
+      zoom, ce qui réduit fortement le coût par frame (zoompan est
+      notoirement lent, sans accélération matérielle).
     """
 
     def __init__(self):
@@ -42,6 +60,25 @@ class Composer:
         self.fast_preset = "veryfast"
         self.final_preset = "medium"
 
+        # Largeur de prescale avant zoompan. 2200px était excessif pour
+        # une sortie 1080 de large et faisait exploser le temps de calcul
+        # par frame (zoompan traite chaque frame individuellement, sans
+        # accélération). 1400px reste net en sortie 1080 tout en étant
+        # nettement moins coûteux.
+        self.zoompan_prescale_width = 1400
+
+        # --- Timeouts durs par étape (en secondes) ---
+        # Ajuste ces valeurs selon la puissance du runner CI. L'objectif
+        # est qu'un appel individuel échoue proprement bien avant la
+        # limite globale du job (ici 85 min), pour laisser le temps aux
+        # fallbacks de s'exécuter et/ou d'avoir un message d'erreur clair.
+        self.timeout_scene_render = 240        # rendu d'une scène individuelle
+        self.timeout_merge_pair = 150           # fusion séquentielle de 2 clips
+        self.timeout_concat_global = 300        # fusion xfade globale (tous les clips)
+        self.timeout_music_mix = 150            # mixage musique de fond
+        self.timeout_normalize = 90             # normalisation audio (sans musique)
+        self.timeout_watermark = 150            # ajout du filigrane final
+
         self.subtitle_style = (
             "FontName=DejaVu Sans,FontSize=24,Bold=1,"
             "PrimaryColour=&H00FFFFFF,SecondaryColour=&H00FFFFFF,"
@@ -65,6 +102,44 @@ class Composer:
             "videvo": "Illustration : Pexels / Pixabay",
             "ai": "Illustration generee par IA",
         }
+
+    # ------------------------------------------------------------------
+    # Coeur du fix : exécution d'un graphe ffmpeg-python avec timeout dur
+    # et logs de progression systématiques.
+    # ------------------------------------------------------------------
+    def _run(self, runner, timeout, label):
+        """
+        Exécute un graphe ffmpeg-python (via subprocess.run + timeout dur)
+        en loguant début / fin / durée, au lieu du .run(quiet=True)
+        d'origine qui ne renvoyait rien tant que ça n'avait pas planté.
+
+        Lève FFmpegTimeoutError si le process dépasse `timeout` secondes
+        (le process est alors tué proprement par subprocess).
+        Lève ffmpeg.Error si ffmpeg retourne un code non nul.
+        """
+        args = runner.compile(overwrite_output=True)
+        t0 = time.time()
+        print(f"      ⏳ [{label}] ffmpeg démarré (timeout={timeout}s)...", flush=True)
+        try:
+            result = subprocess.run(
+                args,
+                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - t0
+            print(f"      ⏱️ [{label}] TIMEOUT après {elapsed:.1f}s — process tué.", flush=True)
+            raise FFmpegTimeoutError(f"{label}: timeout après {timeout}s")
+
+        elapsed = time.time() - t0
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf8", errors="ignore") if result.stderr else ""
+            print(f"      ❌ [{label}] échec ffmpeg (code {result.returncode}) en {elapsed:.1f}s", flush=True)
+            raise ffmpeg.Error("ffmpeg", result.stdout, result.stderr)
+
+        print(f"      ✅ [{label}] terminé en {elapsed:.1f}s", flush=True)
+        return result
 
     def set_background_music(self, mood="intriguing"):
         if not os.path.exists(self.music_dir):
@@ -140,12 +215,15 @@ class Composer:
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", r=self.fps, crf=18, preset=self.final_preset, movflags="faststart", shortest=None
             )
-            runner.run(overwrite_output=True, quiet=True)
+            self._run(runner, timeout=self.timeout_watermark, label="watermark")
             return True
-        except ffmpeg.Error as e:
-            print(f"⚠️ Watermark failed: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+        except (ffmpeg.Error, FFmpegTimeoutError) as e:
+            stderr = getattr(e, "stderr", None)
+            msg = stderr.decode("utf8", errors="ignore") if stderr else str(e)
+            print(f"⚠️ Watermark failed: {msg}")
             return False
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Watermark failed (exception inattendue) : {e}")
             return False
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
@@ -157,6 +235,9 @@ class Composer:
         if not audio_path or not os.path.exists(audio_path):
             print(f"      ⚠️ Scene {scene_id} ignoree : aucun fichier audio valide (TTS probablement en echec).")
             return None
+
+        t0 = time.time()
+        print(f"      ▶️ Scene {scene_id} : début du rendu (durée cible {total_duration:.1f}s)...", flush=True)
 
         try:
             input_audio = ffmpeg.input(audio_path)
@@ -200,7 +281,10 @@ class Composer:
                         zoom_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
                         stream = (
                             ffmpeg.input(path, format="image2", loop=1, framerate=self.fps, t=chunk_duration)
-                            .filter("scale", 2200, -1)
+                            # Prescale réduit (2200 -> zoompan_prescale_width) : zoompan
+                            # recalcule chaque frame individuellement, donc partir d'une
+                            # image moins large réduit fortement le coût CPU par frame.
+                            .filter("scale", self.zoompan_prescale_width, -1)
                             .filter("zoompan", z=zoom_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
                             .setpts("PTS-STARTPTS")
                         )
@@ -232,24 +316,37 @@ class Composer:
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", r=self.fps, crf=20, preset=self.fast_preset, movflags="faststart", shortest=None
             )
-            runner.run(overwrite_output=True, quiet=True)
+            self._run(runner, timeout=self.timeout_scene_render, label=f"scène {scene_id}")
+            print(f"      ✅ Scene {scene_id} rendue en {time.time() - t0:.1f}s au total.", flush=True)
             return output_path
+        except FFmpegTimeoutError as e:
+            print(f"❌ Render Fail Scene {scene_id} (TIMEOUT) : {e}", flush=True)
+            return None
         except ffmpeg.Error as e:
-            print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+            print(f"❌ Render Fail Scene {scene_id}: {e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}", flush=True)
             return None
         except Exception as e:
-            print(f"❌ Render Fail Scene {scene_id}: {e}")
+            print(f"❌ Render Fail Scene {scene_id}: {e}", flush=True)
             return None
 
     def render_all_scenes(self, script_data, video_asset_lists, bg_video_path=None):
         rendered_paths = []
         bg_cursor = 0.0
+        total = len(script_data)
+        t_start = time.time()
+        print(f"🎞️ Rendu de {total} scènes démarré...", flush=True)
         for i, scene in enumerate(script_data):
+            print(f"   —— Scène {i + 1}/{total} (id={scene.get('id')}) ——", flush=True)
             current_assets = video_asset_lists[i] if i < len(video_asset_lists) else None
             output_path = self.process_scene(scene, current_assets, bg_video_path=bg_video_path, bg_offset=bg_cursor)
             bg_cursor += float(scene["duration"])
             if output_path:
                 rendered_paths.append(output_path)
+        print(
+            f"🎞️ Rendu des scènes terminé : {len(rendered_paths)}/{total} réussies "
+            f"en {time.time() - t_start:.1f}s.",
+            flush=True,
+        )
         return rendered_paths
 
     def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=None, use_transition=True):
@@ -264,7 +361,7 @@ class Composer:
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
             )
-            runner.run(overwrite_output=True, quiet=True)
+            self._run(runner, timeout=self.timeout_merge_pair, label="merge cut (2 clips)")
             return "cut", 0
         trans_dur = trans_dur if trans_dur is not None else self.transition_duration
         offset = max(dur_a - trans_dur, 0)
@@ -275,7 +372,7 @@ class Composer:
             vcodec="libx264", acodec="aac", audio_bitrate="192k",
             pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
         )
-        runner.run(overwrite_output=True, quiet=True)
+        self._run(runner, timeout=self.timeout_merge_pair, label="merge fade (2 clips)")
         return "fade", offset
 
     def _concat_all_with_xfade(self, video_paths, output_path):
@@ -302,11 +399,14 @@ class Composer:
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
             )
-            runner.run(overwrite_output=True, quiet=True)
+            self._run(runner, timeout=self.timeout_concat_global, label=f"xfade global ({len(video_paths)} clips)")
             return True
+        except FFmpegTimeoutError as e:
+            print(f"⚠️ Fusion globale xfade en timeout, fallback sequentiel : {e}", flush=True)
+            return False
         except ffmpeg.Error as e:
             print(f"⚠️ Fusion globale xfade echouee, fallback sequentiel : "
-                  f"{e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}")
+                  f"{e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)}", flush=True)
             return False
 
     def _mix_background_music(self, stitched_path, output_path):
@@ -348,8 +448,11 @@ class Composer:
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", movflags="faststart", preset=self.fast_preset
             )
-            final_runner.run(overwrite_output=True, quiet=True)
+            self._run(final_runner, timeout=self.timeout_music_mix, label="mixage musique")
             return True
+        except FFmpegTimeoutError as e:
+            print(f"⚠️ Mixage musique en timeout : {e}", flush=True)
+            return False
         except ffmpeg.Error:
             return False
         except Exception:
@@ -364,24 +467,29 @@ class Composer:
                 vcodec="copy", acodec="aac", audio_bitrate="192k",
                 movflags="faststart"
             )
-            runner.run(overwrite_output=True, quiet=True)
+            self._run(runner, timeout=self.timeout_normalize, label="normalisation audio")
             return True
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Normalisation audio échouée : {e}", flush=True)
             return False
 
     def concatenate_with_transitions(self, video_paths, output_filename="final_short.mp4"):
+        t_start = time.time()
         raw_final_output_path = os.path.join(self.temp_dir, "raw_final_stitched.mp4")
         output_path = os.path.join(self.final_dir, output_filename)
         if os.path.exists(output_path):
             try: os.remove(output_path)
             except Exception: pass
         if not video_paths:
+            print("❌ Aucun clip à fusionner, abandon.", flush=True)
             return None
+
+        print(f"🔗 Fusion de {len(video_paths)} clips...", flush=True)
         merge_step_files = []
         stitched_path = os.path.join(self.temp_dir, "stitched_all.mp4")
         success = self._concat_all_with_xfade(video_paths, stitched_path)
         if not success:
-            print("↩️ Fallback : fusion sequentielle clip par clip.")
+            print("↩️ Fallback : fusion sequentielle clip par clip.", flush=True)
             if len(video_paths) == 1:
                 stitched_path = video_paths[0]
             else:
@@ -389,30 +497,42 @@ class Composer:
                 for i in range(1, len(video_paths)):
                     suivant = video_paths[i]
                     merge_output = os.path.join(self.temp_dir, f"merge_step_{i}.mp4")
+                    print(f"   🔗 Fusion séquentielle {i}/{len(video_paths) - 1}...", flush=True)
                     try:
                         effect, offset = self._merge_two_clips(courant, suivant, merge_output)
-                    except ffmpeg.Error:
+                    except (ffmpeg.Error, FFmpegTimeoutError) as e:
+                        print(f"❌ Fusion séquentielle échouée à l'étape {i} : {e}", flush=True)
                         self._cleanup_temp_files(merge_step_files)
                         return None
                     if courant.startswith(os.path.join(self.temp_dir, "merge_step_")):
                         merge_step_files.append(courant)
                     courant = merge_output
                 stitched_path = courant
+
+        print("🎵 Mixage de la musique de fond...", flush=True)
         if self.current_bg_music_path and os.path.exists(self.current_bg_music_path):
             music_success = self._mix_background_music(stitched_path, raw_final_output_path)
             if not music_success:
+                print("   ↩️ Musique indisponible/échouée, fallback sans musique (normalisation seule).", flush=True)
                 self._fallback_no_music(stitched_path, raw_final_output_path)
         else:
             self._fallback_no_music(stitched_path, raw_final_output_path)
+
+        print("🖼️ Ajout du filigrane...", flush=True)
         watermark_success = self.add_watermark(raw_final_output_path, output_path)
         if not watermark_success:
+            print("   ↩️ Filigrane échoué, copie du fichier sans filigrane.", flush=True)
             shutil.copy2(raw_final_output_path, output_path)
+
         if os.path.exists(raw_final_output_path):
             try: os.remove(raw_final_output_path)
             except Exception: pass
+
         self._cleanup_temp_files(video_paths + merge_step_files, keep=output_path)
         if stitched_path not in video_paths and stitched_path != output_path:
             self._cleanup_temp_files([stitched_path], keep=output_path)
+
+        print(f"✅ Vidéo finale prête en {time.time() - t_start:.1f}s : {output_path}", flush=True)
         return output_path
 
     def _fallback_no_music(self, stitched_path, raw_final_output_path):
