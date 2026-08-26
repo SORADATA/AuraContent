@@ -143,22 +143,37 @@ jobs:
       # ------------------------------------------------------------
       # GENERATION FINANCE
       # ------------------------------------------------------------
+      # FIX : chaque tentative est désormais bornée par `timeout` (coreutils),
+      # avec envoi de SIGKILL après un délai de grâce si le process ignore le
+      # SIGTERM initial (cas classique d'un sous-processus ffmpeg bloqué).
+      # Avant ce fix, le "timeout-minutes: 85" du step s'appliquait à la
+      # BOUCLE ENTIÈRE : si la tentative 1 se bloquait indéfiniment, elle
+      # consommait à elle seule tout le budget et les tentatives 2 et 3
+      # n'avaient jamais lieu (c'est exactement ce qu'on observait dans les
+      # logs : "Tentative 1 / 3" puis plus rien jusqu'au timeout global).
       - name: 🎬 Générer la vidéo (Finance)
         timeout-minutes: 85
         run: |
           set -o pipefail
 
+          # Budget par tentative en secondes. 3 tentatives x 1500s = 4500s
+          # (75 min) + marge pour les pauses, sous le plafond de 85 min du
+          # step. Ajuste ATTEMPT_TIMEOUT_S si tes rendus légitimes durent
+          # normalement plus longtemps.
+          ATTEMPT_TIMEOUT_S=1500
+
           for i in 1 2 3; do
 
             echo ""
             echo "============================================================"
-            echo "🎬 Tentative $i / 3"
+            echo "🎬 Tentative $i / 3 (timeout par tentative : ${ATTEMPT_TIMEOUT_S}s)"
             echo "============================================================"
             echo ""
 
             START_TIME=$(date +%s)
 
-            python -u main_finance.py 2>&1 | tee "generation_finance_attempt_${i}.log"
+            timeout --signal=TERM --kill-after=30 "${ATTEMPT_TIMEOUT_S}" \
+              python -u main_finance.py 2>&1 | tee "generation_finance_attempt_${i}.log"
             EXIT_CODE=${PIPESTATUS[0]}
 
             END_TIME=$(date +%s)
@@ -167,6 +182,10 @@ jobs:
             echo ""
             echo "⏱️ Durée tentative $i : ${DURATION}s"
             echo "📌 Code retour : ${EXIT_CODE}"
+
+            if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 137 ]; then
+              echo "⏱️ Tentative $i tuée pour dépassement du timeout par tentative."
+            fi
             echo ""
 
             if [ "$EXIT_CODE" -eq 0 ]; then
@@ -366,22 +385,33 @@ jobs:
       # ------------------------------------------------------------
       # GENERATION MINUTE MYSTERE
       # ------------------------------------------------------------
+      # FIX : timeout dur par tentative (voir commentaire équivalent dans le
+      # job Finance ci-dessus). C'est ce fix qui aurait dû limiter les dégâts
+      # même avant la correction de composer.py : ta dernière exécution n'a
+      # montré que "Tentative 1 / 3" dans les logs, preuve que la tentative
+      # 1 a mangé tout le budget de 85 min sans jamais rendre la main à la
+      # boucle bash.
       - name: 🎬 Générer la vidéo (Minute Mystere)
         timeout-minutes: 85
         run: |
           set -o pipefail
 
+          # Budget par tentative en secondes. Ajuste si tes rendus légitimes
+          # dépassent normalement 25 min (par ex. beaucoup de scènes/variants).
+          ATTEMPT_TIMEOUT_S=1500
+
           for i in 1 2 3; do
 
             echo ""
             echo "============================================================"
-            echo "🎬 Tentative $i / 3"
+            echo "🎬 Tentative $i / 3 (timeout par tentative : ${ATTEMPT_TIMEOUT_S}s)"
             echo "============================================================"
             echo ""
 
             START_TIME=$(date +%s)
 
-            python -u main.py 2>&1 | tee "generation_mystere_attempt_${i}.log"
+            timeout --signal=TERM --kill-after=30 "${ATTEMPT_TIMEOUT_S}" \
+              python -u main.py 2>&1 | tee "generation_mystere_attempt_${i}.log"
             EXIT_CODE=${PIPESTATUS[0]}
 
             END_TIME=$(date +%s)
@@ -390,6 +420,10 @@ jobs:
             echo ""
             echo "⏱️ Durée tentative $i : ${DURATION}s"
             echo "📌 Code retour : ${EXIT_CODE}"
+
+            if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 137 ]; then
+              echo "⏱️ Tentative $i tuée pour dépassement du timeout par tentative."
+            fi
             echo ""
 
             if [ "$EXIT_CODE" -eq 0 ]; then
