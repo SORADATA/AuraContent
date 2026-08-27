@@ -19,13 +19,9 @@ class Composer:
     """
     Compositeur vidéo verticale 1080x1920 orientée documentaire / mystère.
 
-    Version diagnostic :
-    - timeout dur par appel ffmpeg ;
-    - lecture stderr dans un thread pour éviter tout blocage ;
-    - affichage de la commande FFmpeg exacte ;
-    - logs de progression ;
-    - zoompan temporairement désactivé sur les images afin d'isoler
-      un éventuel problème de génération des frames.
+    Version corrigée :
+    - Format 'image2' explicite pour la lecture des images fixes avec framerate.
+    - Utilisation de `.split()` native pour éviter l'erreur de dépaquetage sur l'audio.
     """
 
     def __init__(self):
@@ -86,7 +82,6 @@ class Composer:
         self.fast_preset = "veryfast"
         self.final_preset = "medium"
 
-        # Conservé pour pouvoir réactiver zoompan plus tard.
         self.zoompan_prescale_width = 1400
 
         # Timeouts durs.
@@ -129,13 +124,6 @@ class Composer:
     # ------------------------------------------------------------------
 
     def _get_ffmpeg_error_text(self, error):
-        """
-        Retourne proprement stderr depuis une exception ffmpeg.Error.
-
-        Évite les f-strings conditionnelles complexes qui provoquaient
-        les erreurs de syntaxe dans les anciens blocs.
-        """
-
         stderr = getattr(error, "stderr", None)
 
         if stderr:
@@ -157,16 +145,8 @@ class Composer:
     # ------------------------------------------------------------------
 
     def _run(self, runner, timeout, label):
-        """
-        Exécute un graphe ffmpeg-python avec timeout dur.
-
-        La lecture de stderr est effectuée dans un thread séparé afin que
-        readline() ne puisse jamais bloquer la boucle de timeout principale.
-        """
-
         args = runner.compile(overwrite_output=True)
 
-        # Affichage de la commande exacte utilisée pour le diagnostic.
         print(
             f"      🔧 CMD [{label}] : {' '.join(args)}",
             flush=True,
@@ -226,8 +206,6 @@ class Composer:
         reader_thread.start()
 
         def _kill_process():
-            """Tue ffmpeg et son groupe de processus."""
-
             try:
                 if os.name == "posix":
                     os.killpg(
@@ -255,7 +233,6 @@ class Composer:
         while True:
             elapsed = time.time() - t0
 
-            # Timeout vérifié indépendamment de stderr.
             if elapsed > timeout:
                 _kill_process()
 
@@ -308,7 +285,6 @@ class Composer:
 
             stderr_lines.append(line)
 
-            # On garde seulement les dernières lignes utiles.
             if len(stderr_lines) > 40:
                 stderr_lines.pop(0)
 
@@ -367,8 +343,7 @@ class Composer:
 
         if not available_tracks:
             print(
-                "      ⚠️ Aucune musique trouvée "
-                "dans assets/music/ !",
+                "      ⚠️ Aucune musique trouvée dans assets/music/ !",
                 flush=True,
             )
 
@@ -393,8 +368,7 @@ class Composer:
         )
 
         print(
-            f"      🎵 Musique sélectionnée : "
-            f"{chosen_track}",
+            f"      🎵 Musique sélectionnée : {chosen_track}",
             flush=True,
         )
 
@@ -461,9 +435,7 @@ class Composer:
         for token, label in self.source_credit_labels.items():
             if (
                 f"_{token}_" in file_name
-                or file_name.startswith(
-                    f"{token}_"
-                )
+                or file_name.startswith(f"{token}_")
             ):
                 return label
 
@@ -510,20 +482,15 @@ class Composer:
         input_video_path,
         output_video_path,
     ):
-        if not os.path.exists(
-            self.watermark_path
-        ):
+        if not os.path.exists(self.watermark_path):
             print(
-                f"⚠️ Filigrane introuvable : "
-                f"{self.watermark_path}",
+                f"⚠️ Filigrane introuvable : {self.watermark_path}",
                 flush=True,
             )
             return False
 
         try:
-            video = ffmpeg.input(
-                input_video_path
-            )
+            video = ffmpeg.input(input_video_path)
 
             logo = ffmpeg.input(
                 self.watermark_path,
@@ -586,23 +553,18 @@ class Composer:
             ffmpeg.Error,
             FFmpegTimeoutError,
         ) as e:
-
             msg = self._get_ffmpeg_error_text(e)
-
             print(
                 f"⚠️ Watermark failed: {msg}",
                 flush=True,
             )
-
             return False
 
         except Exception as e:
             print(
-                f"⚠️ Watermark failed "
-                f"(exception inattendue) : {e}",
+                f"⚠️ Watermark failed (exception inattendue) : {e}",
                 flush=True,
             )
-
             return False
 
     # ------------------------------------------------------------------
@@ -618,13 +580,8 @@ class Composer:
     ):
         scene_id = scene["id"]
 
-        audio_path = scene.get(
-            "audio_path"
-        )
-
-        total_duration = float(
-            scene["duration"]
-        )
+        audio_path = scene.get("audio_path")
+        total_duration = float(scene["duration"])
 
         output_path = os.path.join(
             self.temp_dir,
@@ -636,8 +593,7 @@ class Composer:
             or not os.path.exists(audio_path)
         ):
             print(
-                f"      ⚠️ Scène {scene_id} ignorée : "
-                f"aucun fichier audio valide.",
+                f"      ⚠️ Scène {scene_id} ignorée : aucun fichier audio valide.",
                 flush=True,
             )
             return None
@@ -645,16 +601,13 @@ class Composer:
         t0 = time.time()
 
         print(
-            f"      ▶️ Scène {scene_id} : "
-            f"début du rendu "
+            f"      ▶️ Scène {scene_id} : début du rendu "
             f"(durée cible {total_duration:.1f}s)...",
             flush=True,
         )
 
         try:
-            input_audio = ffmpeg.input(
-                audio_path
-            )
+            input_audio = ffmpeg.input(audio_path)
 
             # ==========================================================
             # CAS 1 : BACKGROUND VIDEO
@@ -664,9 +617,7 @@ class Composer:
                 bg_video_path
                 and os.path.exists(bg_video_path)
             ):
-                source_duration = self.get_duration(
-                    bg_video_path
-                )
+                source_duration = self.get_duration(bg_video_path)
 
                 start_offset = (
                     bg_offset % source_duration
@@ -695,9 +646,7 @@ class Composer:
                         self.video_width,
                         self.video_height,
                     )
-                    .setpts(
-                        "PTS-STARTPTS"
-                    )
+                    .setpts("PTS-STARTPTS")
                 )
 
                 source_for_credit = None
@@ -709,55 +658,34 @@ class Composer:
             else:
                 if not assets:
                     raise ValueError(
-                        f"Scene {scene_id}: "
-                        f"aucun asset fourni."
+                        f"Scene {scene_id}: aucun asset fourni."
                     )
 
-                if not isinstance(
-                    assets,
-                    list,
-                ):
-                    if isinstance(
-                        assets,
-                        dict,
-                    ):
-                        assets = list(
-                            assets.values()
-                        )
+                if not isinstance(assets, list):
+                    if isinstance(assets, dict):
+                        assets = list(assets.values())
                     else:
                         assets = [assets]
 
                 valid_assets = [
                     p
                     for p in assets
-                    if p
-                    and os.path.exists(p)
+                    if p and os.path.exists(p)
                 ]
 
                 if not valid_assets:
                     raise ValueError(
-                        f"Scene {scene_id}: "
-                        f"les assets fournis sont introuvables."
+                        f"Scene {scene_id}: les assets fournis sont introuvables."
                     )
 
-                num_assets = len(
-                    valid_assets
-                )
-
-                chunk_duration = (
-                    total_duration
-                    / num_assets
-                )
+                num_assets = len(valid_assets)
+                chunk_duration = total_duration / num_assets
 
                 streams = []
 
-                for idx, path in enumerate(
-                    valid_assets
-                ):
+                for idx, path in enumerate(valid_assets):
                     print(
-                        f"         📷 Asset "
-                        f"{idx + 1}/{num_assets} : "
-                        f"{os.path.basename(path)}",
+                        f"          📷 Asset {idx + 1}/{num_assets} : {os.path.basename(path)}",
                         flush=True,
                     )
 
@@ -765,9 +693,7 @@ class Composer:
                     # VIDEO ASSET
                     # --------------------------------------------------
 
-                    if self._is_video_file(
-                        path
-                    ):
+                    if self._is_video_file(path):
                         stream = (
                             ffmpeg.input(
                                 path,
@@ -788,16 +714,11 @@ class Composer:
                                 self.video_width,
                                 self.video_height,
                             )
-                            .setpts(
-                                "PTS-STARTPTS"
-                            )
+                            .setpts("PTS-STARTPTS")
                         )
 
                     # --------------------------------------------------
-                    # IMAGE ASSET
-                    #
-                    # IMPORTANT :
-                    # zoompan volontairement désactivé.
+                    # IMAGE ASSET (CORRIGÉ AVEC format="image2")
                     # --------------------------------------------------
 
                     else:
@@ -805,6 +726,7 @@ class Composer:
                             ffmpeg
                             .input(
                                 path,
+                                format="image2",  # <-- CORRECTION 1
                                 loop=1,
                                 framerate=self.fps,
                             )
@@ -823,9 +745,7 @@ class Composer:
                                 "trim",
                                 duration=chunk_duration,
                             )
-                            .setpts(
-                                "PTS-STARTPTS"
-                            )
+                            .setpts("PTS-STARTPTS")
                         )
 
                     streams.append(stream)
@@ -839,38 +759,23 @@ class Composer:
                 else:
                     video_stream = streams[0]
 
-                source_for_credit = (
-                    valid_assets[0]
-                )
+                source_for_credit = valid_assets[0]
 
             # ==========================================================
             # SOURCE CREDIT
             # ==========================================================
 
             if source_for_credit:
-                source_text = (
-                    self._resolve_source_credit(
-                        source_for_credit
-                    )
-                )
+                source_text = self._resolve_source_credit(source_for_credit)
 
                 if source_text:
                     video_stream = (
                         video_stream.filter(
                             "drawtext",
-                            text=self._escape_drawtext(
-                                source_text
-                            ),
-                            fontfile=(
-                                self.watermark_font_path
-                            ),
-                            fontcolor=(
-                                f"white@"
-                                f"{self.source_credit_alpha}"
-                            ),
-                            fontsize=(
-                                self.source_credit_size
-                            ),
+                            text=self._escape_drawtext(source_text),
+                            fontfile=self.watermark_font_path,
+                            fontcolor=f"white@{self.source_credit_alpha}",
+                            fontsize=self.source_credit_size,
                             box=0,
                             shadowcolor="black@0.75",
                             shadowx=1,
@@ -884,9 +789,7 @@ class Composer:
             # SOUS-TITRES
             # ==========================================================
 
-            srt_path = scene.get(
-                "srt_path"
-            )
+            srt_path = scene.get("srt_path")
 
             if (
                 srt_path
@@ -895,14 +798,8 @@ class Composer:
                 video_stream = (
                     video_stream.filter(
                         "subtitles",
-                        filename=(
-                            self._escape_path_for_filter(
-                                srt_path
-                            )
-                        ),
-                        force_style=(
-                            self.subtitle_style
-                        ),
+                        filename=self._escape_path_for_filter(srt_path),
+                        force_style=self.subtitle_style,
                     )
                 )
 
@@ -941,24 +838,17 @@ class Composer:
 
         except FFmpegTimeoutError as e:
             print(
-                f"❌ Render Fail Scene {scene_id} "
-                f"(TIMEOUT) : {e}",
+                f"❌ Render Fail Scene {scene_id} (TIMEOUT) : {e}",
                 flush=True,
             )
-
             return None
 
         except ffmpeg.Error as e:
-            stderr = self._get_ffmpeg_error_text(
-                e
-            )
-
+            stderr = self._get_ffmpeg_error_text(e)
             print(
-                f"⚠️ Rendu scène {scene_id} "
-                f"échoué dans FFmpeg : {stderr}",
+                f"⚠️ Rendu scène {scene_id} échoué dans FFmpeg : {stderr}",
                 flush=True,
             )
-
             return None
 
         except Exception as e:
@@ -966,7 +856,6 @@ class Composer:
                 f"❌ Render Fail Scene {scene_id}: {e}",
                 flush=True,
             )
-
             return None
 
     # ------------------------------------------------------------------
@@ -990,12 +879,9 @@ class Composer:
             flush=True,
         )
 
-        for i, scene in enumerate(
-            script_data
-        ):
+        for i, scene in enumerate(script_data):
             print(
-                f"   —— Scène {i + 1}/{total} "
-                f"(id={scene.get('id')}) ——",
+                f"   —— Scène {i + 1}/{total} (id={scene.get('id')}) ——",
                 flush=True,
             )
 
@@ -1012,14 +898,10 @@ class Composer:
                 bg_offset=bg_cursor,
             )
 
-            bg_cursor += float(
-                scene["duration"]
-            )
+            bg_cursor += float(scene["duration"])
 
             if output_path:
-                rendered_paths.append(
-                    output_path
-                )
+                rendered_paths.append(output_path)
 
         print(
             f"🎞️ Rendu des scènes terminé : "
@@ -1042,17 +924,10 @@ class Composer:
         trans_dur=None,
         use_transition=True,
     ):
-        dur_a = self.get_duration(
-            clip_a
-        )
+        dur_a = self.get_duration(clip_a)
 
-        input_a = ffmpeg.input(
-            clip_a
-        )
-
-        input_b = ffmpeg.input(
-            clip_b
-        )
+        input_a = ffmpeg.input(clip_a)
+        input_b = ffmpeg.input(clip_b)
 
         if not use_transition:
             joined_video = ffmpeg.concat(
@@ -1163,16 +1038,11 @@ class Composer:
             for p in video_paths
         ]
 
-        if any(
-            d <= 0
-            for d in durations
-        ):
+        if any(d <= 0 for d in durations):
             print(
-                "⚠️ Durée invalide détectée, "
-                "fallback vers fusion séquentielle.",
+                "⚠️ Durée invalide détectée, fallback vers fusion séquentielle.",
                 flush=True,
             )
-
             return False
 
         inputs = [
@@ -1180,22 +1050,16 @@ class Composer:
             for p in video_paths
         ]
 
-        trans_dur = (
-            self.transition_duration
-        )
+        trans_dur = self.transition_duration
 
         video_stream = inputs[0].video
         audio_stream = inputs[0].audio
 
         cumulative_duration = durations[0]
 
-        for i in range(
-            1,
-            len(inputs),
-        ):
+        for i in range(1, len(inputs)):
             offset = max(
-                cumulative_duration
-                - trans_dur,
+                cumulative_duration - trans_dur,
                 0,
             )
 
@@ -1242,39 +1106,28 @@ class Composer:
             self._run(
                 runner,
                 timeout=self.timeout_concat_global,
-                label=(
-                    f"xfade global "
-                    f"({len(video_paths)} clips)"
-                ),
+                label=f"xfade global ({len(video_paths)} clips)",
             )
 
             return True
 
         except FFmpegTimeoutError as e:
             print(
-                f"⚠️ Fusion globale xfade en timeout, "
-                f"fallback séquentiel : {e}",
+                f"⚠️ Fusion globale xfade en timeout, fallback séquentiel : {e}",
                 flush=True,
             )
-
             return False
 
         except ffmpeg.Error as e:
-            stderr = self._get_ffmpeg_error_text(
-                e
-            )
-
+            stderr = self._get_ffmpeg_error_text(e)
             print(
-                "⚠️ Fusion globale xfade échouée, "
-                "fallback séquentiel : "
-                f"{stderr}",
+                f"⚠️ Fusion globale xfade échouée, fallback séquentiel : {stderr}",
                 flush=True,
             )
-
             return False
 
     # ------------------------------------------------------------------
-    # MIXAGE MUSIQUE
+    # MIXAGE MUSIQUE (CORRIGÉ AVEC .split())
     # ------------------------------------------------------------------
 
     def _mix_background_music(
@@ -1284,32 +1137,22 @@ class Composer:
     ):
         if (
             not self.current_bg_music_path
-            or not os.path.exists(
-                self.current_bg_music_path
-            )
+            or not os.path.exists(self.current_bg_music_path)
         ):
             return False
 
         try:
-            video_duration = self.get_duration(
-                stitched_path
-            )
+            video_duration = self.get_duration(stitched_path)
 
             if video_duration <= 0:
-                raise ValueError(
-                    "Durée vidéo invalide."
-                )
+                raise ValueError("Durée vidéo invalide.")
 
             fade_start = max(
-                video_duration
-                - self.music_fade_duration,
+                video_duration - self.music_fade_duration,
                 0,
             )
 
-            voice = ffmpeg.input(
-                stitched_path
-            )
-
+            voice = ffmpeg.input(stitched_path)
             music = ffmpeg.input(
                 self.current_bg_music_path,
                 stream_loop=-1,
@@ -1361,10 +1204,7 @@ class Composer:
                     "afade",
                     type="in",
                     start_time=0,
-                    duration=min(
-                        1.2,
-                        video_duration,
-                    ),
+                    duration=min(1.2, video_duration),
                 )
                 .filter(
                     "afade",
@@ -1374,21 +1214,14 @@ class Composer:
                 )
             )
 
-            (
-                voice_for_duck,
-                voice_for_mix,
-            ) = voice_audio.filter_multi_output(
-                "asplit",
-                2,
-            )
+            # CORRECTION 2 : Découpage propre des flux avec .split()
+            voice_splits = voice_audio.split()
+            voice_for_duck = voice_splits[0]
+            voice_for_mix = voice_splits[1]
 
-            (
-                music_for_duck,
-                music_for_mix,
-            ) = music_audio.filter_multi_output(
-                "asplit",
-                2,
-            )
+            music_splits = music_audio.split()
+            music_for_duck = music_splits[0]
+            music_for_mix = music_splits[1]
 
             ducked_music = ffmpeg.filter(
                 [
@@ -1448,29 +1281,21 @@ class Composer:
                 f"⚠️ Mixage musique en timeout : {e}",
                 flush=True,
             )
-
             return False
 
         except ffmpeg.Error as e:
-            stderr = self._get_ffmpeg_error_text(
-                e
-            )
-
+            stderr = self._get_ffmpeg_error_text(e)
             print(
-                f"⚠️ Mixage musique échoué : "
-                f"{stderr}",
+                f"⚠️ Mixage musique échoué : {stderr}",
                 flush=True,
             )
-
             return False
 
         except Exception as e:
             print(
-                f"⚠️ Mixage musique échoué "
-                f"(exception inattendue) : {e}",
+                f"⚠️ Mixage musique échoué (exception inattendue) : {e}",
                 flush=True,
             )
-
             return False
 
     # ------------------------------------------------------------------
@@ -1483,9 +1308,7 @@ class Composer:
         output_path,
     ):
         try:
-            video = ffmpeg.input(
-                input_path
-            )
+            video = ffmpeg.input(input_path)
 
             audio = video.audio.filter(
                 "loudnorm",
@@ -1514,33 +1337,24 @@ class Composer:
 
         except FFmpegTimeoutError as e:
             print(
-                f"⚠️ Normalisation audio en timeout : "
-                f"{e}",
+                f"⚠️ Normalisation audio en timeout : {e}",
                 flush=True,
             )
-
             return False
 
         except ffmpeg.Error as e:
-            stderr = self._get_ffmpeg_error_text(
-                e
-            )
-
+            stderr = self._get_ffmpeg_error_text(e)
             print(
-                f"⚠️ Normalisation audio échouée : "
-                f"{stderr}",
+                f"⚠️ Normalisation audio échouée : {stderr}",
                 flush=True,
             )
-
             return False
 
         except Exception as e:
             print(
-                f"⚠️ Normalisation audio échouée : "
-                f"{e}",
+                f"⚠️ Normalisation audio échouée : {e}",
                 flush=True,
             )
-
             return False
 
     # ------------------------------------------------------------------
@@ -1564,13 +1378,9 @@ class Composer:
             output_filename,
         )
 
-        if os.path.exists(
-            output_path
-        ):
+        if os.path.exists(output_path):
             try:
-                os.remove(
-                    output_path
-                )
+                os.remove(output_path)
             except Exception:
                 pass
 
@@ -1579,7 +1389,6 @@ class Composer:
                 "❌ Aucun clip à fusionner, abandon.",
                 flush=True,
             )
-
             return None
 
         print(
@@ -1601,23 +1410,17 @@ class Composer:
 
         if not success:
             print(
-                "↩️ Fallback : fusion séquentielle "
-                "clip par clip.",
+                "↩️ Fallback : fusion séquentielle clip par clip.",
                 flush=True,
             )
 
             if len(video_paths) == 1:
-                stitched_path = (
-                    video_paths[0]
-                )
+                stitched_path = video_paths[0]
 
             else:
                 courant = video_paths[0]
 
-                for i in range(
-                    1,
-                    len(video_paths),
-                ):
+                for i in range(1, len(video_paths)):
                     suivant = video_paths[i]
 
                     merge_output = os.path.join(
@@ -1626,18 +1429,15 @@ class Composer:
                     )
 
                     print(
-                        f"   🔗 Fusion séquentielle "
-                        f"{i}/{len(video_paths) - 1}...",
+                        f"   🔗 Fusion séquentielle {i}/{len(video_paths) - 1}...",
                         flush=True,
                     )
 
                     try:
-                        effect, offset = (
-                            self._merge_two_clips(
-                                courant,
-                                suivant,
-                                merge_output,
-                            )
+                        effect, offset = self._merge_two_clips(
+                            courant,
+                            suivant,
+                            merge_output,
                         )
 
                     except (
@@ -1645,16 +1445,11 @@ class Composer:
                         FFmpegTimeoutError,
                     ) as e:
                         print(
-                            f"❌ Fusion séquentielle "
-                            f"échouée à l'étape {i} : "
-                            f"{e}",
+                            f"❌ Fusion séquentielle échouée à l'étape {i} : {e}",
                             flush=True,
                         )
 
-                        self._cleanup_temp_files(
-                            merge_step_files
-                        )
-
+                        self._cleanup_temp_files(merge_step_files)
                         return None
 
                     if courant.startswith(
@@ -1663,9 +1458,7 @@ class Composer:
                             "merge_step_",
                         )
                     ):
-                        merge_step_files.append(
-                            courant
-                        )
+                        merge_step_files.append(courant)
 
                     courant = merge_output
 
@@ -1682,21 +1475,16 @@ class Composer:
 
         if (
             self.current_bg_music_path
-            and os.path.exists(
-                self.current_bg_music_path
-            )
+            and os.path.exists(self.current_bg_music_path)
         ):
-            music_success = (
-                self._mix_background_music(
-                    stitched_path,
-                    raw_final_output_path,
-                )
+            music_success = self._mix_background_music(
+                stitched_path,
+                raw_final_output_path,
             )
 
             if not music_success:
                 print(
-                    "   ↩️ Musique indisponible/échouée, "
-                    "fallback sans musique.",
+                    "   ↩️ Musique indisponible/échouée, fallback sans musique.",
                     flush=True,
                 )
 
@@ -1727,8 +1515,7 @@ class Composer:
 
         if not watermark_success:
             print(
-                "   ↩️ Filigrane échoué, "
-                "copie du fichier sans filigrane.",
+                "   ↩️ Filigrane échoué, copie du fichier sans filigrane.",
                 flush=True,
             )
 
@@ -1741,13 +1528,9 @@ class Composer:
         # CLEANUP
         # --------------------------------------------------------------
 
-        if os.path.exists(
-            raw_final_output_path
-        ):
+        if os.path.exists(raw_final_output_path):
             try:
-                os.remove(
-                    raw_final_output_path
-                )
+                os.remove(raw_final_output_path)
             except Exception:
                 pass
 
@@ -1795,9 +1578,7 @@ class Composer:
 
         if (
             ok
-            and os.path.exists(
-                normalized_fallback
-            )
+            and os.path.exists(normalized_fallback)
         ):
             os.replace(
                 normalized_fallback,
@@ -1826,12 +1607,8 @@ class Composer:
             ):
                 continue
 
-            if os.path.exists(
-                filepath
-            ):
+            if os.path.exists(filepath):
                 try:
-                    os.remove(
-                        filepath
-                    )
+                    os.remove(filepath)
                 except Exception:
                     pass
