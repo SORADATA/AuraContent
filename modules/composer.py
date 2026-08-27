@@ -19,12 +19,12 @@ class Composer:
     """
     Compositeur vidéo vertical 1080x1920 orienté documentaire / mystère.
 
-    Version complète & optimisée :
-    - Gestion dynamique des musiques de fond selon l'ambiance (set_background_music)
-    - Support multi-assets par scène (images avec zoompan ou vidéos stock)
-    - Transitions épurées (2 fades)
-    - Filigrane de marque Minute Mystère (205px, opacity 0.72)
-    - Architecture asynchrone sécurisée (timeouts + image2 + split audio)
+    Hybride Ultime (Prod + V3) :
+    - Gestion multi-assets (1 à N médias par scène)
+    - Réintégration des effets visuels Zoompan alternés
+    - Correction du freeze FFmpeg (Exit code 124) via restriction de l'input (-t)
+    - Gestion dynamique des musiques de fond
+    - Transitions épurées (2 fades seulement)
     """
 
     def __init__(self):
@@ -38,11 +38,11 @@ class Composer:
         os.makedirs(self.music_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
 
-        # Documentaire mystère : 2 fondus sobres
+        # Transitions sobres
         self.transitions = ["fade", "fade"]
         self.current_bg_music_path = None
 
-        # Branding Minute Mystère
+        # Branding
         self.watermark_path = os.path.join(
             self.images_dir,
             "minute_mystere_watermark.png"
@@ -56,13 +56,16 @@ class Composer:
         self.video_height = 1920
         self.fps = 30
 
-        # Réglages audio & transitions
+        # Mix documentaire
         self.voice_gain = 1.08
         self.music_gain = 0.085
         self.music_fade_duration = 2.5
         self.transition_duration = 0.38
+        
+        self.fast_preset = "veryfast"
+        self.final_preset = "medium"
 
-        # Timeouts de sécurité (anti-hang)
+        # Timeouts de sécurité
         self.timeout_scene_render = 240
         self.timeout_merge_pair = 150
         self.timeout_concat_global = 300
@@ -72,29 +75,18 @@ class Composer:
 
         # Style des sous-titres
         self.subtitle_style = (
-            "FontName=DejaVu Sans,"
-            "FontSize=24,"
-            "Bold=1,"
-            "PrimaryColour=&H00FFFFFF,"
-            "SecondaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,"
-            "BackColour=&H78000000,"
-            "BorderStyle=3,"
-            "Outline=1.5,"
-            "Shadow=0,"
-            "Alignment=2,"
-            "MarginL=70,"
-            "MarginR=70,"
-            "MarginV=125"
+            "FontName=DejaVu Sans,FontSize=24,Bold=1,"
+            "PrimaryColour=&H00FFFFFF,SecondaryColour=&H00FFFFFF,"
+            "OutlineColour=&H00000000,BackColour=&H78000000,"
+            "BorderStyle=3,Outline=1.5,Shadow=0,"
+            "Alignment=2,MarginL=70,MarginR=70,MarginV=125"
         )
 
         self.source_credit_y = "h-520"
         self.source_credit_size = 18
         self.source_credit_alpha = 0.52
 
-        self.watermark_font_path = (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        )
+        self.watermark_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
         # Mapping des crédits visuels
         self.source_credit_labels = {
@@ -113,30 +105,20 @@ class Composer:
     # ------------------------------------------------------------------
 
     def set_background_music(self, mood="intriguing"):
-        """Sélectionne dynamiquement une musique dans assets/music selon l'ambiance."""
         if not os.path.exists(self.music_dir):
             self.current_bg_music_path = None
             return
 
-        available_tracks = [
-            f for f in os.listdir(self.music_dir) if f.lower().endswith(".mp3")
-        ]
+        available_tracks = [f for f in os.listdir(self.music_dir) if f.lower().endswith(".mp3")]
 
         if not available_tracks:
             print("      ⚠️ Aucune musique trouvée dans assets/music/ !", flush=True)
             self.current_bg_music_path = None
             return
 
-        matching_tracks = [
-            f for f in available_tracks if mood.lower() in f.lower()
-        ]
-
-        chosen_track = (
-            random.choice(matching_tracks)
-            if matching_tracks
-            else random.choice(available_tracks)
-        )
-
+        matching_tracks = [f for f in available_tracks if mood.lower() in f.lower()]
+        chosen_track = random.choice(matching_tracks) if matching_tracks else random.choice(available_tracks)
+        
         self.current_bg_music_path = os.path.join(self.music_dir, chosen_track)
         print(f"      🎵 Musique sélectionnée : {chosen_track}", flush=True)
 
@@ -148,10 +130,8 @@ class Composer:
         stderr = getattr(error, "stderr", None)
         if stderr:
             if isinstance(stderr, bytes):
-                try:
-                    return stderr.decode("utf8", errors="ignore")
-                except Exception:
-                    return str(stderr)
+                try: return stderr.decode("utf8", errors="ignore")
+                except Exception: return str(stderr)
             return str(stderr)
         return str(error)
 
@@ -166,12 +146,8 @@ class Composer:
 
         try:
             proc = subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid if os.name == "posix" else None,
+                args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, bufsize=1, preexec_fn=os.setsid if os.name == "posix" else None,
             )
         except FileNotFoundError as e:
             raise RuntimeError(f"[{label}] ffmpeg introuvable : {e}")
@@ -182,8 +158,7 @@ class Composer:
             try:
                 for line in iter(proc.stderr.readline, ""):
                     line_queue.put(line)
-            except Exception:
-                pass
+            except Exception: pass
             finally:
                 line_queue.put(None)
 
@@ -192,16 +167,11 @@ class Composer:
 
         def _kill_process():
             try:
-                if os.name == "posix":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                else:
-                    proc.kill()
-            except Exception:
-                pass
-            try:
-                proc.wait(timeout=10)
-            except Exception:
-                pass
+                if os.name == "posix": os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                else: proc.kill()
+            except Exception: pass
+            try: proc.wait(timeout=10)
+            except Exception: pass
 
         last_progress_line = ""
         stderr_lines = []
@@ -213,22 +183,18 @@ class Composer:
                 _kill_process()
                 raise FFmpegTimeoutError(f"{label}: timeout après {timeout}s (Progression : {last_progress_line})")
 
-            try:
-                line = line_queue.get(timeout=0.5)
+            try: line = line_queue.get(timeout=0.5)
             except queue.Empty:
-                if reader_done and proc.poll() is not None:
-                    break
+                if reader_done and proc.poll() is not None: break
                 continue
 
             if line is None:
                 reader_done = True
-                if proc.poll() is not None:
-                    break
+                if proc.poll() is not None: break
                 continue
 
             stderr_lines.append(line)
-            if len(stderr_lines) > 40:
-                stderr_lines.pop(0)
+            if len(stderr_lines) > 40: stderr_lines.pop(0)
 
             if "frame=" in line:
                 last_progress_line = line.strip()
@@ -246,72 +212,48 @@ class Composer:
         return returncode
 
     def get_duration(self, filepath):
-        try:
-            return float(ffmpeg.probe(filepath)["format"]["duration"])
-        except Exception:
-            return 0.0
+        try: return float(ffmpeg.probe(filepath)["format"]["duration"])
+        except Exception: return 0.0
 
     def _escape_path_for_filter(self, path):
-        escaped = str(path).replace("\\", "/")
-        escaped = escaped.replace(":", "\\:")
-        escaped = escaped.replace("'", r"\'")
-        return escaped
+        return str(path).replace("\\", "/").replace(":", "\\:").replace("'", r"\'")
 
     def _escape_drawtext(self, text):
         return str(text).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'").replace(",", r"\,")
 
     def _normalize_assets_list(self, assets):
-        """Convertit paires, dictionnaires ou objets uniques en liste uniforme de fichiers."""
-        if not assets:
-            return []
-        if isinstance(assets, dict):
-            return [p for p in assets.values() if p]
+        if not assets: return []
+        if isinstance(assets, dict): return [p for p in assets.values() if p]
         if isinstance(assets, (list, tuple)):
             res = []
             for item in assets:
-                if isinstance(item, dict):
-                    res.extend([p for p in item.values() if p])
-                elif item:
-                    res.append(str(item))
+                if isinstance(item, dict): res.extend([p for p in item.values() if p])
+                elif item: res.append(str(item))
             return res
         return [str(assets)]
 
     def _is_video_file(self, path):
-        """Détecte intelligemment les fichiers vidéo par inspection de contenu (probe)."""
-        if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
-            return False
-
+        if not path or not os.path.exists(path) or os.path.getsize(path) == 0: return False
         filename = os.path.basename(path).lower()
-
         if filename.startswith("scene_video_") or "_video_" in filename:
             try:
                 probe = ffmpeg.probe(path)
                 for stream in probe.get("streams", []):
                     if stream.get("codec_type") == "video":
                         codec = stream.get("codec_name", "").lower()
-                        if codec not in ["png", "mjpeg", "jpeg", "webp", "bmp"]:
-                            return True
-            except Exception:
-                return True
-
-        if filename.endswith((".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")):
-            return True
-
+                        if codec not in ["png", "mjpeg", "jpeg", "webp", "bmp"]: return True
+            except Exception: return True
+        if filename.endswith((".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")): return True
         return False
 
     def _resolve_source_credit(self, path_a):
         file_name = str(path_a).lower()
         for token, label in self.source_credit_labels.items():
-            if f"_{token}_" in file_name or file_name.startswith(f"{token}_"):
-                return label
-        if "wiki" in file_name or "wikimedia" in file_name:
-            return "Source : Wikimedia Commons"
-        if "openverse" in file_name:
-            return "Source : Openverse"
-        if any(token in file_name for token in ("pexels", "pixabay", "videvo", "video")):
-            return "Illustration : Pexels / Pixabay"
-        if any(token in file_name for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")):
-            return "Illustration générée par IA"
+            if f"_{token}_" in file_name or file_name.startswith(f"{token}_"): return label
+        if "wiki" in file_name or "wikimedia" in file_name: return "Source : Wikimedia Commons"
+        if "openverse" in file_name: return "Source : Openverse"
+        if any(token in file_name for token in ("pexels", "pixabay", "videvo", "video")): return "Illustration : Pexels / Pixabay"
+        if any(token in file_name for token in ("generated", "ai_", "midjourney", "gemini", "_ai_")): return "Illustration générée par IA"
         return "Illustration"
 
     # ------------------------------------------------------------------
@@ -336,7 +278,7 @@ class Composer:
             runner = ffmpeg.output(
                 watermarked_video, video.audio, output_video_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", r=self.fps, crf=18, preset="medium", movflags="faststart", shortest=None
+                pix_fmt="yuv420p", r=self.fps, crf=18, preset=self.final_preset, movflags="faststart", shortest=None
             )
             self._run(runner, timeout=self.timeout_watermark, label="watermark")
             print(f"      Filigrane Minute Mystère ajouté ({self.watermark_width}px)", flush=True)
@@ -350,15 +292,19 @@ class Composer:
         return self.add_watermark(input_video_path, output_video_path)
 
     # ------------------------------------------------------------------
-    # RENDU D'UNE SCÈNE (MULTI-ASSETS + ZOAMPAN)
+    # RENDU D'UNE SCÈNE (MULTI-ASSETS + ZOOMPAN FIXÉ)
     # ------------------------------------------------------------------
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
         scene_id = scene["id"]
-        audio_path = scene["audio_path"]
+        audio_path = scene.get("audio_path")
         total_duration = float(scene["duration"])
 
         output_path = os.path.join(self.temp_dir, f"scene_{scene_id}_rendered.mp4")
+
+        if not audio_path or not os.path.exists(audio_path):
+            return None
+
         print(f"      ▶️ Scène {scene_id} : début du rendu (durée cible {total_duration:.1f}s)...", flush=True)
 
         try:
@@ -386,66 +332,38 @@ class Composer:
 
                 source_for_credit = valid_assets[0]
                 num_assets = len(valid_assets)
+                chunk_duration = total_duration / num_assets
 
-                # Si un seul asset vidéo est fourni
-                if num_assets == 1 and self._is_video_file(valid_assets[0]):
-                    video_stream = (
-                        ffmpeg.input(valid_assets[0], stream_loop=-1)
-                        .filter("trim", duration=total_duration)
-                        .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
-                        .filter("crop", self.video_width, self.video_height)
-                        .setpts("PTS-STARTPTS")
-                    )
+                streams = []
 
-                # Si 2 images (cas classique prod avec Zoompan dynamiques)
-                elif num_assets == 2 and not any(self._is_video_file(p) for p in valid_assets):
-                    duration_a = max(total_duration / 2, 0.1)
-                    duration_b = max((total_duration / 2) + 0.35, 0.1)
-                    frames_a = max(int(duration_a * self.fps), 1)
-                    frames_b = max(int(duration_b * self.fps), 1)
+                for idx, path in enumerate(valid_assets):
+                    print(f"          📷 Asset {idx + 1}/{num_assets} : {os.path.basename(path)}", flush=True)
 
-                    stream_a = (
-                        ffmpeg.input(valid_assets[0], format="image2", loop=1, t=duration_a)
-                        .filter("scale", 2200, -1)
-                        .filter("zoompan", z="min(zoom+0.0009,1.14)", d=frames_a, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
-                        .setpts("PTS-STARTPTS")
-                    )
+                    if self._is_video_file(path):
+                        # VIDÉO : On limite le temps dès l'input (-t) pour éviter le blocage de FFmpeg
+                        s = (
+                            ffmpeg.input(path, stream_loop=-1, t=chunk_duration)
+                            .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
+                            .filter("crop", self.video_width, self.video_height)
+                            .setpts("PTS-STARTPTS")
+                        )
+                    else:
+                        # IMAGE : Limitation stricte du flux entrant (-t) ET effet Zoompan
+                        frames = max(int(chunk_duration * self.fps), 1)
+                        z_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
 
-                    stream_b = (
-                        ffmpeg.input(valid_assets[1], format="image2", loop=1, t=duration_b)
-                        .filter("scale", 2200, -1)
-                        .filter("zoompan", z="if(eq(on,1),1.07,max(zoom-0.0008,1.0))", d=frames_b, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
-                        .setpts("PTS-STARTPTS")
-                    )
+                        s = (
+                            ffmpeg.input(path, format="image2", loop=1, t=chunk_duration)
+                            .filter("scale", 2200, -1)
+                            .filter("zoompan", z=z_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
+                            .setpts("PTS-STARTPTS")
+                        )
 
-                    video_stream = ffmpeg.concat(stream_a, stream_b, v=1, a=0)
+                    streams.append(s)
 
-                # Si N assets (images ou vidéos mélangées)
-                else:
-                    chunk_duration = total_duration / num_assets
-                    streams = []
-                    for idx, path in enumerate(valid_assets):
-                        if self._is_video_file(path):
-                            s = (
-                                ffmpeg.input(path, stream_loop=-1)
-                                .filter("trim", duration=chunk_duration)
-                                .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
-                                .filter("crop", self.video_width, self.video_height)
-                                .setpts("PTS-STARTPTS")
-                            )
-                        else:
-                            s = (
-                                ffmpeg.input(path, format="image2", loop=1, framerate=self.fps)
-                                .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
-                                .filter("crop", self.video_width, self.video_height)
-                                .filter("trim", duration=chunk_duration)
-                                .setpts("PTS-STARTPTS")
-                            )
-                        streams.append(s)
+                video_stream = ffmpeg.concat(*streams, v=1, a=0) if len(streams) > 1 else streams[0]
 
-                    video_stream = ffmpeg.concat(*streams, v=1, a=0) if len(streams) > 1 else streams[0]
-
-            # 📌 AJOUT DU CRÉDIT DE LA SOURCE
+            # Crédit source
             if not bg_video_path and source_for_credit:
                 source_text = self._resolve_source_credit(source_for_credit)
                 if source_text:
@@ -458,16 +376,15 @@ class Composer:
             # Sous-titres
             srt_path = scene.get("srt_path")
             if srt_path and os.path.exists(srt_path):
-                escaped_srt_path = self._escape_path_for_filter(srt_path)
                 video_stream = video_stream.filter(
-                    "subtitles", filename=escaped_srt_path, force_style=self.subtitle_style
+                    "subtitles", filename=self._escape_path_for_filter(srt_path), force_style=self.subtitle_style
                 )
 
-            # Encodage de la scène
+            # Encodage
             runner = ffmpeg.output(
                 video_stream, input_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", r=self.fps, crf=18, preset="medium", movflags="faststart", shortest=None
+                pix_fmt="yuv420p", r=self.fps, crf=20, preset=self.fast_preset, movflags="faststart", shortest=None
             )
 
             self._run(runner, timeout=self.timeout_scene_render, label=f"scène {scene_id}")
@@ -515,7 +432,7 @@ class Composer:
         runner = ffmpeg.output(
             v_stream, a_stream, output_path,
             vcodec="libx264", acodec="aac", audio_bitrate="192k",
-            pix_fmt="yuv420p", crf=18, preset="medium", movflags="faststart"
+            pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
         )
         self._run(runner, timeout=self.timeout_merge_pair, label="merge fade (2 clips)")
         return effect, offset
@@ -526,8 +443,7 @@ class Composer:
             return True
 
         durations = [self.get_duration(p) for p in video_paths]
-        if any(d <= 0 for d in durations):
-            return False
+        if any(d <= 0 for d in durations): return False
 
         inputs = [ffmpeg.input(p) for p in video_paths]
         trans_dur = self.transition_duration
@@ -545,7 +461,7 @@ class Composer:
         runner = ffmpeg.output(
             video_stream, audio_stream, output_path,
             vcodec="libx264", acodec="aac", audio_bitrate="192k",
-            pix_fmt="yuv420p", crf=18, preset="medium", movflags="faststart"
+            pix_fmt="yuv420p", crf=18, preset=self.fast_preset, movflags="faststart"
         )
         
         try:
@@ -577,20 +493,16 @@ class Composer:
     # ------------------------------------------------------------------
 
     def _mix_background_music(self, stitched_path, output_path):
-        music_file = self.current_bg_music_path or self.bg_music_path
-
-        if not music_file or not os.path.exists(music_file):
+        if not self.current_bg_music_path or not os.path.exists(self.current_bg_music_path):
             return False
 
         try:
             video_duration = self.get_duration(stitched_path)
-            if video_duration <= 0:
-                raise ValueError("Durée vidéo invalide pour le mix audio.")
+            if video_duration <= 0: raise ValueError("Durée vidéo invalide.")
 
             fade_start = max(video_duration - self.music_fade_duration, 0)
-
             voice = ffmpeg.input(stitched_path)
-            music = ffmpeg.input(music_file, stream_loop=-1)
+            music = ffmpeg.input(self.current_bg_music_path, stream_loop=-1)
 
             voice_audio = (
                 voice.audio
@@ -610,23 +522,17 @@ class Composer:
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
-            # FIX AUDIO : split() natif
             voice_splits = voice_audio.split()
-            voice_for_duck = voice_splits[0]
-            voice_for_mix = voice_splits[1]
-
             music_splits = music_audio.split()
-            music_for_duck = music_splits[0]
-            music_for_mix = music_splits[1]
 
             ducked_music = ffmpeg.filter(
-                [music_for_duck, voice_for_duck],
+                [music_splits[0], voice_splits[0]],
                 "sidechaincompress", threshold=0.035, ratio=5, attack=30, release=450, makeup=1
             )
 
             mixed_audio = (
                 ffmpeg.filter(
-                    [voice_for_mix, ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0
+                    [voice_splits[1], ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0
                 )
                 .filter("loudnorm", I=-16, TP=-1.5, LRA=9)
             )
@@ -634,14 +540,14 @@ class Composer:
             final_runner = ffmpeg.output(
                 voice.video, mixed_audio, output_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
-                pix_fmt="yuv420p", movflags="faststart", preset="medium"
+                pix_fmt="yuv420p", movflags="faststart", preset=self.fast_preset
             )
 
             self._run(final_runner, timeout=self.timeout_music_mix, label="mixage musique")
             return True
 
         except Exception as e:
-            print(f"⚠️ Music mix failed, falling back to no-music version: {self._get_ffmpeg_error_text(e)}", flush=True)
+            print(f"⚠️ Music mix failed: {self._get_ffmpeg_error_text(e)}", flush=True)
             return False
 
     # ------------------------------------------------------------------
@@ -656,13 +562,11 @@ class Composer:
             try: os.remove(output_path)
             except Exception: pass
 
-        if not video_paths:
-            return None
+        if not video_paths: return None
 
         merge_step_files = []
         stitched_path = os.path.join(self.temp_dir, "stitched_all.mp4")
 
-        # Tentative d'assemblage global optimisé
         success = self._concat_all_with_xfade(video_paths, stitched_path)
 
         if not success:
@@ -687,12 +591,10 @@ class Composer:
                     courant = merge_output
                 stitched_path = courant
 
-        # Mixage musique de fond
         music_success = self._mix_background_music(stitched_path, raw_final_output_path)
         if not music_success:
             self._fallback_no_music(stitched_path, raw_final_output_path)
 
-        # Ajout du filigrane
         watermark_success = self.add_watermark(raw_final_output_path, output_path)
         if not watermark_success:
             print("      ⚠️ Filigrane non appliqué : copie de la vidéo sans watermark.", flush=True)
@@ -722,8 +624,7 @@ class Composer:
 
     def _cleanup_temp_files(self, filepaths, keep=None):
         for filepath in filepaths:
-            if not filepath or filepath == keep:
-                continue
+            if not filepath or filepath == keep: continue
             if os.path.exists(filepath):
                 try: os.remove(filepath)
                 except Exception: pass
