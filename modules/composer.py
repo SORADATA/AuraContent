@@ -820,12 +820,12 @@ class Composer:
             return None
 
         except ffmpeg.Error as e:
+            stderr = e.stderr.decode("utf8", errors="ignore") if e.stderr else str(e)
             print(
-                f"❌ Render Fail Scene {scene_id}: "
-                f"{e.stderr.decode('utf8', errors='ignore') "
-                if e.stderr else str(e)}",
-                flush=True,
+                f"⚠️ Fusion globale xfade échouée : {stderr}",flush=True
             )
+            
+            
             return None
 
         except Exception as e:
