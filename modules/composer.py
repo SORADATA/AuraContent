@@ -17,13 +17,13 @@ class FFmpegTimeoutError(Exception):
 
 class Composer:
     """
-    Compositeur vidéo vertical 1080x1920 orienté documentaire historique / mystère.
+    Compositeur vidéo vertical 1080x1920 orienté documentaire / mystère.
 
-    Hybride Ultime (Prod + V3) optimisé pour CI/CD :
-    - Gestion multi-assets (1 à N médias par scène)
-    - Effets visuels Zoompan ultra-optimisés (Scale 1200px pre-zoom, input image statique)
-    - Correction stricte du typage des assets entrant pour prévenir les Exit code 124
-    - Gestion dynamique des musiques de fond et ducking broadcast-standard
+    Hybride Ultime (Production + CI/CD AuraContent V3) :
+    - Gestion dynamique des assets (1 à N médias) par scène.
+    - Application parfaite du SAR (1:1) pour éviter l'Exit 234 sur la concaténation.
+    - Graphe audio corrigé via `filter_multi_output("asplit", 2)` (Ducking propre).
+    - Moteur de rendu sécurisé par thread pour éviter le gel sur GitHub Actions.
     """
 
     def __init__(self):
@@ -37,8 +37,8 @@ class Composer:
         os.makedirs(self.music_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
 
-        # Transitions sobres
-        self.transitions = ["fade", "fade"]
+        # Documentaire mystère : transitions sobres.
+        self.transitions = ["fade", "fade", "fade", "fade"]
         self.current_bg_music_path = None
 
         # Branding Minute Mystère
@@ -55,7 +55,7 @@ class Composer:
         self.video_height = 1920
         self.fps = 30
 
-        # Mix documentaire (Broadcast standard)
+        # Mix documentaire : voix prioritaire, ducking musical.
         self.voice_gain = 1.08
         self.music_gain = 0.085
         self.music_fade_duration = 2.5
@@ -64,7 +64,7 @@ class Composer:
         self.fast_preset = "veryfast"
         self.final_preset = "medium"
 
-        # Timeouts de sécurité (Ajustés pour runners CI/CD standard)
+        # Timeouts CI/CD (GitHub Actions)
         self.timeout_scene_render = 360
         self.timeout_merge_pair = 150
         self.timeout_concat_global = 300
@@ -72,7 +72,7 @@ class Composer:
         self.timeout_normalize = 90
         self.timeout_watermark = 150
 
-        # Style des sous-titres premium
+        # Style des sous-titres
         self.subtitle_style = (
             "FontName=DejaVu Sans,FontSize=24,Bold=1,"
             "PrimaryColour=&H00FFFFFF,SecondaryColour=&H00FFFFFF,"
@@ -84,10 +84,9 @@ class Composer:
         self.source_credit_y = "h-520"
         self.source_credit_size = 18
         self.source_credit_alpha = 0.52
-
         self.watermark_font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-        # Mapping des crédits visuels
+        # Mapping source explicite
         self.source_credit_labels = {
             "wiki": "Source : Wikimedia Commons",
             "wikimedia": "Source : Wikimedia Commons",
@@ -100,7 +99,7 @@ class Composer:
         }
 
     # ------------------------------------------------------------------
-    # GESTION DES MUSIQUES DE FOND (MULTI-PISTES)
+    # GESTION DES MUSIQUES DE FOND
     # ------------------------------------------------------------------
 
     def set_background_music(self, mood="intriguing"):
@@ -122,7 +121,7 @@ class Composer:
         print(f"      🎵 Musique sélectionnée : {chosen_track}", flush=True)
 
     # ------------------------------------------------------------------
-    # UTILITAIRES & ROBUSTESSE
+    # UTILITAIRES & CI/CD RUNNER
     # ------------------------------------------------------------------
 
     def _get_ffmpeg_error_text(self, error):
@@ -135,7 +134,7 @@ class Composer:
         return str(error)
 
     def _run(self, runner, timeout, label):
-        """Exécution FFmpeg threadée avec Timeout dur."""
+        """Exécution FFmpeg sécurisée avec Thread Logger pour CI/CD."""
         args = runner.compile(overwrite_output=True)
         print(f"      🔧 CMD [{label}] : {' '.join(args)}", flush=True)
 
@@ -232,21 +231,16 @@ class Composer:
         return [str(assets)]
 
     def _is_video_file(self, path):
-        """Identification stricte du format pour éviter le gel du demuxer."""
+        """Typage strict pour éviter les boucles stream_loop sur des images."""
         if not path or not os.path.exists(path) or os.path.getsize(path) == 0: 
             return False
             
         filename = os.path.basename(path).lower()
-        
-        # 1. Analyse frontale des extensions d'images connues
         if filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")): 
             return False
-            
-        # 2. Analyse frontale des extensions vidéos connues
         if filename.endswith((".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")): 
             return True
 
-        # 3. Validation approfondie en dernier recours
         if "video" in filename:
             try:
                 probe = ffmpeg.probe(path)
@@ -256,15 +250,14 @@ class Composer:
                         if codec not in ["png", "mjpeg", "jpeg", "webp", "bmp"]: 
                             return True
             except Exception: 
-                # Si erreur de lecture, on refuse le statut vidéo pour la sécurité du pipeline
                 return False 
-                
         return False
 
     def _resolve_source_credit(self, path_a):
         file_name = str(path_a).lower()
         for token, label in self.source_credit_labels.items():
             if f"_{token}_" in file_name or file_name.startswith(f"{token}_"): return label
+            
         if "wiki" in file_name or "wikimedia" in file_name: return "Source : Wikimedia Commons"
         if "openverse" in file_name: return "Source : Openverse"
         if any(token in file_name for token in ("pexels", "pixabay", "videvo", "video")): return "Illustration : Pexels / Pixabay"
@@ -272,7 +265,7 @@ class Composer:
         return "Illustration"
 
     # ------------------------------------------------------------------
-    # WATERMARK
+    # FILIGRANE (WATERMARK)
     # ------------------------------------------------------------------
 
     def add_watermark(self, input_video_path, output_video_path):
@@ -282,32 +275,36 @@ class Composer:
         try:
             video = ffmpeg.input(input_video_path)
             logo = ffmpeg.input(self.watermark_path, format="image2", loop=1, framerate=self.fps).video
+            
             logo = (
                 logo.filter("scale", self.watermark_width, -1, force_original_aspect_ratio="decrease")
                 .filter("format", "rgba")
                 .filter("colorchannelmixer", aa=self.watermark_opacity)
             )
+            
             watermarked_video = ffmpeg.overlay(
                 video.video, logo, x=self.watermark_x, y=self.watermark_y, eof_action="repeat", shortest=1
             )
+            
             runner = ffmpeg.output(
                 watermarked_video, video.audio, output_video_path,
                 vcodec="libx264", acodec="aac", audio_bitrate="192k",
                 pix_fmt="yuv420p", r=self.fps, crf=18, preset=self.final_preset, movflags="faststart", shortest=None
             )
+            
             self._run(runner, timeout=self.timeout_watermark, label="watermark")
             print(f"      Filigrane Minute Mystère ajouté ({self.watermark_width}px)", flush=True)
             return True
+            
         except Exception as e:
-            msg = self._get_ffmpeg_error_text(e)
-            print(f"⚠️ Watermark failed: {msg}", flush=True)
+            print(f"⚠️ Watermark failed: {self._get_ffmpeg_error_text(e)}", flush=True)
             return False
 
     def add_watermark_text(self, input_video_path, output_video_path, channel_name="@MinuteMystere"):
         return self.add_watermark(input_video_path, output_video_path)
 
     # ------------------------------------------------------------------
-    # RENDU D'UNE SCÈNE (MULTI-ASSETS + ZOOMPAN OPTIMISÉ CI/CD)
+    # RENDU D'UNE SCÈNE (AVEC SAR 1:1 CORRIGÉ)
     # ------------------------------------------------------------------
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
@@ -335,6 +332,7 @@ class Composer:
                     .filter("trim", duration=total_duration)
                     .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
                     .filter("crop", self.video_width, self.video_height)
+                    .filter("setsar", "1")  # Correction critique Exit 234
                     .setpts("PTS-STARTPTS")
                 )
 
@@ -355,15 +353,14 @@ class Composer:
                     print(f"         📷 Asset {idx + 1}/{num_assets} : {os.path.basename(path)}", flush=True)
 
                     if self._is_video_file(path):
-                        # VIDÉO : Limitation du temps dès l'input (-t)
                         s = (
                             ffmpeg.input(path, stream_loop=-1, t=chunk_duration)
                             .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
                             .filter("crop", self.video_width, self.video_height)
+                            .filter("setsar", "1")  # Correction critique Exit 234
                             .setpts("PTS-STARTPTS")
                         )
                     else:
-                        # IMAGE : Entrée brute, suppression de loop=1 et t= pour le bon fonctionnement de zoompan
                         frames = max(int(chunk_duration * self.fps), 1)
                         z_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
 
@@ -371,6 +368,7 @@ class Composer:
                             ffmpeg.input(path)
                             .filter("scale", 1200, -1)
                             .filter("zoompan", z=z_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
+                            .filter("setsar", "1")  # Correction critique Exit 234
                             .setpts("PTS-STARTPTS")
                         )
 
@@ -429,7 +427,7 @@ class Composer:
         return rendered_paths
 
     # ------------------------------------------------------------------
-    # ASSEMBLAGE (Global Xfade + Séquentiel)
+    # ASSEMBLAGE & AUDIO DUCKING (CORRIGÉ AVEC MULTI_OUTPUT)
     # ------------------------------------------------------------------
 
     def _merge_two_clips(self, clip_a, clip_b, output_path, trans_dur=None):
@@ -485,10 +483,6 @@ class Composer:
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # NORMALISATION AUDIO
-    # ------------------------------------------------------------------
-
     def _normalize_audio_track(self, input_video_path, output_video_path):
         try:
             src = ffmpeg.input(input_video_path)
@@ -503,11 +497,8 @@ class Composer:
             print(f"⚠️ Loudnorm failed: {self._get_ffmpeg_error_text(e)}", flush=True)
             return False
 
-    # ------------------------------------------------------------------
-    # MUSIQUE DE FOND DYNAMIQUE + DUCKING
-    # ------------------------------------------------------------------
-
     def _mix_background_music(self, stitched_path, output_path):
+        """Ducking audio corrigé utilisant filter_multi_output."""
         if not self.current_bg_music_path or not os.path.exists(self.current_bg_music_path):
             return False
 
@@ -537,19 +528,23 @@ class Composer:
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
-            # voice_splits = voice_audio.split()
-            # music_splits = music_audio.split()
-            voice_splits = voice_audio.asplit()
-            music_splits = music_audio.asplit()
+            # L'utilisation de asplit via filter_multi_output empêche le crash (Exit 234)
+            voice_split = voice_audio.filter_multi_output("asplit", 2)
+            voice_for_duck = voice_split[0]
+            voice_for_mix = voice_split[1]
+
+            music_split = music_audio.filter_multi_output("asplit", 2)
+            music_for_duck = music_split[0]
+            music_for_mix = music_split[1]
 
             ducked_music = ffmpeg.filter(
-                [music_splits[0], voice_splits[0]],
+                [music_for_duck, voice_for_duck],
                 "sidechaincompress", threshold=0.035, ratio=5, attack=30, release=450, makeup=1
             )
 
             mixed_audio = (
                 ffmpeg.filter(
-                    [voice_splits[1], ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0
+                    [voice_for_mix, ducked_music], "amix", inputs=2, duration="first", dropout_transition=2, normalize=0
                 )
                 .filter("loudnorm", I=-16, TP=-1.5, LRA=9)
             )
