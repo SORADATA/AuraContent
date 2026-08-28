@@ -1,47 +1,25 @@
 import os
 import requests
-from constants import GEMINI_MODEL, GROQ_MODEL
-
-# 🛠️ NOMS DE MODÈLES
-GEMINI_CAPTION_MODEL = GEMINI_MODEL
-GROQ_CAPTION_MODEL = GROQ_MODEL
+from constants import OPENROUTER_FALLBACK_MODEL_1, OPENROUTER_FALLBACK_MODEL_2
 
 
-def generate_caption_with_gemini(prompt_legende):
-    from google import genai
-
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        raise ValueError("Clé GEMINI_API_KEY introuvable.")
-
-    client = genai.Client(api_key=gemini_key)
-    response = client.models.generate_content(
-        model=GEMINI_CAPTION_MODEL,
-        contents=prompt_legende,
-    )
-
-    text = (response.text or "").strip()
-    if not text:
-        raise ValueError("Réponse Gemini vide.")
-    return text
-
-
-def generate_caption_with_groq(prompt_legende):
-    groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        raise ValueError("Clé GROQ_API_KEY introuvable.")
+def generate_caption_with_openrouter(prompt_legende, model_name):
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        raise ValueError("Clé OPENROUTER_API_KEY introuvable.")
 
     headers = {
-        "Authorization": f"Bearer {groq_key}",
+        "Authorization": f"Bearer {openrouter_key}",
         "Content-Type": "application/json",
     }
+    
     payload = {
-        "model": GROQ_CAPTION_MODEL,
+        "model": model_name,
         "messages": [{"role": "user", "content": prompt_legende}],
     }
 
     response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions",
         headers=headers,
         json=payload,
         timeout=30,
@@ -50,7 +28,7 @@ def generate_caption_with_groq(prompt_legende):
 
     text = response.json()["choices"][0]["message"]["content"].strip()
     if not text:
-        raise ValueError("Réponse Groq vide.")
+        raise ValueError(f"Réponse OpenRouter ({model_name}) vide.")
     return text
 
 
@@ -74,16 +52,16 @@ Ne mets pas de guillemets autour de ta réponse.
     fallback = f"{video_title} 🧠✨ L'histoire qu'ils ont essayé d'effacer... #MinuteMystère #HistoireVraie #Pourtoi #Secretscachés"
 
     try:
-        print("🧠 Tentative de génération de la légende avec Gemini...")
-        return generate_caption_with_gemini(prompt_legende)
-    except Exception as e_gemini:
-        print(f"⚠️ Échec avec Gemini ({e_gemini}). Basculement sur Groq...")
+        print(f"🧠 Tentative de génération de la légende avec {OPENROUTER_FALLBACK_MODEL_1}...")
+        return generate_caption_with_openrouter(prompt_legende, OPENROUTER_FALLBACK_MODEL_1)
+    except Exception as e_llama:
+        print(f"⚠️ Échec avec Llama ({e_llama}). Basculement sur Gemma...")
 
     try:
-        print("🚀 Tentative de génération de la légende avec Groq...")
-        return generate_caption_with_groq(prompt_legende)
-    except Exception as e_groq:
-        print(f"⚠️ Échec avec Groq également ({e_groq}). Utilisation de la légende de secours.")
+        print(f"🚀 Tentative de génération de la légende avec {OPENROUTER_FALLBACK_MODEL_2}...")
+        return generate_caption_with_openrouter(prompt_legende, OPENROUTER_FALLBACK_MODEL_2)
+    except Exception as e_gemma:
+        print(f"⚠️ Échec avec Gemma également ({e_gemma}). Utilisation de la légende de secours.")
         return fallback
 
 
