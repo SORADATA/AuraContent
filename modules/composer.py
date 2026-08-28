@@ -17,14 +17,13 @@ class FFmpegTimeoutError(Exception):
 
 class Composer:
     """
-    Compositeur vidéo vertical 1080x1920 orienté documentaire / mystère.
+    Compositeur vidéo vertical 1080x1920 orienté documentaire historique / mystère.
 
-    Hybride Ultime (Prod + V3) :
+    Hybride Ultime (Prod + V3) optimisé pour CI/CD :
     - Gestion multi-assets (1 à N médias par scène)
-    - Réintégration des effets visuels Zoompan alternés
-    - Correction du freeze FFmpeg (Exit code 124) via restriction de l'input (-t)
-    - Gestion dynamique des musiques de fond
-    - Transitions épurées (2 fades seulement)
+    - Effets visuels Zoompan ultra-optimisés (Scale 1200px pre-zoom)
+    - Correction stricte du typage des assets entrant pour prévenir les Exit code 124
+    - Gestion dynamique des musiques de fond et ducking broadcast-standard
     """
 
     def __init__(self):
@@ -42,7 +41,7 @@ class Composer:
         self.transitions = ["fade", "fade"]
         self.current_bg_music_path = None
 
-        # Branding
+        # Branding Minute Mystère
         self.watermark_path = os.path.join(
             self.images_dir,
             "minute_mystere_watermark.png"
@@ -56,7 +55,7 @@ class Composer:
         self.video_height = 1920
         self.fps = 30
 
-        # Mix documentaire
+        # Mix documentaire (Broadcast standard)
         self.voice_gain = 1.08
         self.music_gain = 0.085
         self.music_fade_duration = 2.5
@@ -65,15 +64,15 @@ class Composer:
         self.fast_preset = "veryfast"
         self.final_preset = "medium"
 
-        # Timeouts de sécurité
-        self.timeout_scene_render = 240
+        # Timeouts de sécurité (Ajustés pour runners CI/CD standard)
+        self.timeout_scene_render = 360  # Augmenté pour sécuriser les scènes complexes
         self.timeout_merge_pair = 150
         self.timeout_concat_global = 300
         self.timeout_music_mix = 150
         self.timeout_normalize = 90
         self.timeout_watermark = 150
 
-        # Style des sous-titres
+        # Style des sous-titres premium
         self.subtitle_style = (
             "FontName=DejaVu Sans,FontSize=24,Bold=1,"
             "PrimaryColour=&H00FFFFFF,SecondaryColour=&H00FFFFFF,"
@@ -233,17 +232,33 @@ class Composer:
         return [str(assets)]
 
     def _is_video_file(self, path):
-        if not path or not os.path.exists(path) or os.path.getsize(path) == 0: return False
+        """Identification stricte du format pour éviter le gel du demuxer."""
+        if not path or not os.path.exists(path) or os.path.getsize(path) == 0: 
+            return False
+            
         filename = os.path.basename(path).lower()
-        if filename.startswith("scene_video_") or "_video_" in filename:
+        
+        # 1. Analyse frontale des extensions d'images connues
+        if filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp")): 
+            return False
+            
+        # 2. Analyse frontale des extensions vidéos connues
+        if filename.endswith((".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")): 
+            return True
+
+        # 3. Validation approfondie en dernier recours
+        if "video" in filename:
             try:
                 probe = ffmpeg.probe(path)
                 for stream in probe.get("streams", []):
                     if stream.get("codec_type") == "video":
                         codec = stream.get("codec_name", "").lower()
-                        if codec not in ["png", "mjpeg", "jpeg", "webp", "bmp"]: return True
-            except Exception: return True
-        if filename.endswith((".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")): return True
+                        if codec not in ["png", "mjpeg", "jpeg", "webp", "bmp"]: 
+                            return True
+            except Exception: 
+                # Si erreur de lecture, on refuse le statut vidéo pour la sécurité du pipeline
+                return False 
+                
         return False
 
     def _resolve_source_credit(self, path_a):
@@ -292,7 +307,7 @@ class Composer:
         return self.add_watermark(input_video_path, output_video_path)
 
     # ------------------------------------------------------------------
-    # RENDU D'UNE SCÈNE (MULTI-ASSETS + ZOOMPAN FIXÉ)
+    # RENDU D'UNE SCÈNE (MULTI-ASSETS + ZOOMPAN OPTIMISÉ CI/CD)
     # ------------------------------------------------------------------
 
     def process_scene(self, scene, assets, bg_video_path=None, bg_offset=0.0):
@@ -337,10 +352,10 @@ class Composer:
                 streams = []
 
                 for idx, path in enumerate(valid_assets):
-                    print(f"          📷 Asset {idx + 1}/{num_assets} : {os.path.basename(path)}", flush=True)
+                    print(f"         📷 Asset {idx + 1}/{num_assets} : {os.path.basename(path)}", flush=True)
 
                     if self._is_video_file(path):
-                        # VIDÉO : On limite le temps dès l'input (-t) pour éviter le blocage de FFmpeg
+                        # VIDÉO : Limitation du temps dès l'input (-t)
                         s = (
                             ffmpeg.input(path, stream_loop=-1, t=chunk_duration)
                             .filter("scale", self.video_width, self.video_height, force_original_aspect_ratio="increase")
@@ -348,13 +363,14 @@ class Composer:
                             .setpts("PTS-STARTPTS")
                         )
                     else:
-                        # IMAGE : Limitation stricte du flux entrant (-t) ET effet Zoompan
+                        # IMAGE : Limitation stricte du flux entrant (-t) ET effet Zoompan allégé
                         frames = max(int(chunk_duration * self.fps), 1)
                         z_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
 
                         s = (
                             ffmpeg.input(path, format="image2", loop=1, t=chunk_duration)
-                            .filter("scale", 2200, -1)
+                            # Optimisation CI/CD critique : scale à 1200px (divise la charge processeur par 3 vs 2200)
+                            .filter("scale", 1200, -1)
                             .filter("zoompan", z=z_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
                             .setpts("PTS-STARTPTS")
                         )
