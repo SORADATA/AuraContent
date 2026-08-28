@@ -21,7 +21,7 @@ class Composer:
 
     Hybride Ultime (Prod + V3) optimisé pour CI/CD :
     - Gestion multi-assets (1 à N médias par scène)
-    - Effets visuels Zoompan ultra-optimisés (Scale 1200px pre-zoom)
+    - Effets visuels Zoompan ultra-optimisés (Scale 1200px pre-zoom, input image statique)
     - Correction stricte du typage des assets entrant pour prévenir les Exit code 124
     - Gestion dynamique des musiques de fond et ducking broadcast-standard
     """
@@ -65,7 +65,7 @@ class Composer:
         self.final_preset = "medium"
 
         # Timeouts de sécurité (Ajustés pour runners CI/CD standard)
-        self.timeout_scene_render = 360  # Augmenté pour sécuriser les scènes complexes
+        self.timeout_scene_render = 360
         self.timeout_merge_pair = 150
         self.timeout_concat_global = 300
         self.timeout_music_mix = 150
@@ -363,13 +363,12 @@ class Composer:
                             .setpts("PTS-STARTPTS")
                         )
                     else:
-                        # IMAGE : Limitation stricte du flux entrant (-t) ET effet Zoompan allégé
+                        # IMAGE : Entrée brute, suppression de loop=1 et t= pour le bon fonctionnement de zoompan
                         frames = max(int(chunk_duration * self.fps), 1)
                         z_expr = "min(zoom+0.0009,1.14)" if idx % 2 == 0 else "if(eq(on,1),1.07,max(zoom-0.0008,1.0))"
 
                         s = (
-                            ffmpeg.input(path, format="image2", loop=1, t=chunk_duration)
-                            # Optimisation CI/CD critique : scale à 1200px (divise la charge processeur par 3 vs 2200)
+                            ffmpeg.input(path)
                             .filter("scale", 1200, -1)
                             .filter("zoompan", z=z_expr, d=frames, s=f"{self.video_width}x{self.video_height}", fps=self.fps)
                             .setpts("PTS-STARTPTS")
