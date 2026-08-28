@@ -537,8 +537,10 @@ class Composer:
                 .filter("afade", type="out", start_time=fade_start, duration=self.music_fade_duration)
             )
 
-            voice_splits = voice_audio.split()
-            music_splits = music_audio.split()
+            # voice_splits = voice_audio.split()
+            # music_splits = music_audio.split()
+            voice_splits = voice_audio.asplit()
+            music_splits = music_audio.asplit()
 
             ducked_music = ffmpeg.filter(
                 [music_splits[0], voice_splits[0]],
