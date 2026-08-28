@@ -4,13 +4,6 @@ import hashlib
 import requests
 
 
-try:
-    from huggingface_hub import InferenceClient
-    HF_AVAILABLE = True
-except ImportError:
-    HF_AVAILABLE = False
-
-
 class AIImageGenerator:
 
     BASE_STYLE = (
@@ -43,11 +36,6 @@ class AIImageGenerator:
         "black-forest-labs/FLUX.1-dev"
     )
 
-    HF_MODEL = os.getenv(
-        "HF_IMAGE_MODEL",
-        "black-forest-labs/FLUX.1-dev"
-    )
-
     # ---------------------------------------------------------------
     # TIMEOUTS
     # ---------------------------------------------------------------
@@ -61,8 +49,6 @@ class AIImageGenerator:
 
     def __init__(self):
 
-        self.hf_token = os.getenv("HF_TOKEN")
-
         contact = os.getenv(
             "WIKIMEDIA_CONTACT",
             "https://github.com/tonuser"
@@ -74,33 +60,9 @@ class AIImageGenerator:
             )
         }
 
-        self.hf_client = None
-
-        # CORRECTIF : quand Hugging Face repond 402 (credits mensuels
-        # epuises), c'est une erreur DEFINITIVE pour le reste du mois --
-        # pas un aleas reseau. Sans ce flag, chaque scene retentait HF a
-        # chaque echec Pollinations, ajoutant plusieurs secondes d'appel
-        # HTTP voue a l'echec (401/402) sur chacune des ~11 scenes d'une
-        # video, ce qui a contribue au depassement du timeout CI de 85
-        # minutes. Une fois desactive, on ne retente plus HF du tout pour
-        # le reste de l'execution.
-        self.hf_disabled_for_run = False
-
-        if HF_AVAILABLE and self.hf_token:
-            try:
-                self.hf_client = InferenceClient(
-                    api_key=self.hf_token
-                )
-
-            except Exception as exc:
-                print(
-                    f"⚠️ Hugging Face client indisponible: {exc}"
-                )
-
         print(
             "🤖 AI Image Generator V3 initialisé | "
-            f"Pollinations={self.DEFAULT_MODEL} | "
-            f"HF={self.HF_MODEL}"
+            f"Pollinations={self.DEFAULT_MODEL}"
         )
 
     # ---------------------------------------------------------------
@@ -399,130 +361,6 @@ class AIImageGenerator:
             return False
 
     # ---------------------------------------------------------------
-    # HUGGING FACE
-    # ---------------------------------------------------------------
-
-    def _try_huggingface(
-        self,
-        prompt_text,
-        output_path,
-        visual_identity=None,
-        variant=None,
-        seed=None
-    ):
-
-        if not self.hf_client:
-            print(
-                "    ℹ️ Hugging Face indisponible."
-            )
-            return False
-
-        # CORRECTIF : si un 402 (credits mensuels epuises) a deja ete
-        # detecte plus tot dans cette execution, on ne retente plus du
-        # tout Hugging Face -- inutile de perdre du temps sur un appel
-        # dont on sait deja qu'il echouera avec la meme erreur.
-        if self.hf_disabled_for_run:
-            print(
-                "    ⏭️ Hugging Face desactive pour cette execution "
-                "(credits mensuels epuises detectes precedemment)."
-            )
-            return False
-
-        prompt = self._build_prompt(
-            prompt_text,
-            visual_identity=visual_identity,
-            variant=variant
-        )
-
-        try:
-
-            print(
-                f"    🤗 Hugging Face "
-                f"(seed={seed})..."
-            )
-
-            image = self.hf_client.text_to_image(
-                prompt=prompt,
-                model=self.HF_MODEL,
-                negative_prompt=self.NEGATIVE_PROMPT,
-                width=1080,
-                height=1920,
-                seed=seed or 42,
-            )
-
-            output_dir = (
-                os.path.dirname(output_path)
-                or "."
-            )
-
-            os.makedirs(
-                output_dir,
-                exist_ok=True
-            )
-
-            temporary_path = (
-                output_path + ".tmp"
-            )
-
-            image.save(
-                temporary_path
-            )
-
-            if self._file_is_valid(
-                temporary_path
-            ):
-
-                os.replace(
-                    temporary_path,
-                    output_path
-                )
-
-                return True
-
-            if os.path.exists(
-                temporary_path
-            ):
-                os.remove(
-                    temporary_path
-                )
-
-            return False
-
-        except Exception as error:
-
-            error_str = str(error)
-
-            # CORRECTIF : detection specifique du quota mensuel epuise
-            # (HTTP 402 "Payment Required" / "depleted your monthly
-            # included credits"). Cette erreur est DEFINITIVE pour le
-            # reste du mois calendaire -- ce n'est pas un aleas reseau
-            # transitoire comme un timeout. On desactive donc HF pour
-            # le reste de cette execution afin d'eviter de perdre du
-            # temps sur des appels systematiquement voues a l'echec sur
-            # chacune des scenes restantes.
-            if (
-                "402" in error_str
-                or "payment required" in error_str.lower()
-                or "depleted your monthly included credits" in error_str.lower()
-            ):
-
-                self.hf_disabled_for_run = True
-
-                print(
-                    "    🚫 Hugging Face : quota mensuel epuise (402). "
-                    "Desactivation pour le reste de cette execution."
-                )
-
-            else:
-
-                print(
-                    f"    ❌ Hugging Face image error: "
-                    f"{error}"
-                )
-
-            return False
-
-    # ---------------------------------------------------------------
     # PUBLIC
     # ---------------------------------------------------------------
 
@@ -531,7 +369,7 @@ class AIImageGenerator:
         prompt_text,
         output_path,
         visual_identity=None,
-        retries=2,
+        retries=3,
         seed=None,
         variant=None,
         scene_id=None
@@ -569,7 +407,7 @@ class AIImageGenerator:
         )
 
         # -----------------------------------------------------------
-        # RETRIES
+        # RETRIES (Pollinations uniquement)
         # -----------------------------------------------------------
 
         for attempt in range(
@@ -589,10 +427,6 @@ class AIImageGenerator:
                 base_seed + attempt
             )
 
-            # =======================================================
-            # 1. POLLINATIONS
-            # =======================================================
-
             success = self._try_pollinations(
                 prompt_text,
                 output_path,
@@ -611,31 +445,6 @@ class AIImageGenerator:
                 print(
                     f"    ✅ Pollinations "
                     f"(seed={current_seed})"
-                )
-
-                return True
-
-            # =======================================================
-            # 2. HUGGING FACE
-            # =======================================================
-
-            success = self._try_huggingface(
-                prompt_text,
-                output_path,
-                visual_identity,
-                variant,
-                current_seed
-            )
-
-            if (
-                success
-                and self._file_is_valid(
-                    output_path
-                )
-            ):
-
-                print(
-                    "    ✅ Hugging Face image"
                 )
 
                 return True
