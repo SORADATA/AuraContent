@@ -797,6 +797,17 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
 14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
+"16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du "
+"script (ex: scene 4 sur 11) doit contenir une phrase de rupture qui relance "
+"la curiosite (ex: 'Mais ce n'est pas la le plus troublant...', 'Voici ou "
+"l'histoire prend un tournant...') pour retenir les spectateurs qui commencent "
+"a decrocher.\n"
+"17. CTA FINAL : genere un champ 'closing_cta' independant dans le JSON "
+"(au meme niveau que 'title', 'visual_identity', 'audio_profile'), une "
+"phrase courte (8-10 mots) qui invite a s'abonner en creant une attente "
+"specifique pour la prochaine video (ex: 'Abonne-toi, demain je devoile un "
+"secret encore plus trouble'), jamais un CTA generique type 'like et "
+"abonne-toi'.
 
 CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
 Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.

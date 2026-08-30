@@ -12,6 +12,7 @@ VIEW_ALIASES = ["views", "plays", "videoViews", "impressions"]
 LIKE_ALIASES = ["likes", "reactions"]
 COMMENT_ALIASES = ["comments"]
 SHARE_ALIASES = ["shares", "retweets"]
+POSTS_ROOT_ALIASES = ["posts", "data", "results", "items"]
 
 
 def _first_available(d, keys, default=0):
@@ -26,7 +27,7 @@ def _first_available(d, keys, default=0):
 
 def _aggregate_platforms_metrics(platforms_dict, preferred_platform=None):
     """
-    CORRECTIF : la reponse reelle de Zernio structure les metriques par
+    La reponse reelle de Zernio peut structurer les metriques par
     plateforme (ex: {"tiktok": {...}, "youtube": {...}}), pas dans un
     champ 'analytics' plat. On agrege ici, avec la possibilite de
     prioriser une plateforme precise (utile si tu publies surtout sur
@@ -80,6 +81,23 @@ def _extract_metrics_from_post(post):
     }
 
 
+def _extract_posts_list(data):
+    """
+    CORRECTIF : essaie plusieurs cles racines possibles avant d'abandonner,
+    car le schema exact de reponse n'est pas garanti par la doc publique
+    Zernio (elle ne documente que les query params, pas le corps de reponse).
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in POSTS_ROOT_ALIASES:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 def get_latest_videos_stats():
     api_key = os.getenv("ZERNIO_API_KEY")
     if not api_key:
@@ -88,7 +106,21 @@ def get_latest_videos_stats():
 
     base_url = "https://zernio.com/api/v1"
     url = f"{base_url}/analytics"
+
+    # CORRECTIF : filtre platform/accountId injecte directement cote API
+    # plutot qu'apres coup -- evite que sortBy=engagement melange des
+    # plateformes non comparables (TikTok vs YouTube) dans le top 5.
+    # Definis ZERNIO_PREFERRED_PLATFORM=youtube (ou tiktok) et/ou
+    # ZERNIO_ACCOUNT_ID=<id_du_compte> dans ton .env selon ton besoin.
+    preferred_platform = os.getenv("ZERNIO_PREFERRED_PLATFORM", "").strip().lower() or None
+    preferred_account_id = os.getenv("ZERNIO_ACCOUNT_ID", "").strip() or None
+
     params = {"sortBy": "engagement", "limit": 5}
+    if preferred_platform:
+        params["platform"] = preferred_platform
+    if preferred_account_id:
+        params["accountId"] = preferred_account_id
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -109,13 +141,17 @@ def get_latest_videos_stats():
         response.raise_for_status()
         data = response.json()
 
-        posts = data.get("posts", [])
+        posts = _extract_posts_list(data)
         if not posts:
-            print("⚠️ Aucune statistique trouvée sur Zernio (ou aucun post publié).")
+            available_keys = list(data.keys()) if isinstance(data, dict) else type(data)
+            print("⚠️ Aucune statistique trouvée sur Zernio (ou aucun post publié). "
+                  f"Cles disponibles dans la reponse : {available_keys}")
             return None
 
         recent_stats = []
         for post in posts:
+            if not isinstance(post, dict):
+                continue
             metrics = _extract_metrics_from_post(post)
             recent_stats.append({
                 "title": post.get("content", "Contenu inconnu"),
@@ -124,15 +160,21 @@ def get_latest_videos_stats():
                 "comments": metrics["comments"],
             })
 
-       
-        # zero -> signe quasi certain d'un souci de parsing de reponse,
-        # plutot que de laisser passer silencieusement des donnees vides
-        # dans le feedback loop (ContentBrain / hook_tracker).
+        if not recent_stats:
+            print("⚠️ Liste de posts recuperee mais aucune metrique exploitable.")
+            return None
+
+        # CORRECTIF : si tout est a zero, on ne renvoie plus une liste
+        # trompeuse -- on retourne None pour eviter de polluer le prompt
+        # de ContentBrain avec un faux signal "performances nulles".
         if all(s["views"] == 0 and s["likes"] == 0 for s in recent_stats):
             print("⚠️ Toutes les stats recuperees sont a 0 — verifie le format de reponse "
-                  "de l'API Zernio (structure 'platforms' vs 'analytics').")
+                  "de l'API Zernio (structure 'platforms' vs 'analytics'). "
+                  "Aucune donnee fiable, retour de None.")
+            return None
 
-        print(f"📊 Stats Zernio récupérées avec succès ({len(recent_stats)} vidéos analysées).")
+        platform_suffix = f", plateforme={preferred_platform}" if preferred_platform else ""
+        print(f"📊 Stats Zernio récupérées avec succès ({len(recent_stats)} vidéos analysées{platform_suffix}).")
         return recent_stats
 
     except requests.exceptions.Timeout:
