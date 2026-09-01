@@ -6,6 +6,7 @@ import re
 import time
 import requests
 from mutagen.mp3 import MP3
+from constants import GEMINI_MODEL_VOICE
 
 try:
     import edge_tts
@@ -22,7 +23,7 @@ except ImportError:
 
 
 class AudioEngine:
-    GEMINI_MODEL = "gemini-2.5-flash-preview-tts"
+    GEMINI_MODEL = GEMINI_MODEL_VOICE
     GEMINI_NARRATOR_STYLE = (
         "French documentary narrator. Calm, deep, warm and authoritative. "
         "Premium mystery-documentary style, intimate and cinematic but realistic. "

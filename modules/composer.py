@@ -1,6 +1,8 @@
 import os
 import random
 import shutil
+from collections import Counter
+
 import ffmpeg
 
 
@@ -11,12 +13,25 @@ class Composer:
     Pipeline visuel :
         scènes -> sous-titres -> crédit source
                -> assemblage discret par fondus
-               -> mix voix + musique avec ducking
+               -> mix voix + SFX (impact/reveal) + musique avec ducking
                -> normalisation finale
                -> filigrane de marque premium
 
     Le filigrane n'est plus un drawtext : il utilise le logo PNG
     assets/images/minute_mystere_watermark.png.
+
+    MUSIQUE DE FOND MULTIPLE (CORRECTIF) :
+    set_background_music() choisit desormais une piste dans assets/music/
+    en fonction du mood dominant du script (ex: "tense_01.mp3",
+    "ominous_01.mp3", "intriguing_01.mp3"...). Elle est appelee
+    automatiquement au debut de render_all_scenes(), et son resultat
+    (current_bg_music_path) est utilise partout ou l'ancien bg_music_path
+    fixe etait lu (mix + verification d'existence).
+
+    SFX PONCTUELS (AJOUT) :
+    Chaque scene peut declencher un SFX court (impact.mp3 / reveal.mp3
+    dans assets/sfx/) mixe sous la voix de CETTE scene, selon son
+    'role' ou son 'mood' genere par brain.py.
     """
 
     def __init__(self):
@@ -24,16 +39,32 @@ class Composer:
         self.final_dir = os.path.join(os.getcwd(), "assets", "final")
         self.music_dir = os.path.join(os.getcwd(), "assets", "music")
         self.images_dir = os.path.join(os.getcwd(), "assets", "images")
+        self.sfx_dir = os.path.join(os.getcwd(), "assets", "sfx")
 
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.final_dir, exist_ok=True)
         os.makedirs(self.music_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.sfx_dir, exist_ok=True)
 
         # Documentaire mystère : transitions sobres.
         self.transitions = ["fade", "fade", "fade", "fade"]
 
+        # Fallback si aucune piste mood-specifique n'est trouvee et que
+        # le dossier music/ ne contient rien d'exploitable.
         self.bg_music_path = os.path.join(self.music_dir, "bg_track.mp3")
+
+        # === CORRECTIF MUSIQUE MULTIPLE ===
+        # Piste effectivement choisie pour CE rendu, remplie par
+        # set_background_music(). Tout le reste du pipeline (mix,
+        # verification d'existence) doit lire CETTE variable et non
+        # l'ancien bg_music_path fixe.
+        self.current_bg_music_path = None
+
+        # Musiques a exclure du tirage aleatoire meme si presentes dans
+        # assets/music/ (ex: pistes partagees avec un autre pipeline,
+        # comme "bg_track_finance.mp3"). Ajoute ici tout motif a bannir.
+        self.music_exclude_patterns = ["finance"]
 
         # Branding.
         self.watermark_path = os.path.join(
@@ -54,6 +85,21 @@ class Composer:
         self.music_gain = 0.085
         self.music_fade_duration = 2.5
         self.transition_duration = 0.38
+
+        # === SFX PONCTUELS (impact / reveal) ===
+        # Mappe le SFX a jouer selon le 'role' ou le 'mood' de la scene
+        # (deja generes par brain.py, cf. allowed_roles / allowed_moods
+        # dans _validate_script). role a priorite sur mood.
+        self.sfx_role_map = {
+            "reveal": "reveal.mp3",
+            "escalation": "impact.mp3",
+        }
+        self.sfx_mood_map = {
+            "revelatory": "reveal.mp3",
+            "tense": "impact.mp3",
+        }
+        self.sfx_gain = 0.55
+        self.sfx_fade_out = 0.6
 
         # Sous-titres : plus lisibles sur mobile sans devenir énormes.
         self.subtitle_style = (
@@ -101,6 +147,54 @@ class Composer:
             "videvo": "Illustration : Pexels / Pixabay",
             "ai": "Illustration générée par IA",
         }
+
+    # ------------------------------------------------------------------
+    # Gestion des musiques de fond (CORRECTIF : selection multi-pistes)
+    # ------------------------------------------------------------------
+
+    def _pick_dominant_mood(self, script_data):
+        """Determine le mood le plus frequent parmi les scenes du script."""
+        moods = [
+            str(s.get("mood", "")).strip().lower()
+            for s in script_data
+            if s.get("mood")
+        ]
+        if not moods:
+            return "intriguing"
+        return Counter(moods).most_common(1)[0][0]
+
+    def set_background_music(self, mood="intriguing"):
+        """
+        Choisit une piste de musique de fond dans assets/music/, en
+        priorite une piste dont le nom de fichier contient le mood
+        demande (ex: mood="tense" -> "tense_01.mp3"). Remplit
+        self.current_bg_music_path, lu ensuite par le mixage et par
+        concatenate_with_transitions().
+        """
+        if not os.path.exists(self.music_dir):
+            self.current_bg_music_path = None
+            return
+
+        available_tracks = [
+            f for f in os.listdir(self.music_dir)
+            if f.lower().endswith(".mp3")
+            and not any(pat in f.lower() for pat in self.music_exclude_patterns)
+        ]
+
+        if not available_tracks:
+            print("      ⚠️ Aucune musique exploitable trouvée dans assets/music/ !", flush=True)
+            self.current_bg_music_path = None
+            return
+
+        matching_tracks = [f for f in available_tracks if mood.lower() in f.lower()]
+        chosen_track = random.choice(matching_tracks) if matching_tracks else random.choice(available_tracks)
+
+        self.current_bg_music_path = os.path.join(self.music_dir, chosen_track)
+
+        if matching_tracks:
+            print(f"      🎵 Musique sélectionnée (mood='{mood}') : {chosen_track}", flush=True)
+        else:
+            print(f"      🎵 Aucune piste pour mood='{mood}', musique aléatoire : {chosen_track}", flush=True)
 
     # ------------------------------------------------------------------
     # Utilitaires
@@ -176,6 +270,70 @@ class Composer:
             return "Illustration générée par IA"
 
         return "Illustration"
+
+    # ------------------------------------------------------------------
+    # SFX PONCTUELS (impact / reveal)
+    # ------------------------------------------------------------------
+
+    def _resolve_sfx_path(self, scene):
+        """
+        Determine si cette scene doit declencher un SFX ponctuel
+        (impact.mp3 / reveal.mp3), en se basant d'abord sur 'role',
+        puis sur 'mood' si aucun role ne matche. Retourne None si rien
+        n'est applicable ou si le fichier n'existe pas sur le disque.
+        """
+        role = str(scene.get("role", "")).strip().lower()
+        mood = str(scene.get("mood", "")).strip().lower()
+
+        filename = self.sfx_role_map.get(role) or self.sfx_mood_map.get(mood)
+        if not filename:
+            return None
+
+        path = os.path.join(self.sfx_dir, filename)
+        return path if os.path.exists(path) else None
+
+    def _build_scene_audio(self, audio_path, scene, total_duration):
+        """
+        Construit le flux audio final d'une scene : la voix seule, ou
+        la voix mixee avec un SFX ponctuel (impact/reveal) si applicable.
+        Le SFX est tronque/complete en silence pour matcher exactement
+        la duree de la scene, avec un fondu sortant pour eviter une
+        coupure brutale.
+        """
+        voice_stream = ffmpeg.input(audio_path).audio
+
+        sfx_path = self._resolve_sfx_path(scene)
+        if not sfx_path:
+            return voice_stream
+
+        sfx_duration = self.get_duration(sfx_path)
+        if sfx_duration <= 0:
+            return voice_stream
+
+        effective_sfx_dur = min(sfx_duration, total_duration)
+        fade_start = max(effective_sfx_dur - self.sfx_fade_out, 0)
+
+        sfx_audio = (
+            ffmpeg.input(sfx_path).audio
+            .filter("aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo")
+            .filter("volume", self.sfx_gain)
+            .filter("atrim", duration=effective_sfx_dur)
+            .filter("afade", type="out", start_time=fade_start, duration=self.sfx_fade_out)
+            .filter("apad", whole_dur=total_duration)
+        )
+
+        voice_formatted = voice_stream.filter(
+            "aformat", sample_fmts="fltp", sample_rates=48000, channel_layouts="stereo"
+        )
+
+        return ffmpeg.filter(
+            [voice_formatted, sfx_audio],
+            "amix",
+            inputs=2,
+            duration="first",
+            dropout_transition=0,
+            normalize=0,
+        )
 
     # ------------------------------------------------------------------
     # FILIGRANE PREMIUM
@@ -303,7 +461,8 @@ class Composer:
         path_b = None
 
         try:
-            input_audio = ffmpeg.input(audio_path)
+            # === SFX : voix + eventuel impact/reveal mixes ensemble ===
+            scene_audio = self._build_scene_audio(audio_path, scene, total_duration)
 
             if bg_video_path and os.path.exists(bg_video_path):
                 source_duration = self.get_duration(bg_video_path)
@@ -464,7 +623,7 @@ class Composer:
             # ----------------------------------------------------------
             runner = ffmpeg.output(
                 video_stream,
-                input_audio,
+                scene_audio,
                 output_path,
                 vcodec="libx264",
                 acodec="aac",
@@ -508,6 +667,12 @@ class Composer:
         video_pairs,
         bg_video_path=None
     ):
+        # === CORRECTIF : selection de la musique de fond au debut du
+        # rendu, basee sur le mood dominant du script, au lieu de
+        # laisser set_background_music() sans jamais etre appelee.
+        dominant_mood = self._pick_dominant_mood(script_data)
+        self.set_background_music(mood=dominant_mood)
+
         rendered_paths = []
         bg_cursor = 0.0
 
@@ -655,8 +820,12 @@ class Composer:
             )
 
             voice = ffmpeg.input(stitched_path)
+
+            # === CORRECTIF : utilise la piste choisie par
+            # set_background_music() (current_bg_music_path) au lieu de
+            # l'ancien chemin fixe bg_music_path.
             music = ffmpeg.input(
-                self.bg_music_path,
+                self.current_bg_music_path,
                 stream_loop=-1
             )
 
@@ -862,7 +1031,11 @@ class Composer:
 
             stitched_path = courant
 
-        if os.path.exists(self.bg_music_path):
+        # === CORRECTIF : on verifie/utilise la piste effectivement
+        # choisie par set_background_music() (current_bg_music_path),
+        # et non plus l'ancien bg_music_path fixe qui ignorait la
+        # selection multi-pistes par mood.
+        if self.current_bg_music_path and os.path.exists(self.current_bg_music_path):
             success = self._mix_background_music(
                 stitched_path,
                 raw_final_output_path
@@ -893,6 +1066,10 @@ class Composer:
                     )
 
         else:
+            print(
+                "      ⚠️ Aucune musique de fond disponible "
+                "(current_bg_music_path introuvable) : normalisation sans musique."
+            )
             normalized_fallback = os.path.join(
                 self.temp_dir,
                 "normalized_no_music.mp4"
