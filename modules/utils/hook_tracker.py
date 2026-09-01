@@ -24,6 +24,7 @@ import os
 import json
 import random
 import tempfile
+import difflib
 
 try:
     from huggingface_hub import hf_hub_download, upload_file
@@ -184,3 +185,31 @@ def select_hook(hooks, pattern_scores=None, epsilon=EPSILON):
     reason = "exploration forcee" if do_explore else "pas de score historique disponible"
     print(f"🎲 Hook selectionne aleatoirement ({reason}), pattern: {chosen.get('pattern', '?')}")
     return chosen
+
+
+def is_topic_redundant(new_title, history, threshold=0.55):
+    """
+    Compare le nouveau titre généré avec l'historique de Hugging Face.
+    Si le ratio de similarité dépasse le seuil, la vidéo est bloquée.
+    """
+    if not history:
+        return False
+        
+    new_norm = _normalize_title(new_title)
+    
+    for entry in history:
+        old_title = entry.get("title", "")
+        old_norm = _normalize_title(old_title)
+        
+        # Calcul du ratio de ressemblance entre 0.0 et 1.0
+        similarity = difflib.SequenceMatcher(None, new_norm, old_norm).ratio()
+        
+        # Mots-clés discriminants (ex: si le lieu exact est déjà dans un ancien titre)
+        common_words = set(new_norm.split()) & set(old_norm.split())
+        critical_overlap = len(common_words) > 3 # Plus de 3 mots identiques
+        
+        if similarity > threshold or critical_overlap:
+            print(f"🚫 BLOCAGE QUALITÉ : '{new_title}' est trop similaire à '{old_title}' (Score: {similarity:.2f})")
+            return True
+            
+    return False

@@ -7,6 +7,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from constants import GROQ_MODEL
 
+from modules.utils.topic_tracker import load_topic_history, is_duplicate_topic
+
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
@@ -25,7 +27,6 @@ except ImportError:
         return None
 
 load_dotenv()
-
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"
 
@@ -80,20 +81,17 @@ def _has_missing_accents(text, min_hits=3):
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
 
-
 AI_MENTION_PATTERNS = [
     r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
     r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
     r"\bgroq\b", r"\bgemini\b", r"genere[e]?\s+par\s+l'?ia",
 ]
 
-
 def _contains_ai_mention(text):
     if not text:
         return False
     text_lower = text.lower()
     return any(re.search(p, text_lower) for p in AI_MENTION_PATTERNS)
-
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
     if not previous_stats_list:
@@ -114,7 +112,6 @@ INSTRUCTION :
 Adapte le {label} selon les performances sans citer les stats explicitement.
 """
 
-
 def _clean_single_line_title(text):
     if not text:
         return ""
@@ -124,7 +121,6 @@ def _clean_single_line_title(text):
         return ""
     return re.sub(r"\s+", " ", lines[0]).strip()
 
-
 def _clean_json_response(content):
     if not content:
         return content
@@ -133,7 +129,6 @@ def _clean_json_response(content):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
     return cleaned.strip()
-
 
 FRENCH_GEO_KEYWORDS = [
     "france", "francaise", "francais", "bretagne", "normandie", "vendee",
@@ -151,11 +146,9 @@ COUNTRY_KEYWORDS = {
     "belgique": ["belgique", "belge"],
 }
 
-
 def _topic_claims_french_location(topic):
     topic_lower = topic.lower()
     return any(kw in topic_lower for kw in FRENCH_GEO_KEYWORDS)
-
 
 def _guess_country_hint(topic):
     topic_lower = topic.lower()
@@ -163,11 +156,6 @@ def _guess_country_hint(topic):
         if any(kw in topic_lower for kw in keywords):
             return country.capitalize()
     return None
-
-
-# =====================================================================
-# --- VERIFICATION WIKIDATA (PAYS REEL D'UN LIEU) ---
-# =====================================================================
 
 class WikidataChecker:
     API_URL = "https://www.wikidata.org/w/api.php"
@@ -302,10 +290,8 @@ class WikidataChecker:
         cls.CACHE[cache_key] = result
         return result
 
-
 def _normalize_country_text(text):
     return re.sub(r"[^a-z]", "", str(text or "").lower())
-
 
 def _countries_match(declared, real):
     if not declared or not real:
@@ -313,11 +299,6 @@ def _countries_match(declared, real):
     d = _normalize_country_text(declared)
     r = _normalize_country_text(real)
     return d == r or d in r or r in d
-
-
-# =====================================================================
-# --- DETECTION DU TYPE D'ERREUR GROQ ---
-# =====================================================================
 
 _RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
 SAFETY_MARGIN_TOKENS = 400
@@ -345,7 +326,6 @@ def _estimate_tokens(text):
 
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
-
 
 class ContentBrain:
     def __init__(self):
@@ -437,7 +417,6 @@ class ContentBrain:
                 print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
                 last_error = e
                 
-                # Relance si le budget de tokens a été épuisé
                 if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
                     prompt_tokens_est = _estimate_prompt_tokens(messages)
                     available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
@@ -491,12 +470,10 @@ class ContentBrain:
 
         raise ValueError(f"Impossible d'obtenir un JSON valide après {max_json_retries} tentatives : {last_error}")
 
-    # =================================================================
-    # SUJET / ANGLE / REQUETE VISUELLE
-    # =================================================================
-
     def get_trending_topic(self, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="sujet")
+        used_topics = load_topic_history()
+
         messages = [
             {"role": "system", "content": (
                 "Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre "
@@ -511,11 +488,16 @@ class ContentBrain:
                 "(ex: un pays, une region) si tu n'es pas certain que l'exemple developpe "
                 "ensuite s'y trouve reellement."
                 + stats_instruction
+                + (
+                    "\n\nSUJETS DEJA TRAITES RECEMMENT (INTERDICTION DE LES REUTILISER, "
+                    "meme reformules differemment) :\n- " + "\n- ".join(used_topics[-30:])
+                    if used_topics else ""
+                )
             )},
         ]
 
         last_topic = ""
-        for attempt in range(3):
+        for attempt in range(5):
             content = self._call_with_fallback(
                 messages, temperature=0.9, max_completion_tokens=2000
             )
@@ -526,11 +508,18 @@ class ContentBrain:
                 print(f"⚠️ Sujet rejeté (mention IA détectée, tentative {attempt + 1}) : {topic}")
                 continue
 
-            if topic and 4 <= len(topic.split()) <= 18:
-                return topic
-            print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
+            if not (topic and 4 <= len(topic.split()) <= 18):
+                print(f"⚠️ Sujet invalide genere (tentative {attempt + 1}) : {topic}")
+                continue
 
-        raise ValueError(f"Impossible d'obtenir un sujet valide apres 3 tentatives : {last_topic}")
+            is_dup, matched = is_duplicate_topic(topic, used_topics)
+            if is_dup:
+                print(f"⚠️ Sujet rejeté (doublon de '{matched}', tentative {attempt + 1}) : {topic}")
+                continue
+
+            return topic
+
+        raise ValueError(f"Impossible d'obtenir un sujet valide et unique apres 5 tentatives : {last_topic}")
 
     def refine_topic_angle(self, raw_topic):
         messages = [
@@ -572,10 +561,6 @@ class ContentBrain:
         if not query:
             return "photorealistic historical documentary dark atmosphere"
         return query
-
-    # =================================================================
-    # HOOKS
-    # =================================================================
 
     def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
         stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
@@ -638,10 +623,6 @@ RETURNS JSON:
             normalized_hooks = [{"text": topic, "pattern": "default", "raison": ""}]
         return normalized_hooks
 
-    # =================================================================
-    # ANCRAGE NARRATIF (GROUNDING WIKIPEDIA)
-    # =================================================================
-
     def propose_real_case(self, topic):
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
@@ -703,10 +684,6 @@ RETURNS JSON:
             "wiki_query": case_name,
             "source": source,
         }
-
-    # =================================================================
-    # SCRIPT
-    # =================================================================
 
     def generate_script(self, topic, chosen_hook=None):
         return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
@@ -797,17 +774,17 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
 14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
-"16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du "
-"script (ex: scene 4 sur 11) doit contenir une phrase de rupture qui relance "
-"la curiosite (ex: 'Mais ce n'est pas la le plus troublant...', 'Voici ou "
-"l'histoire prend un tournant...') pour retenir les spectateurs qui commencent "
-"a decrocher.\n"
-"17. CTA FINAL : genere un champ 'closing_cta' independant dans le JSON "
-"(au meme niveau que 'title', 'visual_identity', 'audio_profile'), une "
-"phrase courte (8-10 mots) qui invite a s'abonner en creant une attente "
-"specifique pour la prochaine video (ex: 'Abonne-toi, demain je devoile un "
-"secret encore plus trouble'), jamais un CTA generique type 'like et "
-"abonne-toi'.
+16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du
+script (ex: scene 4 sur 11) doit contenir une phrase de rupture qui relance
+la curiosite (ex: 'Mais ce n'est pas la le plus troublant...', 'Voici ou
+l'histoire prend un tournant...') pour retenir les spectateurs qui commencent
+a decrocher.
+17. CTA FINAL : genere un champ 'closing_cta' independant dans le JSON
+(au meme niveau que 'title', 'visual_identity', 'audio_profile'), une
+phrase courte (8-10 mots) qui invite a s'abonner en creant une attente
+specifique pour la prochaine video (ex: 'Abonne-toi, demain je devoile un
+secret encore plus trouble'), jamais un CTA generique type 'like et
+abonne-toi'.
 
 CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
 Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
@@ -826,7 +803,6 @@ id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_
 """
 
         estimated_tokens_needed = min(scene_count * 280 + 1200, 6000)
-
         correction_feedback = ""
 
         for fact_check_attempt in range(max_fact_check_retries + 1):
@@ -952,10 +928,6 @@ IMPORTANT : garde EXACTEMENT {scene_count} scenes.
                 return data
 
         return data
-
-    # =================================================================
-    # VERIFICATIONS
-    # =================================================================
 
     def _check_geography_consistency(self, topic, scenes):
         if not _topic_claims_french_location(topic):
