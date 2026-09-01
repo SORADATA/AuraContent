@@ -476,22 +476,26 @@ class ContentBrain:
 
         messages = [
             {"role": "system", "content": (
-                "Tu es un strategiste de contenu viral. Reponds uniquement avec un seul titre "
-                "en francais, une seule ligne, sans guillemets, maximum 18 mots. "
-                "Ne montre jamais ton raisonnement, reponds directement avec le titre final. "
+                "Tu es un créateur de contenu ultra-créatif et totalement imprévisible. "
+                "Ta force est la diversité absolue : tu ne recycles jamais tes structures de phrases, "
+                "ton vocabulaire ou tes angles d'attaque. "
+                "Reponds uniquement avec un seul titre en francais, une seule ligne, sans guillemets, maximum 18 mots. "
+                "Ne montre jamais ton raisonnement. "
                 f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
             {"role": "user", "content": (
-                "Donne un sujet viral totalement inédit et surprenant pour TikTok en français, "
-                "portant sur un mystere, un lieu ou un fait historique REEL et verifiable, "
-                "peu connu du grand public. Ne pas annoncer une zone geographique precise "
-                "(ex: un pays, une region) si tu n'es pas certain que l'exemple developpe "
-                "ensuite s'y trouve reellement."
+                "Donne un sujet viral totalement inédit pour TikTok en français, "
+                "portant sur un fait REEL et verifiable, très peu connu du grand public. "
+                "INSTRUCTION DE DIVERSITÉ : Explore toute la richesse de la réalité (arnaques historiques, "
+                "inventions improbables, lois absurdes, coïncidences folles, records méconnus, destins hors du commun). "
+                "Alterne radicalement tes formats de titres à chaque fois : utilise parfois une question provocante, "
+                "parfois une affirmation brute, un paradoxe frappant, ou une simple anecdote ciblée. "
+                "Ne pas annoncer une zone geographique precise si tu n'es pas certain du lieu réel."
                 + stats_instruction
                 + (
-                    "\n\nSUJETS DEJA TRAITES RECEMMENT (INTERDICTION DE LES REUTILISER, "
-                    "meme reformules differemment) :\n- " + "\n- ".join(used_topics[-30:])
-                    if used_topics else ""
+                    "\n\nSUJETS DEJA TRAITES (Casse tes habitudes : propose un univers, un vocabulaire et un format "
+                    "radicalement différents de ce qui figure dans cette liste) :\n- " 
+                    + "\n- ".join(used_topics[-30:]) if used_topics else ""
                 )
             )},
         ]
