@@ -5,8 +5,11 @@ import time
 import requests
 from openai import OpenAI
 from dotenv import load_dotenv
-from constants import GROQ_MODEL
-
+from constants import(
+    GROQ_MODEL,
+    OPENROUTER_FALLBACK_MODEL_1,
+    OPENROUTER_FALLBACK_MODEL_2
+)
 from modules.utils.topic_tracker import load_topic_history, is_duplicate_topic
 
 try:
@@ -69,6 +72,7 @@ VERACITY_INSTRUCTION = (
     "confondre deux legendes/lieux distincts portant un nom proche."
 )
 
+
 def _has_missing_accents(text, min_hits=3):
     suspicious_patterns = [
         r"\bdecouv", r"\bmyster", r"\bsecret", r"\bexplor",
@@ -81,17 +85,20 @@ def _has_missing_accents(text, min_hits=3):
     has_any_accent = any(c in text_lower for c in ACCENTED_CHARS)
     return hits >= min_hits and not has_any_accent
 
+
 AI_MENTION_PATTERNS = [
     r"intelligence\s+artificielle", r"\bIA\b", r"\bl'IA\b",
     r"artificial\s+intelligence", r"\bl'algorithme\b", r"\bchatgpt\b",
     r"\bgroq\b", r"\bgemini\b", r"genere[e]?\s+par\s+l'?ia",
 ]
 
+
 def _contains_ai_mention(text):
     if not text:
         return False
     text_lower = text.lower()
     return any(re.search(p, text_lower) for p in AI_MENTION_PATTERNS)
+
 
 def _format_stats_instruction(previous_stats_list, label="hooks"):
     if not previous_stats_list:
@@ -112,6 +119,7 @@ INSTRUCTION :
 Adapte le {label} selon les performances sans citer les stats explicitement.
 """
 
+
 def _clean_single_line_title(text):
     if not text:
         return ""
@@ -121,6 +129,7 @@ def _clean_single_line_title(text):
         return ""
     return re.sub(r"\s+", " ", lines[0]).strip()
 
+
 def _clean_json_response(content):
     if not content:
         return content
@@ -129,6 +138,7 @@ def _clean_json_response(content):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```$", "", cleaned)
     return cleaned.strip()
+
 
 FRENCH_GEO_KEYWORDS = [
     "france", "francaise", "francais", "bretagne", "normandie", "vendee",
@@ -146,9 +156,11 @@ COUNTRY_KEYWORDS = {
     "belgique": ["belgique", "belge"],
 }
 
+
 def _topic_claims_french_location(topic):
     topic_lower = topic.lower()
     return any(kw in topic_lower for kw in FRENCH_GEO_KEYWORDS)
+
 
 def _guess_country_hint(topic):
     topic_lower = topic.lower()
@@ -156,6 +168,7 @@ def _guess_country_hint(topic):
         if any(kw in topic_lower for kw in keywords):
             return country.capitalize()
     return None
+
 
 class WikidataChecker:
     API_URL = "https://www.wikidata.org/w/api.php"
@@ -290,8 +303,10 @@ class WikidataChecker:
         cls.CACHE[cache_key] = result
         return result
 
+
 def _normalize_country_text(text):
     return re.sub(r"[^a-z]", "", str(text or "").lower())
+
 
 def _countries_match(declared, real):
     if not declared or not real:
@@ -300,14 +315,17 @@ def _countries_match(declared, real):
     r = _normalize_country_text(real)
     return d == r or d in r or r in d
 
+
 _RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
 SAFETY_MARGIN_TOKENS = 400
+
 
 def _parse_rate_limit_numbers(err_str):
     match = _RATE_LIMIT_NUMS_RE.search(err_str)
     if not match:
         return None
     return int(match.group(1)), int(match.group(2))
+
 
 def _is_rate_limit_error(err_str):
     err_lower = err_str.lower()
@@ -319,23 +337,20 @@ def _is_rate_limit_error(err_str):
         or "rpm" in err_lower
     )
 
+
 def _estimate_tokens(text):
     if not text:
         return 0
     return max(1, len(text) // 3)
 
+
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
+
 
 class ContentBrain:
     def __init__(self):
         pass
-
-    def _build_client(self):
-        groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            raise ValueError("Clé GROQ_API_KEY introuvable dans l'environnement.")
-        return OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
 
     def _extract_content(self, response):
         choices = getattr(response, "choices", None)
@@ -380,72 +395,99 @@ class ContentBrain:
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
                              max_completion_tokens=3000, hard_token_cap=7500):
-        client = self._build_client()
+        
+        # Configuration dynamique des fournisseurs (sans coder les modèles en dur)
+        providers = [
+            {
+                "name": "Groq",
+                "model": GROQ_MODEL,
+                "base_url": "https://api.groq.com/openai/v1",
+                "api_key": os.getenv("GROQ_API_KEY")
+            },
+            {
+                "name": "OpenRouter (Fallback 1)",
+                "model": OPENROUTER_FALLBACK_MODEL_1,
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": os.getenv("OPENROUTER_API_KEY")
+            },
+            {
+                "name": "OpenRouter (Fallback 2)",
+                "model": OPENROUTER_FALLBACK_MODEL_2,
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": os.getenv("OPENROUTER_API_KEY")
+            }
+        ]
+
         last_error = None
-
         prompt_tokens_est = _estimate_prompt_tokens(messages)
-        available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-        if max_completion_tokens > available:
-            adjusted = max(500, available)
-            if adjusted < max_completion_tokens:
-                print(f"ℹ️ Budget de sortie reduit preventivement : "
-                      f"{max_completion_tokens} -> {adjusted} "
-                      f"(prompt estime a ~{prompt_tokens_est} tokens, "
-                      f"plafond {hard_token_cap}).")
-                max_completion_tokens = adjusted
-
-        for attempt in range(3):
-            try:
-                kwargs = {
-                    "model": GROQ_MODEL,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_completion_tokens": max_completion_tokens,
-                }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
-
-                response = client.chat.completions.create(**kwargs)
-                content = self._extract_content(response)
-                print("✅ Reponse obtenue via Groq")
-
-                time.sleep(1)
-                return content
-
-            except Exception as e:
-                err_str = str(e)
-                print(f"⚠️ Echec avec Groq (Tentative {attempt + 1}/3): {e}")
-                last_error = e
+        
+        for provider in providers:
+            if not provider["api_key"]:
+                print(f"⚠️ Clé API manquante pour {provider['name']}, passage au suivant.")
+                continue
                 
-                if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
-                    prompt_tokens_est = _estimate_prompt_tokens(messages)
-                    available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-                    max_completion_tokens = max(500, min(max_completion_tokens + 1500, available))
-                    time.sleep(2)
-                    continue
+            # Instanciation dynamique du client pour ce fournisseur
+            client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
+            current_max_tokens = max_completion_tokens
+            
+            available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
+            if current_max_tokens > available:
+                adjusted = max(500, available)
+                if adjusted < current_max_tokens:
+                    print(f"ℹ️ Budget de sortie réduit préventivement : {current_max_tokens} -> {adjusted}")
+                    current_max_tokens = adjusted
 
-                rate_limit_nums = _parse_rate_limit_numbers(err_str)
+            for attempt in range(3):
+                try:
+                    kwargs = {
+                        "model": provider["model"],
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_completion_tokens": current_max_tokens,
+                    }
+                    if json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
 
-                if rate_limit_nums:
-                    limit, requested = rate_limit_nums
-                    overage = requested - limit
-                    new_budget = max(500, max_completion_tokens - overage - SAFETY_MARGIN_TOKENS)
-                    print(f"⚠️ Requete trop grosse ({requested} > {limit}). "
-                          f"Reduction : {max_completion_tokens} -> {new_budget}.")
-                    max_completion_tokens = new_budget
+                    response = client.chat.completions.create(**kwargs)
+                    content = self._extract_content(response)
+                    print(f"✅ Réponse obtenue via {provider['name']} ({provider['model']})")
                     time.sleep(1)
+                    return content
 
-                elif _is_rate_limit_error(err_str):
-                    wait_time = 60
-                    print(f"⏳ Limite de debit atteinte (TPM/RPM), attente de {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    prompt_tokens_est = _estimate_prompt_tokens(messages)
-                    available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-                    max_completion_tokens = max(500, min(max_completion_tokens + 1000, available))
-                    time.sleep(4)
+                except Exception as e:
+                    err_str = str(e)
+                    print(f"⚠️ Échec avec {provider['name']} (Tentative {attempt + 1}/3): {e}")
+                    last_error = e
+                    
+                    # DÉTECTION DE LA CENSURE (ERREUR 400)
+                    if "invalid_request_error" in err_str and ("I'm sorry" in err_str or "I’m sorry" in err_str or "failed_generation" in err_str):
+                        print(f"🚫 Blocage de sécurité détecté sur {provider['name']}. Bascule immédiate vers le fallback...")
+                        break # Quitte la boucle 'attempt' et passe au fournisseur suivant (OpenRouter)
+                        
+                    # GESTION DES LIMITES DE TOKENS
+                    if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
+                        current_max_tokens = max(500, min(current_max_tokens + 1500, available))
+                        time.sleep(2)
+                        continue
 
-        raise RuntimeError(f"Erreur critique Groq après 3 tentatives. Dernière erreur: {last_error}")
+                    rate_limit_nums = _parse_rate_limit_numbers(err_str)
+                    if rate_limit_nums:
+                        limit, requested = rate_limit_nums
+                        overage = requested - limit
+                        current_max_tokens = max(500, current_max_tokens - overage - SAFETY_MARGIN_TOKENS)
+                        time.sleep(1)
+                    elif _is_rate_limit_error(err_str):
+                        wait_time = 10 if "OpenRouter" in provider["name"] else 60
+                        print(f"⏳ Limite de débit atteinte sur {provider['name']}, attente de {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        current_max_tokens = max(500, min(current_max_tokens + 1000, available))
+                        time.sleep(4)
+                        
+            print(f"❌ Échec définitif pour {provider['name']} après 3 tentatives.")
+
+        # Si la boucle se termine sans 'return', tous les providers ont échoué
+        raise RuntimeError(f"Brain Error (Script): Échec total après utilisation de tous les modèles (Groq + OpenRouter). Dernière erreur: {last_error}")
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
                               max_completion_tokens=6000, hard_token_cap=7500):
@@ -485,12 +527,12 @@ class ContentBrain:
             )},
             {"role": "user", "content": (
                 "Donne un sujet viral totalement inédit pour TikTok en français, "
-                "portant sur un fait REEL et verifiable, très peu connu du grand public. "
-                "INSTRUCTION DE DIVERSITÉ : Explore toute la richesse de la réalité (arnaques historiques, "
-                "inventions improbables, lois absurdes, coïncidences folles, records méconnus, destins hors du commun). "
+                "portant sur un fait historique URBAIN REEL et verifiable, très peu connu du grand public, "
+                "SITUÉ STRICTEMENT EN FRANCE (idéalement des secrets parisiens ou des légendes urbaines locales). "
+                "INSTRUCTION DE DIVERSITÉ : Explore exclusivement le patrimoine français "
+                "(catacombes, monuments oubliés, lois absurdes locales, anecdotes architecturales, affaires classées). "
                 "Alterne radicalement tes formats de titres à chaque fois : utilise parfois une question provocante, "
-                "parfois une affirmation brute, un paradoxe frappant, ou une simple anecdote ciblée. "
-                "Ne pas annoncer une zone geographique precise si tu n'es pas certain du lieu réel."
+                "parfois une affirmation brute, un paradoxe frappant, ou une simple anecdote ciblée."
                 + stats_instruction
                 + (
                     "\n\nSUJETS DEJA TRAITES (Casse tes habitudes : propose un univers, un vocabulaire et un format "
@@ -631,7 +673,7 @@ RETURNS JSON:
         if not GROUNDING_AVAILABLE:
             return {"case_name": None, "wiki_query": None, "source": None}
 
-        hint_country = _guess_country_hint(topic)
+        hint_country = _guess_country_hint(topic) or "France"
 
         messages = [
             {"role": "system", "content": (
@@ -776,7 +818,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
 13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
-14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un evenement precis et date (incendie, destruction, decouverte) a illustrer concretement.
+14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un eventement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
 16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du
 script (ex: scene 4 sur 11) doit contenir une phrase de rupture qui relance
@@ -789,6 +831,8 @@ phrase courte (8-10 mots) qui invite a s'abonner en creant une attente
 specifique pour la prochaine video (ex: 'Abonne-toi, demain je devoile un
 secret encore plus trouble'), jamais un CTA generique type 'like et
 abonne-toi'.
+18. Pour la clé 'mood', choisis OBLIGATOIREMENT parmi cette liste : "ominous", "intriguing", "tense", "awe", "scientific", "investigation".
+19. Pour la clé 'role', choisis OBLIGATOIREMENT parmi cette liste : "hook", "tension", "context", "value", "escalation", "reveal", "cta".
 
 CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
 Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
@@ -1080,7 +1124,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
 
         allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
-        allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "melancholic", "revelatory"}
+        allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "investigation"}
 
         for scene in scenes:
             if not isinstance(scene, dict):
