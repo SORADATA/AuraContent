@@ -40,6 +40,7 @@ class Composer:
         self.music_dir = os.path.join(os.getcwd(), "assets", "music")
         self.images_dir = os.path.join(os.getcwd(), "assets", "images")
         self.sfx_dir = os.path.join(os.getcwd(), "assets", "sfx")
+    
 
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.final_dir, exist_ok=True)
@@ -93,10 +94,12 @@ class Composer:
         self.sfx_role_map = {
             "reveal": "reveal.mp3",
             "escalation": "impact.mp3",
+            "hook": "impact.mp3",  # Déclenche un impact dès la première phrase
         }
         self.sfx_mood_map = {
             "revelatory": "reveal.mp3",
             "tense": "impact.mp3",
+            "ominous": "reveal.mp3"  # Associe les scènes sombres à un effet
         }
         self.sfx_gain = 0.55
         self.sfx_fade_out = 0.6
@@ -319,7 +322,7 @@ class Composer:
             .filter("volume", self.sfx_gain)
             .filter("atrim", duration=effective_sfx_dur)
             .filter("afade", type="out", start_time=fade_start, duration=self.sfx_fade_out)
-            .filter("apad", whole_dur=total_duration)
+            .filter("apad")
         )
 
         voice_formatted = voice_stream.filter(
