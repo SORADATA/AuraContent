@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+import time
 import requests
 from datetime import datetime
 from constants import API_URL, DIRECT_URL
@@ -79,6 +80,71 @@ def check_audio_loudness(video_url):
             except Exception as e:
                 print(f"⚠️ Impossible de supprimer le fichier temporaire {tmp_path} : {e}")
 
+def publish_to_platform(platform_name, account_id, video_url, clean_title, caption, api_key, draft_mode=False):
+    """
+    Fonction générique pour publier sur une plateforme spécifique.
+    """
+    print(f"\n🚀 Tentative de publication sur {platform_name.upper()}...")
+    url = "https://zernio.com/api/v1/posts"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    platforms_list = [{"platform": platform_name, "accountId": account_id}]
+    
+    payload = {
+        "content": caption,
+        "mediaItems": [{"type": "video", "url": video_url}],
+        "platforms": platforms_list,
+        "publishNow": True
+    }
+
+    # Configurations spécifiques selon la plateforme
+    if platform_name == "youtube":
+        payload["youtubeSettings"] = {
+            "title": clean_title,
+            "privacy_status": "PUBLIC"
+        }
+    elif platform_name == "tiktok":
+        payload["tiktokSettings"] = {
+            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "allow_comment": True,
+            "allow_duet": False,
+            "allow_stitch": False,
+            "content_preview_confirmed": True,
+            "express_consent_given": True,
+            "video_made_with_ai": True,
+            "draft": draft_mode  # Envoi en brouillon si les serveurs sont pleins
+        }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        # Gestion des retours de Zernio
+        if response.status_code in [200, 201]:
+            print(f"✅ Succès ! La vidéo a été publiée sur {platform_name.capitalize()}.")
+            return True
+            
+        elif response.status_code == 207:
+            # Succès partiel (très fréquent sur Zernio si le réseau social rame)
+            print(f"⚠️ Avertissement (207) sur {platform_name.capitalize()} : Publication partiellement bloquée ou mise en file d'attente.")
+            print(f"Détail : {response.text}")
+            return False
+            
+        elif response.status_code == 409:
+            print(f"⚠️ Bloqué sur {platform_name.capitalize()} : Doublon détecté.")
+            return True # Considéré comme traité
+            
+        else:
+            print(f"❌ Échec de publication sur {platform_name.capitalize()} (Code {response.status_code}).")
+            print(f"Détails : {response.text}")
+            return False
+
+    except requests.exceptions.Timeout:
+        print(f"❌ La requête vers {platform_name.capitalize()} a expiré (timeout).")
+        return False
+
 
 def publish_to_tiktok():
     video_url, file_path = get_latest_video_url()
@@ -129,49 +195,31 @@ def publish_to_tiktok():
     print(f"📝 Légende finale utilisée pour la publication :\n{caption}")
     # =========================================================================
 
-    url = "https://zernio.com/api/v1/posts"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    # 1. PUBLICATION SUR YOUTUBE EN PREMIER
+    yt_success = publish_to_platform(
+        "youtube", youtube_account_id, video_url, clean_title, caption, api_key
+    )
+    
+    # Pause entre les envois pour ne pas saturer l'API
+    wait_time = 15
+    print(f"⏳ Pause de {wait_time} secondes avant la prochaine plateforme...")
+    time.sleep(wait_time)
 
-    platforms_list = [
-        {"platform": "tiktok", "accountId": tiktok_account_id},
-        {"platform": "youtube", "accountId": youtube_account_id}
-    ]
+    # 2. PUBLICATION SUR TIKTOK
+    # On tente d'abord une publication directe normale
+    tk_success = publish_to_platform(
+        "tiktok", tiktok_account_id, video_url, clean_title, caption, api_key, draft_mode=False
+    )
+    
+    # 3. FALLBACK TIKTOK (Si la publication directe échoue à cause des serveurs pleins)
+    if not tk_success:
+        print("\n🔄 Nouvelle tentative sur TikTok en mode BROUILLON (Draft)...")
+        time.sleep(10)
+        publish_to_platform(
+            "tiktok", tiktok_account_id, video_url, clean_title, caption, api_key, draft_mode=True
+        )
 
-    payload = {
-        "content": caption,
-        "mediaItems": [{"type": "video", "url": video_url}],
-        "platforms": platforms_list,
-        "youtubeSettings": {
-            "title": clean_title,
-            "privacy_status": "PUBLIC"
-        },
-        "tiktokSettings": {
-            "privacy_level": "PUBLIC_TO_EVERYONE",
-            "allow_comment": True,
-            "allow_duet": False,
-            "allow_stitch": False,
-            "content_preview_confirmed": True,
-            "express_consent_given": True,
-            "video_made_with_ai": True
-        },
-        "publishNow": True
-    }
-
-    print("🚀 Envoi de la requête à Zernio...")
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-    except requests.exceptions.Timeout:
-        raise Exception("❌ La requête vers Zernio a expiré (timeout).")
-
-    if response.status_code in [200, 201]:
-        print("✅ Succès ! La vidéo a été envoyée pour publication.")
-    elif response.status_code == 409:
-        print("⚠️ Zernio a bloqué la publication : Cette vidéo a déjà été publiée (Doublon géré avec succès).")
-    else:
-        raise Exception(f"❌ Erreur lors de la publication ({response.status_code}) : {response.text}")
+    print("\n🏁 Processus de multi-publication terminé.")
 
 
 if __name__ == "__main__":
