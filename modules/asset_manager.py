@@ -61,49 +61,20 @@ class AssetManager:
         return structured_prompt
 
     def get_best_asset(self, query, output_path, scene_type="generic", event_context=None, image_prompt=None):
-        """
-        Orchestrateur principal.
-        scene_type: 'generic' (vagues, ambiance) ou 'specific' (personnage, événement précis).
-
-        query: pour les scenes 'specific', il s'agit du location_name (utilise
-        pour les recherches d'archives Wikimedia/Openverse, qui ont besoin
-        d'un nom propre). Pour les scenes 'generic', il s'agit du
-        stock_search (mot-cle anglais court, utilise pour les recherches
-        video Pexels/Pixabay).
-
-        event_context: descriptif factuel precis (ex: "incendie nocturne de
-        novembre 2025, ruines en flammes") issu du script/scene, transmis au
-        prompt IA en dernier recours pour generer une image concrete de
-        l'evenement plutot qu'une vue generique et intemporelle du lieu.
-
-        image_prompt: description visuelle riche et specifique a la scene,
-        generee par le LLM (ex: "photographie en noir et blanc d'un couloir
-        de pierre étroit, éclairage à la bougie, ambiance lugubre").
-        CORRECTIF : desormais transmise et utilisee comme coeur du prompt
-        IA, pour que l'image generee corresponde reellement au contenu
-        narratif de la scene plutot qu'a une vue generique du lieu.
-        """
-
         # ---------------------------------------------------------
         # SCÈNES SPÉCIFIQUES (Lieux réels, personnages, objets)
         # ---------------------------------------------------------
         if scene_type == "specific":
-            # 1. Wikimedia (catégorie exacte + Openverse intercalaire + plein texte)
             print(f"🔍 Recherche de la vraie photo historique : '{query}'...")
             if self.archives.get_wikimedia(query, output_path):
                 print("🏛️ Vraie archive trouvée !")
                 return True, "wiki"
 
-            # 2. Tentative Openverse explicite et independante
             print(f"🌍 Nouvelle tentative Openverse directe : '{query}'...")
             if self.archives.get_openverse(query, output_path):
                 print("🏛️ Archive Openverse trouvée (tentative directe) !")
                 return True, "openverse"
 
-            # 3. Si aucune archive n'a rien, on demande à l'IA de l'imaginer,
-            # avec un prompt structure construit a partir de l'image_prompt
-            # specifique a la scene (CORRECTIF), enrichi du lieu reel et du
-            # contexte factuel eventuel.
             ai_prompt = self._build_structured_prompt(
                 query, event_context=event_context, image_prompt=image_prompt
             )
@@ -116,25 +87,34 @@ class AssetManager:
             if self.ai.generate_image(ai_prompt, output_path):
                 return True, "ai"
 
+            # L'IA a échoué malgré ses propres retries internes (flux/turbo).
+            # Au lieu de retenter EXACTEMENT le même prompt, on bascule sur une
+            # vidéo d'ambiance générique en dernier recours plutôt que de rien
+            # avoir du tout pour la scène.
+            print(f"🎬 IA échouée pour '{query}', tentative de secours vidéo générique...")
+            generic_fallback_query = "mysterious historical documentary atmosphere"
+            if self.videos.fetch_background(generic_fallback_query, output_path):
+                return True, "video"
+
+            print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
+            return False, "none"
+
         # ---------------------------------------------------------
         # SCÈNES GÉNÉRIQUES (Ambiance, paysages, émotions)
         # ---------------------------------------------------------
         else:
-            # 4. Vidéos d'ambiance Pexels/Pixabay.
-            # 'query' ici doit être stock_search (mot-clé anglais court),
-            # transmis correctement depuis main.py (CORRECTIF).
             print(f"🔍 Recherche vidéo d'ambiance : '{query}'...")
             if self.videos.fetch_background(query, output_path):
                 return True, "video"
 
-        # 5. FALLBACK ULTIME POUR TOUT LE MONDE (prompt structure aussi,
-        # incluant image_prompt si disponible)
-        fallback_prompt = self._build_structured_prompt(
-            query, event_context=event_context, image_prompt=image_prompt
-        )
-        print(f"🎨 Génération IA de secours (prompt structure)...")
-        if self.ai.generate_image(fallback_prompt, output_path):
-            return True, "ai"
+            # Fallback IA uniquement pour les scènes génériques (pas de doublon
+            # possible ici puisque l'IA n'a pas encore été tentée dans cette branche)
+            fallback_prompt = self._build_structured_prompt(
+                query, event_context=event_context, image_prompt=image_prompt
+            )
+            print(f"🎨 Génération IA de secours (prompt structure)...")
+            if self.ai.generate_image(fallback_prompt, output_path):
+                return True, "ai"
 
-        print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
-        return False, "none"
+            print(f"❌ Échec total de la récupération d'asset pour : '{query}'")
+            return False, "none"
