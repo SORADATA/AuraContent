@@ -169,7 +169,7 @@ def _guess_country_hint(topic):
 
 
 class WikidataChecker:
-    API_URL = "[https://www.wikidata.org/w/api.php](https://www.wikidata.org/w/api.php)"
+    API_URL = "https://www.wikidata.org/w/api.php"
     HEADERS = {
         "User-Agent": os.getenv(
             "WIKIMEDIA_CONTACT",
