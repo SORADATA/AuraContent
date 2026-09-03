@@ -5,7 +5,7 @@ import time
 import requests
 from openai import OpenAI
 from dotenv import load_dotenv
-from constants import(
+from constants import (
     GROQ_MODEL,
     OPENROUTER_FALLBACK_MODEL_1,
     OPENROUTER_FALLBACK_MODEL_2
@@ -16,7 +16,6 @@ try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
-
     def get_latest_videos_stats():
         return None
 
@@ -25,7 +24,6 @@ try:
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
-
     def fetch_grounding_source(query, hint_country=None):
         return None
 
@@ -171,7 +169,7 @@ def _guess_country_hint(topic):
 
 
 class WikidataChecker:
-    API_URL = "https://www.wikidata.org/w/api.php"
+    API_URL = "[https://www.wikidata.org/w/api.php](https://www.wikidata.org/w/api.php)"
     HEADERS = {
         "User-Agent": os.getenv(
             "WIKIMEDIA_CONTACT",
@@ -1127,7 +1125,6 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
 
         # Normalise les variantes courantes renvoyées par le LLM (casse, espaces,
         # accents/pluriels) vers les valeurs canoniques attendues, pour éviter
-
         # que toute déviation mineure ne retombe systématiquement sur "intriguing".
         mood_aliases = {
             "ominous": "ominous", "sombre": "ominous", "menaçant": "ominous", "menacant": "ominous",
@@ -1160,7 +1157,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             if scene.get("role") not in allowed_roles:
                 scene["role"] = "value"
 
-            # --- Normalisation du mood (au lieu d'un override aveugle) ---
+            # --- Normalisation du mood ---
             raw_mood = str(scene.get("mood", "")).strip().lower()
             normalized_mood = mood_aliases.get(raw_mood)
             if normalized_mood:
