@@ -8,7 +8,7 @@ DIRECT_URL_FINANCE = "https://huggingface.co/datasets/soradata/ai_videos_Finance
 # 🛠️ NOMS DE MODÈLES
 GEMINI_MODEL_VOICE = "gemini-2.5-flash-preview-tts"  # Voix gemini
 GEMINI_MODEL = "gemini-3.6-flash"
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "llama3-70b-8192"  # Bien meilleur pour suivre les consignes de format JSON
 # GROQ_MODEL = "llama-3.3-70b-specdec"
 OPENROUTER_FALLBACK_MODEL_1 = "meta-llama/llama-3.3-70b-instruct"
 OPENROUTER_FALLBACK_MODEL_2 = "google/gemma-3-27b-it:free"
