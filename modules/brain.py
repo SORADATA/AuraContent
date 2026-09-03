@@ -1116,55 +1116,79 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             print(f"⚠️ Fact-check LLM impossible (erreur technique), on continue sans blocage : {e}")
             return {"is_consistent": True, "issues": []}
 
+
     def _validate_script(self, data, scene_count, topic):
-        scenes = data.get("scenes")
-        if not isinstance(scenes, list):
-            raise ValueError("La reponse ne contient pas de tableau scenes.")
-        if len(scenes) != scene_count:
-            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list):
+        raise ValueError("La reponse ne contient pas de tableau scenes.")
+    if len(scenes) != scene_count:
+        raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
 
-        allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
-        allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "investigation"}
+    allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
+    allowed_moods = {"ominous", "intriguing", "tense", "awe", "scientific", "investigation"}
 
-        for scene in scenes:
-            if not isinstance(scene, dict):
-                raise ValueError("Une scène n'est pas un dictionnaire valide.")
-            if not scene.get("text"):
-                raise ValueError(f"Scene {scene.get('id')} : text manquant.")
+    # Normalise les variantes courantes renvoyées par le LLM (casse, espaces,
+    # accents/pluriels) vers les valeurs canoniques attendues, pour éviter
+    # que toute déviation mineure ne retombe systématiquement sur "intriguing".
+    mood_aliases = {
+        "ominous": "ominous", "sombre": "ominous", "menaçant": "ominous", "menacant": "ominous",
+        "intriguing": "intriguing", "mystérieux": "intriguing", "mysterieux": "intriguing",
+        "tense": "tense", "tendu": "tense", "tension": "tense",
+        "awe": "awe", "impressionnant": "awe", "fascinant": "awe",
+        "scientific": "scientific", "scientifique": "scientific",
+        "investigation": "investigation", "enquête": "investigation", "enquete": "investigation",
+    }
 
-            if _contains_ai_mention(scene.get("text", "")):
-                raise ValueError(
-                    f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
-                    f"('{scene['text'][:80]}...'), regeneration necessaire."
-                )
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            raise ValueError("Une scène n'est pas un dictionnaire valide.")
+        if not scene.get("text"):
+            raise ValueError(f"Scene {scene.get('id')} : text manquant.")
 
-            if not scene.get("voice_direction"):
-                scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
-            pause_after_ms = scene.get("pause_after_ms")
-            if not isinstance(pause_after_ms, int):
-                scene["pause_after_ms"] = 300
-            if scene.get("role") not in allowed_roles:
-                scene["role"] = "value"
-            if scene.get("mood") not in allowed_moods:
-                scene["mood"] = "intriguing"
-            if not scene.get("stock_search"):
-                scene["stock_search"] = "cinematic vertical background"
-            if not scene.get("image_prompt"):
-                scene["image_prompt"] = "Vertical 9:16 cinematic scene"
-            if "location_name" not in scene:
-                scene["location_name"] = ""
-            if "location_country" not in scene:
-                scene["location_country"] = ""
-            if scene.get("voice_type") not in {"narrator", "witness"}:
-                scene["voice_type"] = "narrator"
-            if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
-                scene["scene_type"] = "generic"
-            if "event_context" not in scene or not isinstance(scene.get("event_context"), str):
-                scene["event_context"] = ""
+        if _contains_ai_mention(scene.get("text", "")):
+            raise ValueError(
+                f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
+                f"('{scene['text'][:80]}...'), regeneration necessaire."
+            )
 
-        if not str(data.get("title", "")).strip():
-            data["title"] = topic
-        if not str(data.get("visual_identity", "")).strip():
-            data["visual_identity"] = "Consistent cinematic vertical documentary world."
-        if not str(data.get("audio_profile", "")).strip():
-            data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
+        if not scene.get("voice_direction"):
+            scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
+        pause_after_ms = scene.get("pause_after_ms")
+        if not isinstance(pause_after_ms, int):
+            scene["pause_after_ms"] = 300
+        if scene.get("role") not in allowed_roles:
+            scene["role"] = "value"
+
+        # --- Normalisation du mood (au lieu d'un override aveugle) ---
+        raw_mood = str(scene.get("mood", "")).strip().lower()
+        normalized_mood = mood_aliases.get(raw_mood)
+        if normalized_mood:
+            if normalized_mood != raw_mood:
+                print(f"      ℹ️ Scene {scene.get('id')} : mood '{raw_mood}' normalisé en '{normalized_mood}'")
+            scene["mood"] = normalized_mood
+        else:
+            print(f"      ⚠️ Scene {scene.get('id')} : mood invalide reçu ('{scene.get('mood')}'), "
+                  f"fallback -> 'intriguing'")
+            scene["mood"] = "intriguing"
+
+        if not scene.get("stock_search"):
+            scene["stock_search"] = "cinematic vertical background"
+        if not scene.get("image_prompt"):
+            scene["image_prompt"] = "Vertical 9:16 cinematic scene"
+        if "location_name" not in scene:
+            scene["location_name"] = ""
+        if "location_country" not in scene:
+            scene["location_country"] = ""
+        if scene.get("voice_type") not in {"narrator", "witness"}:
+            scene["voice_type"] = "narrator"
+        if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
+            scene["scene_type"] = "generic"
+        if "event_context" not in scene or not isinstance(scene.get("event_context"), str):
+            scene["event_context"] = ""
+
+    if not str(data.get("title", "")).strip():
+        data["title"] = topic
+    if not str(data.get("visual_identity", "")).strip():
+        data["visual_identity"] = "Consistent cinematic vertical documentary world."
+    if not str(data.get("audio_profile", "")).strip():
+        data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
