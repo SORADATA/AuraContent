@@ -298,7 +298,7 @@ class WikidataChecker:
                 return label.get("value")
         except Exception as e:
             print(f"⚠️ Wikidata (parsing label) erreur : {e}")
-        return None
+            return None
 
     @classmethod
     def get_real_country(cls, location_name, hint_country=None):
@@ -522,6 +522,14 @@ class ContentBrain:
             )
             try:
                 data = json.loads(_clean_json_response(content))
+                
+                # BOUCLIER DE STRUCTURE RACINE
+                # Si le LLM renvoie un tableau brut, on l'encapsule ici pour que
+                # toutes les autres fonctions (validation, fact-check) reçoivent un dict.
+                if isinstance(data, list):
+                    print("⚠️ Le LLM a renvoyé une liste au lieu d'un dictionnaire. Correction automatique appliquée.")
+                    data = {"scenes": data}
+                    
                 return data
             except json.JSONDecodeError as e:
                 last_error = e
@@ -941,7 +949,7 @@ title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
-        estimated_tokens_needed = min(scene_count * 350 + 1200, 6000)
+        estimated_tokens_needed = min(scene_count * 350 + 1200, 6500)
         correction_feedback = ""
 
         for fact_check_attempt in range(max_fact_check_retries + 1):
