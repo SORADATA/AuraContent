@@ -30,7 +30,7 @@ async def main():
     print("🚀 STARTING AUTOMATION...")
 
     topic_input = os.getenv("VIDEO_TOPIC", "").strip()
-    duration_target = int(os.getenv("VIDEO_DURATION", "45"))
+    duration_target = int(os.getenv("VIDEO_DURATION", "60"))
     refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
     use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
 

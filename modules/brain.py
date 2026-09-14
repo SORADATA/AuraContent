@@ -21,6 +21,7 @@ try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
     print("⚠️ Module zernio_client introuvable. Création de données factices pour le test.")
+
     def get_latest_videos_stats():
         return None
 
@@ -29,6 +30,7 @@ try:
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
+
     def fetch_grounding_source(query, hint_country=None):
         return None
 
@@ -907,7 +909,7 @@ REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) 
 10. Pour la clé 'scene_type', choisis "specific" if la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
 11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
 12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
-13. RYTHME ULTRA-COURT : Pour garantir le dynamisme de la vidéo, le 'text' de chaque scène doit être très court (UNE SEULE PHRASE de 10 à 15 mots maximum). La vidéo changera ainsi d'image toutes les 3 secondes.
+13. RYTHME MODÉRÉ : Le 'text' de chaque scène doit contenir 2 phrases (environ 20 à 30 mots). La vidéo changera ainsi d'image toutes les 5 à 7 secondes pour laisser la narration respirer.
 14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un eventement precis et date (incendie, destruction, decouverte) a illustrer concretement.
 15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
 16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du
@@ -939,7 +941,7 @@ title, visual_identity, audio_profile, scenes.
 Chaque scene dans le tableau 'scenes' doit contenir :
 id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
 """
-        estimated_tokens_needed = min(scene_count * 280 + 1200, 6000)
+        estimated_tokens_needed = min(scene_count * 350 + 1200, 6000)
         correction_feedback = ""
 
         for fact_check_attempt in range(max_fact_check_retries + 1):
@@ -995,7 +997,7 @@ Reste concis sur chaque champ texte pour respecter le budget de tokens. NE T'ARR
                 if isinstance(scene, dict):
                     scene.setdefault("id", idx)
                     scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
-                    scene.setdefault("pause_after_ms", 300)
+                    scene.setdefault("pause_after_ms", 800)
                     scene.setdefault("stock_search", "cinematic vertical background")
                     scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
                     scene.setdefault("location_name", "")
@@ -1240,7 +1242,7 @@ Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
             
             pause_after_ms = scene.get("pause_after_ms")
             if not isinstance(pause_after_ms, int):
-                scene["pause_after_ms"] = 300
+                scene["pause_after_ms"] = 800
                 
             if scene.get("role") not in allowed_roles:
                 scene["role"] = "value"
