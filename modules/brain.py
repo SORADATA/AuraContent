@@ -575,7 +575,6 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
             "un phenomene architectural visible en surface (facade, statue, plaque, vitrail, gargouille) avec une histoire cachee",
             "une decouverte archeologique ou scientifique recente et peu connue",
         ]
-        
         last_categories = load_last_categories(n=2)
         available_categories = [c for c in THEME_CATEGORIES if c not in last_categories] or THEME_CATEGORIES
         forced_category = random.choice(available_categories)
@@ -589,7 +588,6 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
         BANNED_IF_RECENT = ["tunnel", "souterrain", "passage secret", "catacombe", "salle secrete", "chambre secrete"]
         recent_topics_text = " ".join(used_topics[-8:]).lower() if used_topics else ""
         recent_ban_count = sum(recent_topics_text.count(w) for w in BANNED_IF_RECENT)
-        
         ban_instruction = ""
         if recent_ban_count >= 2:
             ban_instruction = (
