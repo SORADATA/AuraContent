@@ -12,8 +12,9 @@ Thanks for checking this out! We love contributions—whether it's fixing bugs, 
     ```
 
 2.  **Install Dependencies:**
+    We use `pyproject.toml` for dependency management. Install the project and its dependencies in editable mode:
     ```bash
-    pip install -r requirements.txt
+    pip install -e .
     ```
 
 3.  **Setup Keys:**
