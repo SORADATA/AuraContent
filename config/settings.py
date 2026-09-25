@@ -9,9 +9,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 OUTPUT_DIR = BASE_DIR / "output"
 
-GEMINI_MODEL_VOICE = "gemini-2.5-flash-preview-tts"  # Voix gemini
-GEMINI_MODEL = "gemini-3.6-flash"
-GROQ_MODEL = "openai/gpt-oss-20b"
-# GROQ_MODEL = "llama-3.3-70b-specdec"
-OPENROUTER_FALLBACK_MODEL_1 = "meta-llama/llama-3.3-70b-instruct"
-OPENROUTER_FALLBACK_MODEL_2 = "google/gemma-3-27b-it:free"
+# Configuration par API / Fournisseur
+GEMINI_CONFIG = {
+    "text": "gemini-3.6-flash",
+    "voice": "gemini-2.5-flash-preview-tts"
+}
+
+GROQ_MODELS = [
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-specdec"
+]
+
+OPENROUTER_ROUTING = [
+    "meta-llama/llama-3.3-70b-instruct",
+    "google/gemma-3-27b-it:free",
+]
