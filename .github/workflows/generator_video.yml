@@ -19,6 +19,10 @@ on:
         description: "Tester plusieurs hooks avant génération"
         required: false
         default: "true"
+      viral_mode:
+        description: "Choisir le sujet à partir des vidéos virales YouTube"
+        required: false
+        default: "true"
   repository_dispatch:
     types: [trigger-videos]
 
@@ -133,6 +137,8 @@ jobs:
       ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      YOUTUBE_API_KEY: ${{ vars.YOUTUBE_API_KEY }}
+      VIRAL_MODE: ${{ github.event.inputs.viral_mode || 'true' }}
       VIDEO_TOPIC: ${{ github.event.inputs.topic || '' }}
       VIDEO_DURATION: ${{ github.event.inputs.duration || '45' }}
       REFINE_ANGLE: ${{ github.event.inputs.refine_angle || 'true' }}

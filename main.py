@@ -33,6 +33,7 @@ async def main():
     duration_target = int(os.getenv("VIDEO_DURATION", "60"))
     refine_angle = os.getenv("REFINE_ANGLE", "true").lower() == "true"
     use_hooks_ab_test = os.getenv("USE_HOOK_VARIANTS", "true").lower() == "true"
+    use_viral_mode = os.getenv("VIRAL_MODE", "true").lower() == "true"
 
     brain = ContentBrain()
     asset_manager = AssetManager()
@@ -53,8 +54,12 @@ async def main():
                 topic = brain.refine_topic_angle(topic)
                 print(f"🎯 Angle affine : {topic}")
         else:
-            topic = brain.get_trending_topic(previous_stats_list=stats_historique)
-            print(f"🔥 Sujet selectionne automatiquement : {topic}")
+            if use_viral_mode and hasattr(brain, "get_viral_inspired_topic"):
+                topic = brain.get_viral_inspired_topic(previous_stats_list=stats_historique)
+                print(f"🔥 Sujet inspiré des tendances virales : {topic}")
+            else:
+                topic = brain.get_trending_topic(previous_stats_list=stats_historique)
+                print(f"🔥 Sujet selectionne automatiquement : {topic}")
 
         print("🔍 Génération du mot-clé de recherche visuelle par l'IA...")
         dynamic_query = brain.generate_video_search_query(topic)
