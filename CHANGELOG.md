@@ -1,3 +1,18 @@
+## 1.1.0 (2026-10-04)
+
+* Add transformers dependency version 4.38.0 ([e279be8](https://github.com/SORADATA/AuraContent/commit/e279be8))
+* Change dependency installation command to editable mode ([670f808](https://github.com/SORADATA/AuraContent/commit/670f808))
+* Merge pull request #34 from SORADATA/renovate/astral-sh-setup-uv-10.x ([94f56d0](https://github.com/SORADATA/AuraContent/commit/94f56d0)), closes [#34](https://github.com/SORADATA/AuraContent/issues/34)
+* Merge pull request #35 from SORADATA/SORADATA-patch-1 ([01950e4](https://github.com/SORADATA/AuraContent/commit/01950e4)), closes [#35](https://github.com/SORADATA/AuraContent/issues/35)
+* Merge pull request #36 from SORADATA/SORADATA-patch-1 ([2efd7d5](https://github.com/SORADATA/AuraContent/commit/2efd7d5)), closes [#36](https://github.com/SORADATA/AuraContent/issues/36)
+* Merge pull request #37 from SORADATA/SORADATA-patch-1 ([f8edf05](https://github.com/SORADATA/AuraContent/commit/f8edf05)), closes [#37](https://github.com/SORADATA/AuraContent/issues/37)
+* Merge pull request #38 from SORADATA/SORADATA-patch-2 ([0748179](https://github.com/SORADATA/AuraContent/commit/0748179)), closes [#38](https://github.com/SORADATA/AuraContent/issues/38)
+* Merge pull request #39 from SORADATA/fix/auracontent ([2215a7a](https://github.com/SORADATA/AuraContent/commit/2215a7a)), closes [#39](https://github.com/SORADATA/AuraContent/issues/39)
+* Revise CONTRIBUTING.md for AuraContent project ([33df2f2](https://github.com/SORADATA/AuraContent/commit/33df2f2))
+* Translate README.md content from French to English ([2ffa4a5](https://github.com/SORADATA/AuraContent/commit/2ffa4a5))
+* feat: update auracontent ([054cecb](https://github.com/SORADATA/AuraContent/commit/054cecb))
+* chore(deps): update astral-sh/setup-uv action to v10.2.0 ([9962cdd](https://github.com/SORADATA/AuraContent/commit/9962cdd))
+
 ## 1.0.0 (2026-09-14)
 
 * Add artifact upload for Finance and Minute Mystere captions ([cf8943c](https://github.com/SORADATA/AuraContent/commit/cf8943c))
