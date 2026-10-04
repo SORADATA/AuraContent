@@ -911,7 +911,7 @@ RETURNS JSON:
                 if case_name_retry:
                     case_name = case_name_retry
 
-                source = fetch_grounding_source(case_name, hint_country=hint_country)
+        source = fetch_grounding_source(case_name, hint_country=hint_country)
 
         if source and not _source_matches_case(case_name, source.get("title", "")):
             print(f"🚫 Source rejetée : '{source.get('title')}' ne correspond pas à '{case_name}'.")
