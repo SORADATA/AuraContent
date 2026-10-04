@@ -662,6 +662,66 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
 
         raise ValueError(f"Impossible d'obtenir un sujet valide et unique après 5 tentatives : {last_topic}")
 
+    def get_viral_inspired_topic(self, previous_stats_list=None):
+        from modules.utils.viral_trends import fetch_viral_videos
+
+        viral = fetch_viral_videos()
+        if not viral:
+            print("⚠️ Aucune tendance virale récupérée, fallback sur sujet LLM libre.")
+            return self.get_trending_topic(previous_stats_list)
+
+        used_topics = load_topic_history()
+        viral_text = "\n".join(
+            f"- {v['title']} ({v['views_per_day']} vues/jour)" for v in viral
+        )
+
+        messages = [
+            {"role": "system", "content": (
+                "Tu analyses des vidéos virales pour en tirer le THEME et le FORMAT qui "
+                "fonctionnent, puis tu proposes un sujet ORIGINAL (jamais une copie). "
+                "Reponds uniquement avec un seul titre en francais, une seule ligne, "
+                "sans guillemets, maximum 18 mots. Ne montre jamais ton raisonnement. "
+                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
+            )},
+            {"role": "user", "content": (
+                "Voici des videos courtes virales recentes :\n"
+                f"{viral_text}\n\n"
+                "1) Repere mentalement le theme dominant et le type d'accroche qui marchent.\n"
+                "2) Propose un sujet sur un fait historique REEL, verifiable et peu connu, "
+                "qui exploite ce meme theme/ressort emotionnel, SANS reprendre le sujet "
+                "d'une de ces videos.\n"
+                "3) Le lieu doit etre precis et reel (nom complet)."
+                + _format_stats_instruction(previous_stats_list, label="sujet")
+                + (
+                    "\n\nSUJETS DEJA TRAITES (ne pas repeter) :\n- "
+                    + "\n- ".join(used_topics[-30:]) if used_topics else ""
+                )
+            )},
+        ]
+
+        last_topic = ""
+        for attempt in range(5):
+            content = self._call_with_fallback(
+                messages, temperature=0.9, max_completion_tokens=2000
+            )
+            topic = _clean_single_line_title(content)
+            last_topic = topic
+
+            if _contains_ai_mention(topic):
+                print(f"⚠️ Rejeté (mention IA, tentative {attempt + 1}) : {topic}")
+                continue
+            if not (topic and 4 <= len(topic.split()) <= 18):
+                print(f"⚠️ Rejeté (longueur, tentative {attempt + 1}) : {topic}")
+                continue
+            is_dup, matched = is_duplicate_topic(topic, used_topics)
+            if is_dup:
+                print(f"⚠️ Rejeté (doublon de '{matched}', tentative {attempt + 1}) : {topic}")
+                continue
+            return topic
+
+        print(f"⚠️ Échec mode viral ({last_topic}), fallback sujet LLM libre.")
+        return self.get_trending_topic(previous_stats_list)
+
     def refine_topic_angle(self, raw_topic):
         messages = [
             {"role": "system", "content": (
