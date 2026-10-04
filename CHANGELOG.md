@@ -1,3 +1,8 @@
+## <small>1.1.3 (2026-10-04)</small>
+
+* Merge pull request #42 from SORADATA/fix/auracontent ([771bd8f](https://github.com/SORADATA/AuraContent/commit/771bd8f)), closes [#42](https://github.com/SORADATA/AuraContent/issues/42)
+* fix: update auracontent ([9dd330c](https://github.com/SORADATA/AuraContent/commit/9dd330c))
+
 ## <small>1.1.2 (2026-10-04)</small>
 
 * Merge pull request #41 from SORADATA/fix/auracontent ([496cca1](https://github.com/SORADATA/AuraContent/commit/496cca1)), closes [#41](https://github.com/SORADATA/AuraContent/issues/41)
