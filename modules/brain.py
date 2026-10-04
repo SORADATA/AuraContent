@@ -6,6 +6,7 @@ import requests
 import random
 from openai import OpenAI
 from dotenv import load_dotenv
+from modules.utils.viral_trends import fetch_viral_videos
 from constants import (
     GROQ_MODEL,
     OPENROUTER_FALLBACK_MODEL_1,
@@ -663,7 +664,6 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
         raise ValueError(f"Impossible d'obtenir un sujet valide et unique après 5 tentatives : {last_topic}")
 
     def get_viral_inspired_topic(self, previous_stats_list=None):
-        from modules.utils.viral_trends import fetch_viral_videos
 
         viral = fetch_viral_videos()
         if not viral:
@@ -674,6 +674,13 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
         viral_text = "\n".join(
             f"- {v['title']} ({v['views_per_day']} vues/jour)" for v in viral
         )
+
+        used_block = ""
+        if used_topics:
+            used_block = (
+                "\n\nSUJETS DEJA TRAITES (ne pas repeter) :\n- "
+                + "\n- ".join(used_topics[-30:])
+            )
 
         messages = [
             {"role": "system", "content": (
@@ -690,12 +697,10 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
                 "2) Propose un sujet sur un fait historique REEL, verifiable et peu connu, "
                 "qui exploite ce meme theme/ressort emotionnel, SANS reprendre le sujet "
                 "d'une de ces videos.\n"
-                "3) Le lieu doit etre precis et reel (nom complet)."
+                "3) Le lieu doit etre precis et reel (nom complet), avec un article "
+                "Wikipedia existant."
                 + _format_stats_instruction(previous_stats_list, label="sujet")
-                + (
-                    "\n\nSUJETS DEJA TRAITES (ne pas repeter) :\n- "
-                    + "\n- ".join(used_topics[-30:]) if used_topics else ""
-                )
+                + used_block
             )},
         ]
 
@@ -713,10 +718,19 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
             if not (topic and 4 <= len(topic.split()) <= 18):
                 print(f"⚠️ Rejeté (longueur, tentative {attempt + 1}) : {topic}")
                 continue
+
             is_dup, matched = is_duplicate_topic(topic, used_topics)
             if is_dup:
                 print(f"⚠️ Rejeté (doublon de '{matched}', tentative {attempt + 1}) : {topic}")
                 continue
+
+            if GROUNDING_AVAILABLE:
+                grounding = self.propose_real_case(topic)
+                if not grounding.get("source"):
+                    print(f"⚠️ Rejeté (aucune source Wikipedia, tentative {attempt + 1}) : {topic}")
+                    continue
+                print(f"✅ Sujet ancré sur : {grounding.get('case_name')}")
+
             return topic
 
         print(f"⚠️ Échec mode viral ({last_topic}), fallback sujet LLM libre.")
