@@ -1,3 +1,8 @@
+## <small>1.1.2 (2026-10-04)</small>
+
+* Merge pull request #41 from SORADATA/fix/auracontent ([496cca1](https://github.com/SORADATA/AuraContent/commit/496cca1)), closes [#41](https://github.com/SORADATA/AuraContent/issues/41)
+* fix: add control thematics for videos ([3477791](https://github.com/SORADATA/AuraContent/commit/3477791))
+
 ## <small>1.1.1 (2026-10-04)</small>
 
 * Merge pull request #40 from SORADATA/fix/auracontent ([35ff381](https://github.com/SORADATA/AuraContent/commit/35ff381)), closes [#40](https://github.com/SORADATA/AuraContent/issues/40)
