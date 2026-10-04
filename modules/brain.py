@@ -5,6 +5,7 @@ import time
 import requests
 import random
 from openai import OpenAI
+import unicodedata
 from dotenv import load_dotenv
 from modules.utils.viral_trends import fetch_viral_videos
 from constants import (
@@ -371,6 +372,24 @@ def _estimate_tokens(text):
 
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
+
+_TITLE_STOPWORDS = {"de", "du", "des", "la", "le", "les", "d", "l", "et", "en",
+                    "au", "aux", "un", "une", "the", "of"}
+
+
+def _title_tokens(text):
+    text = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
+    text = re.sub(r"\(.*?\)", " ", text.lower())
+    tokens = re.findall(r"[a-z0-9]+", text)
+    return {t for t in tokens if t not in _TITLE_STOPWORDS and len(t) > 1}
+
+
+def _source_matches_case(case_name, source_title, threshold=0.6):
+    a, b = _title_tokens(case_name), _title_tokens(source_title)
+    if not a or not b:
+        return False
+    common = a & b
+    return min(len(common) / len(a), len(common) / len(b)) >= threshold
 
 
 class ContentBrain:
@@ -892,7 +911,11 @@ RETURNS JSON:
                 if case_name_retry:
                     case_name = case_name_retry
 
-        source = fetch_grounding_source(case_name, hint_country=hint_country)
+                source = fetch_grounding_source(case_name, hint_country=hint_country)
+
+        if source and not _source_matches_case(case_name, source.get("title", "")):
+            print(f"🚫 Source rejetée : '{source.get('title')}' ne correspond pas à '{case_name}'.")
+            source = None
 
         return {
             "case_name": case_name,
