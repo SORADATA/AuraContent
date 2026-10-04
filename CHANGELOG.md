@@ -1,3 +1,8 @@
+## <small>1.1.4 (2026-10-04)</small>
+
+* Merge pull request #43 from SORADATA/fix/auracontent ([d1c4a98](https://github.com/SORADATA/AuraContent/commit/d1c4a98)), closes [#43](https://github.com/SORADATA/AuraContent/issues/43)
+* fix: resolve indentation problems ([1c59162](https://github.com/SORADATA/AuraContent/commit/1c59162))
+
 ## <small>1.1.3 (2026-10-04)</small>
 
 * Merge pull request #42 from SORADATA/fix/auracontent ([771bd8f](https://github.com/SORADATA/AuraContent/commit/771bd8f)), closes [#42](https://github.com/SORADATA/AuraContent/issues/42)
