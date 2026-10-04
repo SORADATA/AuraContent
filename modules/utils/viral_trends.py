@@ -15,9 +15,12 @@ DEFAULT_QUERIES = [
 def fetch_viral_videos(queries=None, days=14, per_query=15, top_n=12):
     key = os.getenv("YOUTUBE_API_KEY")
     if not key:
+        print("⚠️ YOUTUBE_API_KEY absente de l'environnement (secret GitHub mal relié ?)")
         return []
+
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     found = {}
+
     for q in (queries or DEFAULT_QUERIES):
         try:
             s = requests.get(f"{YT}/search", params={
@@ -25,11 +28,23 @@ def fetch_viral_videos(queries=None, days=14, per_query=15, top_n=12):
                 "publishedAfter": since, "videoDuration": "short",
                 "relevanceLanguage": "fr", "regionCode": "FR",
                 "maxResults": per_query, "key": key}, timeout=15).json()
+
+            if "error" in s:
+                print(f"⚠️ YouTube search erreur ({q}) : {s['error'].get('message')}")
+                continue
+
             ids = ",".join(i["id"]["videoId"] for i in s.get("items", []))
             if not ids:
+                print(f"ℹ️ YouTube : 0 résultat pour '{q}'")
                 continue
+
             v = requests.get(f"{YT}/videos", params={
                 "part": "snippet,statistics", "id": ids, "key": key}, timeout=15).json()
+
+            if "error" in v:
+                print(f"⚠️ YouTube videos erreur : {v['error'].get('message')}")
+                continue
+
             for it in v.get("items", []):
                 pub = datetime.fromisoformat(it["snippet"]["publishedAt"].replace("Z", "+00:00"))
                 age_days = max((datetime.now(timezone.utc) - pub).days, 1)
@@ -41,5 +56,9 @@ def fetch_viral_videos(queries=None, days=14, per_query=15, top_n=12):
                 }
         except Exception as e:
             print(f"⚠️ YouTube trends erreur ({q}) : {e}")
+
     ranked = sorted(found.values(), key=lambda x: x["views_per_day"], reverse=True)
+    print(f"📈 {len(ranked)} vidéos virales récupérées")
+    for v in ranked[:top_n]:
+        print(f"   - {v['title'][:70]} ({v['views_per_day']} vues/jour)")
     return ranked[:top_n]
