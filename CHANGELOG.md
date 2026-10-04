@@ -1,3 +1,8 @@
+## <small>1.1.1 (2026-10-04)</small>
+
+* Merge pull request #40 from SORADATA/fix/auracontent ([35ff381](https://github.com/SORADATA/AuraContent/commit/35ff381)), closes [#40](https://github.com/SORADATA/AuraContent/issues/40)
+* fix: modified vars by secrets variables ([14e76e5](https://github.com/SORADATA/AuraContent/commit/14e76e5))
+
 ## 1.1.0 (2026-10-04)
 
 * Add transformers dependency version 4.38.0 ([e279be8](https://github.com/SORADATA/AuraContent/commit/e279be8))
