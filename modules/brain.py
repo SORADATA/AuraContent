@@ -715,7 +715,7 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
         queries = [str(q) for q in data.get("wiki_queries", [])][:3]
         print(f"🧭 Theme viral : {data.get('theme')} | requetes : {queries}")
 
-        candidates = _wiki_candidates(queries)
+        candidates = wiki_candidates(queries)
         used_lower = " ".join(used_topics[-30:]).lower()
         candidates = [t for t in candidates if t.lower() not in used_lower][:25]
         if not candidates:
