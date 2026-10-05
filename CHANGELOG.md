@@ -1,3 +1,10 @@
+## <small>1.1.6 (2026-10-05)</small>
+
+* Merge pull request #45 from SORADATA/fix/auracontent ([d32a788](https://github.com/SORADATA/AuraContent/commit/d32a788)), closes [#45](https://github.com/SORADATA/AuraContent/issues/45)
+* Merge pull request #46 from SORADATA/fix/auracontent ([36ce992](https://github.com/SORADATA/AuraContent/commit/36ce992)), closes [#46](https://github.com/SORADATA/AuraContent/issues/46)
+* fix: remove tiret to candidates_wiki ([4a6a3d0](https://github.com/SORADATA/AuraContent/commit/4a6a3d0))
+* fix: resolved wikipedia control ([bfc9705](https://github.com/SORADATA/AuraContent/commit/bfc9705))
+
 ## <small>1.1.5 (2026-10-05)</small>
 
 * Merge pull request #44 from SORADATA/fix/auracontent ([338e302](https://github.com/SORADATA/AuraContent/commit/338e302)), closes [#44](https://github.com/SORADATA/AuraContent/issues/44)
