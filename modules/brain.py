@@ -27,20 +27,18 @@ except ImportError:
 
     def get_latest_videos_stats():
         return None
-
 try:
-    from modules.utils.wikipedia_grounding import fetch_grounding_source, wiki_candidates
+    from modules.utils.wikipedia_grounding import fetch_grounding_source, wiki_candidates, NICHE_KEYWORDS
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
+    NICHE_KEYWORDS = ["mystère", "secret", "histoire", "légende"] # Liste de secours
 
     def fetch_grounding_source(query, hint_country=None):
         return None
 
     def wiki_candidates(queries, limit=10):
         return []
-
-
 load_dotenv()
 
 ACCENTED_CHARS = "éèêëàâäùûüçîïôœ"

@@ -9,8 +9,13 @@ import re
 import requests
 import urllib.parse
 
-
 MIN_EXTRACT_LENGTH = 300
+
+NICHE_KEYWORDS = [
+    "mystère", "mystere", "secret", "histoire", "insolite", "disparu", "légende",
+    "legende", "trésor", "tresor", "momie", "château", "chateau", "crime",
+    "affaire", "oublié", "oublie", "caché", "cache", "énigme", "enigme",
+]
 
 
 def _wiki_headers():
@@ -57,5 +62,82 @@ def _search_wikipedia_title(query, lang="fr"):
         print(f"⚠️ Wikipedia (search) erreur pour '{query}' ({lang}) : {e}")
         return []
 
-# ... le reste du fichier (_fetch_summary, _is_valid_match,
-#     _build_query_variants, fetch_grounding_source) ne change pas.
+
+def _fetch_summary(title, lang="fr"):
+    safe_title = urllib.parse.quote(title)
+    url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{safe_title}"
+    try:
+        r = requests.get(url, headers=_wiki_headers(), timeout=10)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+
+        if data.get("type") == "disambiguation":
+            return None
+
+        extract = data.get("extract", "")
+        if len(extract) < MIN_EXTRACT_LENGTH:
+            return None
+
+        return {
+            "title": data.get("title", title),
+            "extract": extract,
+            "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+            "lang": lang,
+        }
+    except Exception as e:
+        print(f"⚠️ Wikipedia (summary) erreur pour '{title}' ({lang}) : {e}")
+        return None
+
+
+def _is_valid_match(original_query, title, extract):
+    q_lower = original_query.lower()
+    t_lower = title.lower()
+    e_lower = extract.lower()
+
+    stopwords = {"ile", "île", "le", "la", "les", "de", "des", "du", "un", "une",
+                 "et", "en", "à", "a", "pour", "dans", "saint", "sainte", "pont"}
+
+    q_words = [w for w in re.findall(r'\w+', q_lower) if w not in stopwords and len(w) >= 3]
+
+    if not q_words:
+        return True
+
+    for w in q_words:
+        if w in t_lower or w in e_lower:
+            return True
+
+    return False
+
+
+def _build_query_variants(query, hint_country=None):
+    variants = [query]
+    if hint_country:
+        variants.append(f"{query} {hint_country}")
+    variants.append(f"{query} (ville)")
+    variants.append(f"{query} légende")
+    return variants
+
+
+def fetch_grounding_source(query, hint_country=None):
+    variants = _build_query_variants(query, hint_country=hint_country)
+
+    for lang in ("fr", "en"):
+        for variant in variants:
+            candidate_titles = _search_wikipedia_title(variant, lang=lang)
+            for title in candidate_titles:
+                summary = _fetch_summary(title, lang=lang)
+                if summary:
+                    if _is_valid_match(query, summary["title"], summary["extract"]):
+                        print(f"✅ Source Wikipedia trouvée et VALIDÉE ({lang}, requête '{variant}') : "
+                              f"'{summary['title']}' ({len(summary['extract'])} caractères)")
+                        return summary
+                    else:
+                        print(
+                            f"🚫 Faux positif Wikipedia rejeté : '{summary['title']}' ne correspond pas à '{query}'."
+                            )
+
+    print(f"⚠️ Aucune source Wikipedia exploitable trouvée pour '{query}' "
+          f"(après {len(variants) * 2} variantes testées).")
+    return None
