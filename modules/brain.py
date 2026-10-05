@@ -19,6 +19,7 @@ from modules.utils.topic_tracker import (
     load_last_regions, save_last_region,
 )
 
+
 try:
     from modules.utils.client_http.zernio_client import get_latest_videos_stats
 except ImportError:
@@ -28,13 +29,17 @@ except ImportError:
         return None
 
 try:
-    from modules.utils.wikipedia_grounding import fetch_grounding_source
+    from modules.utils.wikipedia_grounding import fetch_grounding_source, wiki_candidates
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
 
     def fetch_grounding_source(query, hint_country=None):
         return None
+
+    def wiki_candidates(queries, limit=10):
+        return []
+
 
 load_dotenv()
 
@@ -373,6 +378,7 @@ def _estimate_tokens(text):
 def _estimate_prompt_tokens(messages):
     return sum(_estimate_tokens(m.get("content", "")) for m in messages)
 
+
 _TITLE_STOPWORDS = {"de", "du", "des", "la", "le", "les", "d", "l", "et", "en",
                     "au", "aux", "un", "une", "the", "of"}
 
@@ -685,74 +691,75 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
     def get_viral_inspired_topic(self, previous_stats_list=None):
 
         viral = fetch_viral_videos()
+        niche = [v for v in viral
+                 if any(k in v["title"].lower() for k in NICHE_KEYWORDS)]
+        viral = niche if len(niche) >= 3 else viral
         if not viral:
-            print("⚠️ Aucune tendance virale récupérée, fallback sur sujet LLM libre.")
+            print("⚠️ Aucune tendance virale, fallback sujet LLM libre.")
             return self.get_trending_topic(previous_stats_list)
 
         used_topics = load_topic_history()
-        viral_text = "\n".join(
-            f"- {v['title']} ({v['views_per_day']} vues/jour)" for v in viral
-        )
+        viral_text = "\n".join(f"- {v['title']} ({v['views_per_day']} vues/jour)" for v in viral)
+        print("🎯 Tendances retenues pour la niche :\n" + viral_text)
 
-        used_block = ""
-        if used_topics:
-            used_block = (
-                "\n\nSUJETS DEJA TRAITES (ne pas repeter) :\n- "
-                + "\n- ".join(used_topics[-30:])
-            )
-
-        messages = [
-            {"role": "system", "content": (
-                "Tu analyses des vidéos virales pour en tirer le THEME et le FORMAT qui "
-                "fonctionnent, puis tu proposes un sujet ORIGINAL (jamais une copie). "
-                "Reponds uniquement avec un seul titre en francais, une seule ligne, "
-                "sans guillemets, maximum 18 mots. Ne montre jamais ton raisonnement. "
-                f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
-            )},
+        # Etape 1 : theme -> requetes Wikipedia
+        data = self._call_json_with_retry([
+            {"role": "system", "content": "Tu produis uniquement du JSON valide, sans raisonnement visible."},
             {"role": "user", "content": (
-                "Voici des videos courtes virales recentes :\n"
-                f"{viral_text}\n\n"
-                "1) Repere mentalement le theme dominant et le type d'accroche qui marchent.\n"
-                "2) Propose un sujet sur un fait historique REEL, verifiable et peu connu, "
-                "qui exploite ce meme theme/ressort emotionnel, SANS reprendre le sujet "
-                "d'une de ces videos.\n"
-                "3) Le lieu doit etre precis et reel (nom complet), avec un article "
-                "Wikipedia existant."
-                + _format_stats_instruction(previous_stats_list, label="sujet")
-                + used_block
+                f"Videos virales recentes :\n{viral_text}\n\n"
+                "Identifie le theme et le ressort emotionnel dominants. "
+                "Retourne un JSON {\"theme\": \"...\", \"wiki_queries\": [3 requetes courtes "
+                "en francais pour chercher sur Wikipedia des faits historiques reels qui "
+                "exploitent ce theme, en France de preference]}"
             )},
-        ]
+        ], temperature=0.7, max_completion_tokens=800)
 
-        last_topic = ""
-        for attempt in range(5):
-            content = self._call_with_fallback(
-                messages, temperature=0.9, max_completion_tokens=2000
-            )
-            topic = _clean_single_line_title(content)
-            last_topic = topic
+        queries = [str(q) for q in data.get("wiki_queries", [])][:3]
+        print(f"🧭 Theme viral : {data.get('theme')} | requetes : {queries}")
 
-            if _contains_ai_mention(topic):
-                print(f"⚠️ Rejeté (mention IA, tentative {attempt + 1}) : {topic}")
+        candidates = _wiki_candidates(queries)
+        used_lower = " ".join(used_topics[-30:]).lower()
+        candidates = [t for t in candidates if t.lower() not in used_lower][:25]
+        if not candidates:
+            print("⚠️ Aucun article Wikipedia candidat, fallback sujet LLM libre.")
+            return self.get_trending_topic(previous_stats_list)
+
+        # Etape 2 : choix parmi des articles reels
+        for attempt in range(3):
+            pick = self._call_json_with_retry([
+                {"role": "system", "content": (
+                    "Tu produis uniquement du JSON valide. "
+                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION}"
+                )},
+                {"role": "user", "content": (
+                    f"Theme viral : {data.get('theme')}\n"
+                    "Articles Wikipedia reels disponibles :\n- " + "\n- ".join(candidates) +
+                    "\n\nChoisis UN article de cette liste, le plus mysterieux et le moins "
+                    "connu, qui colle au theme. Retourne {\"wiki_title\": \"titre exact de la "
+                    "liste\", \"topic\": \"accroche TikTok en francais, 18 mots max, "
+                    "contenant le nom exact du lieu/sujet\"}"
+                )},
+            ], temperature=0.8, max_completion_tokens=800)
+
+            wiki_title = str(pick.get("wiki_title", "")).strip()
+            topic = _clean_single_line_title(str(pick.get("topic", "")))
+
+            if wiki_title not in candidates:
+                print(f"⚠️ Titre hors liste, tentative {attempt + 1} : {wiki_title}")
                 continue
-            if not (topic and 4 <= len(topic.split()) <= 18):
-                print(f"⚠️ Rejeté (longueur, tentative {attempt + 1}) : {topic}")
+            if _contains_ai_mention(topic) or not (4 <= len(topic.split()) <= 18):
+                print(f"⚠️ Rejeté (IA/longueur, tentative {attempt + 1}) : {topic}")
                 continue
-
             is_dup, matched = is_duplicate_topic(topic, used_topics)
             if is_dup:
-                print(f"⚠️ Rejeté (doublon de '{matched}', tentative {attempt + 1}) : {topic}")
+                print(f"⚠️ Rejeté (doublon de '{matched}') : {topic}")
+                candidates.remove(wiki_title)
                 continue
 
-            if GROUNDING_AVAILABLE:
-                grounding = self.propose_real_case(topic)
-                if not grounding.get("source"):
-                    print(f"⚠️ Rejeté (aucune source Wikipedia, tentative {attempt + 1}) : {topic}")
-                    continue
-                print(f"✅ Sujet ancré sur : {grounding.get('case_name')}")
-
+            print(f"✅ Sujet ancré sur l'article Wikipedia : {wiki_title}")
             return topic
 
-        print(f"⚠️ Échec mode viral ({last_topic}), fallback sujet LLM libre.")
+        print("⚠️ Échec mode viral, fallback sujet LLM libre.")
         return self.get_trending_topic(previous_stats_list)
 
     def refine_topic_angle(self, raw_topic):
