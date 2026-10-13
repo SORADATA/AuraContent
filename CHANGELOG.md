@@ -1,3 +1,8 @@
+## 1.2.0 (2026-10-13)
+
+* Merge pull request #48 from SORADATA/fix/auracontent ([34bc9a1](https://github.com/SORADATA/AuraContent/commit/34bc9a1)), closes [#48](https://github.com/SORADATA/AuraContent/issues/48)
+* feat: add another function ([03d27b9](https://github.com/SORADATA/AuraContent/commit/03d27b9))
+
 ## <small>1.1.7 (2026-10-13)</small>
 
 * Merge pull request #47 from SORADATA/fix/auracontent ([26bcf58](https://github.com/SORADATA/AuraContent/commit/26bcf58)), closes [#47](https://github.com/SORADATA/AuraContent/issues/47)
