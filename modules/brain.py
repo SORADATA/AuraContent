@@ -8,11 +8,7 @@ from openai import OpenAI
 import unicodedata
 from dotenv import load_dotenv
 from modules.utils.viral_trends import fetch_viral_videos
-from constants import (
-    GROQ_MODEL,
-    OPENROUTER_FALLBACK_MODEL_1,
-    OPENROUTER_FALLBACK_MODEL_2
-)
+from constants import GROQ_MODEL
 from modules.utils.topic_tracker import (
     load_topic_history, is_duplicate_topic, record_topic_usage,
     load_last_categories, save_last_category,
@@ -32,7 +28,7 @@ try:
     GROUNDING_AVAILABLE = True
 except ImportError:
     GROUNDING_AVAILABLE = False
-    NICHE_KEYWORDS = ["mystère", "secret", "histoire", "légende"] # Liste de secours
+    NICHE_KEYWORDS = ["mystère", "secret", "histoire", "légende"]  # Liste de secours
 
     def fetch_grounding_source(query, hint_country=None):
         return None
@@ -149,6 +145,67 @@ def _clean_json_response(content):
     return cleaned.strip()
 
 
+def _strip_reasoning(text):
+    """Les modeles 'reasoning' gratuits renvoient parfois <think>...</think>."""
+    if not text:
+        return text
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)  # balise ouvrante perdue
+    return text.strip()
+
+
+def _repair_json_text(text):
+    """
+    Tente de reparer un JSON casse (typiquement le failed_generation de Groq).
+    Corrige :
+      - l'accolade de scene manquante  ...},"id":5,...  ->  ...},{"id":5,...
+      - un JSON tronque (guillemet/accolades/crochets non fermes)
+    Retourne le texte repare s'il est parsable, sinon None.
+    """
+    if not text:
+        return None
+    t = _strip_reasoning(_clean_json_response(text))
+
+    try:
+        json.loads(t)
+        return t
+    except Exception:
+        pass
+
+    # Cas observe : "},"id":5," -> "},{"id":5,"
+    t = re.sub(r'\}\s*,?\s*"id"\s*:', '},{"id":', t)
+
+    stack, in_str, escape = [], False, False
+    for ch in t:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack and ((ch == "}" and stack[-1] == "{") or (ch == "]" and stack[-1] == "[")):
+                stack.pop()
+
+    repaired = t
+    if in_str:
+        repaired += '"'
+    repaired = re.sub(r",\s*$", "", repaired)
+    repaired += "".join("}" if o == "{" else "]" for o in reversed(stack))
+
+    try:
+        json.loads(repaired)
+        return repaired
+    except Exception:
+        return None
+
+
 FRENCH_GEO_KEYWORDS = [
     "france", "francaise", "francais", "bretagne", "normandie", "vendee",
     "charente", "gironde", "aquitaine", "atlantique francaise",
@@ -184,6 +241,14 @@ FRENCH_REGIONS = [
     "Paris intra-muros",  # gardé, mais noyé parmi 13 autres options
 ]
 REGION_LOOKBACK = 3  # nb de dernieres regions a exclure de la selection
+
+# Videos virales marquees comme fictives : on ne s'en inspire pas
+FICTION_MARKERS = ["fiction", "fictive", "fictif", "⚠️", "#story", "#storytime", "#horror"]
+
+
+def _is_fiction_title(title):
+    t = str(title or "").lower()
+    return any(m in t for m in FICTION_MARKERS)
 
 
 def _topic_claims_french_location(topic):
@@ -303,7 +368,7 @@ class WikidataChecker:
                 return label.get("value")
         except Exception as e:
             print(f"⚠️ Wikidata (parsing label) erreur : {e}")
-            return None
+        return None
 
     @classmethod
     def get_real_country(cls, location_name, hint_country=None):
@@ -345,6 +410,118 @@ def _countries_match(declared, real):
     return d == r or d in r or r in d
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  GESTION DES LLM : Groq + modeles OpenRouter 100 % GRATUITS
+# ═══════════════════════════════════════════════════════════════════════════
+# Les modeles gratuits OpenRouter tournent souvent (retires sans preavis).
+# On ne code donc PAS de slug en dur : on les decouvre dynamiquement via
+# l'API publique /models (uniquement ceux finissant par ":free", prix 0,
+# compatibles JSON), puis on termine par le routeur officiel "openrouter/free".
+#
+# Override manuel possible dans .env :
+#   OPENROUTER_FREE_MODELS=meta-llama/llama-3.3-70b-instruct:free,openai/gpt-oss-120b:free
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_FREE_ROUTER = "openrouter/free"
+OPENROUTER_MAX_DISCOVERED = 2
+FREE_MODELS_CACHE_TTL = 3600  # secondes
+
+# Ordre de preference (le premier mot-cle trouve gagne)
+FREE_MODEL_PREFERENCES = [
+    "llama-3.3-70b", "gpt-oss-120b", "qwen3-235b", "qwen3-next", "qwen3-coder",
+    "qwen", "nemotron", "deepseek", "gemma-3-27b", "gemma", "mistral", "glm", "llama",
+]
+FREE_MODEL_BLACKLIST = ["vision", "-vl", "image", "audio", "embed", "thinking", "lfm", "guard", "safeguard"]
+_SMALL_MODEL_RE = re.compile(r"(?<![0-9a-z])(0?\.?[1-9])b(?![a-z0-9])")  # 1b..9b = trop petit pour du JSON long
+
+_FREE_MODELS_CACHE = {"ts": 0.0, "models": []}
+_DEAD_MODELS = set()  # slugs renvoyant 404 pendant cette execution
+
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _discover_free_models(max_models=OPENROUTER_MAX_DISCOVERED):
+    env_models = [m.strip() for m in os.getenv("OPENROUTER_FREE_MODELS", "").split(",") if m.strip()]
+    if env_models:
+        return [m for m in env_models if m not in _DEAD_MODELS][:max_models]
+
+    now = time.time()
+    cached = _FREE_MODELS_CACHE["models"]
+    if cached and now - _FREE_MODELS_CACHE["ts"] < FREE_MODELS_CACHE_TTL:
+        return [m for m in cached if m not in _DEAD_MODELS][:max_models]
+
+    try:
+        r = requests.get(f"{OPENROUTER_BASE_URL}/models", timeout=10)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+    except Exception as e:
+        print(f"⚠️ Decouverte des modeles gratuits OpenRouter impossible : {e}")
+        return [m for m in cached if m not in _DEAD_MODELS][:max_models]
+
+    scored = []
+    for m in data:
+        mid = str(m.get("id", ""))
+        low = mid.lower()
+        if not mid.endswith(":free") or mid in _DEAD_MODELS:
+            continue
+        pricing = m.get("pricing") or {}
+        if _to_float(pricing.get("prompt")) not in (0.0, None) or _to_float(pricing.get("completion")) not in (0.0, None):
+            continue
+        params = m.get("supported_parameters") or []
+        if not ("response_format" in params or "structured_outputs" in params):
+            continue
+        if (m.get("context_length") or 0) < 16000:
+            continue
+        out_mods = (m.get("architecture") or {}).get("output_modalities") or ["text"]
+        if "text" not in out_mods:
+            continue
+        if any(b in low for b in FREE_MODEL_BLACKLIST) or _SMALL_MODEL_RE.search(low):
+            continue
+        score = next((len(FREE_MODEL_PREFERENCES) - i for i, k in enumerate(FREE_MODEL_PREFERENCES) if k in low), 0)
+        scored.append((score, m.get("context_length") or 0, mid))
+
+    scored.sort(reverse=True)
+    models = [mid for _, _, mid in scored]
+    if models:
+        _FREE_MODELS_CACHE.update({"ts": now, "models": models})
+        print(f"🆓 Modeles OpenRouter gratuits retenus : {models[:max_models]}")
+    return models[:max_models]
+
+
+def _build_providers():
+    providers = []
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        providers.append({
+            "name": "Groq", "model": GROQ_MODEL,
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key": groq_key, "is_groq": True,
+        })
+
+    or_key = os.getenv("OPENROUTER_API_KEY")
+    if or_key:
+        slugs = _discover_free_models()
+        if OPENROUTER_FREE_ROUTER not in slugs:
+            slugs = slugs + [OPENROUTER_FREE_ROUTER]  # filet de securite final
+        for i, slug in enumerate(slugs, start=1):
+            if slug in _DEAD_MODELS:
+                continue
+            providers.append({
+                "name": f"OpenRouter free #{i}", "model": slug,
+                "base_url": OPENROUTER_BASE_URL,
+                "api_key": or_key, "is_groq": False,
+            })
+    return providers
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CLASSIFICATION DES ERREURS
+# ═══════════════════════════════════════════════════════════════════════════
 _RATE_LIMIT_NUMS_RE = re.compile(r"Limit[:\s]+(\d+),?\s*Requested[:\s]+(\d+)", re.IGNORECASE)
 SAFETY_MARGIN_TOKENS = 400
 
@@ -360,11 +537,47 @@ def _is_rate_limit_error(err_str):
     err_lower = err_str.lower()
     return (
         "rate_limit_exceeded" in err_lower
+        or "rate limit" in err_lower
         or "tokens per minute" in err_lower
         or "tpm" in err_lower
         or "requests per minute" in err_lower
         or "rpm" in err_lower
+        or "error code: 429" in err_lower
     )
+
+
+def _classify_error(e, err_str):
+    low = err_str.lower()
+    if isinstance(e, ValueError) and "budget de tokens" in low:
+        return "length"
+    if isinstance(e, ValueError):
+        return "empty"
+    if "json_validate_failed" in low or "failed to generate json" in low or "failed to validate json" in low:
+        return "json_failed"
+    if "error code: 404" in low or "no endpoints found" in low or "unavailable" in low or "not a valid model" in low:
+        return "not_found"
+    if "error code: 402" in low or "more credits" in low or "insufficient" in low:
+        return "no_credit"
+    if _is_rate_limit_error(err_str):
+        return "rate_limit"
+    if "error code: 400" in low and ("response_format" in low or "json_object" in low or "structured" in low):
+        return "json_mode_unsupported"
+    if "i'm sorry" in low or "i’m sorry" in low or "content_policy" in low or "moderation" in low:
+        return "refusal"
+    return "other"
+
+
+def _extract_failed_generation(e, err_str):
+    """Recupere le texte 'failed_generation' d'une erreur 400 Groq."""
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error", body)
+        if isinstance(inner, dict) and inner.get("failed_generation"):
+            return inner["failed_generation"]
+    m = re.search(r"'failed_generation': '(.*)'\}\}", err_str, re.DOTALL)
+    if m:
+        return m.group(1).replace("\\'", "'").replace("\\n", "\n")
+    return None
 
 
 def _estimate_tokens(text):
@@ -396,6 +609,22 @@ def _source_matches_case(case_name, source_title, threshold=0.6):
     return min(len(common) / len(a), len(common) / len(b)) >= threshold
 
 
+def _norm_title(text):
+    text = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _match_candidate(wiki_title, candidates):
+    """Retrouve un titre de la liste meme si casse/accents/ponctuation different."""
+    if wiki_title in candidates:
+        return wiki_title
+    target = _norm_title(wiki_title)
+    for c in candidates:
+        if _norm_title(c) == target:
+            return c
+    return None
+
+
 class ContentBrain:
     def __init__(self):
         pass
@@ -405,7 +634,7 @@ class ContentBrain:
         if choices is None and isinstance(response, dict):
             choices = response.get("choices")
         if not choices:
-            raise ValueError(f"Réponse inattendue de Groq: {response}")
+            raise ValueError(f"Réponse inattendue du LLM: {response}")
 
         choice0 = choices[0]
         message = getattr(choice0, "message", None)
@@ -429,108 +658,155 @@ class ContentBrain:
                     parts.append(item)
             content = "".join(parts).strip()
 
+        content = _strip_reasoning(content) if content else content
+
         if not content:
             finish_reason = getattr(choice0, "finish_reason", None)
             if finish_reason is None and isinstance(choice0, dict):
                 finish_reason = choice0.get("finish_reason")
 
             if finish_reason == "length":
-                raise ValueError("Contenu vide de Groq : budget de tokens épuisé (finish_reason='length'). Augmenter max_completion_tokens.")
+                raise ValueError("Contenu vide du LLM : budget de tokens épuisé (finish_reason='length'). Augmenter max_completion_tokens.")
 
-            raise ValueError(f"Contenu vide de Groq: {response}")
+            raise ValueError(f"Contenu vide du LLM: {response}")
 
         return content.strip()
 
     def _call_with_fallback(self, messages, temperature=1.0, json_mode=False,
                             max_completion_tokens=3000, hard_token_cap=7500):
-        
-        providers = [
-            {
-                "name": "Groq",
-                "model": GROQ_MODEL,
-                "base_url": "https://api.groq.com/openai/v1",
-                "api_key": os.getenv("GROQ_API_KEY")
-            },
-            {
-                "name": "OpenRouter (Fallback 1)",
-                "model": OPENROUTER_FALLBACK_MODEL_1,
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": os.getenv("OPENROUTER_API_KEY")
-            },
-            {
-                "name": "OpenRouter (Fallback 2)",
-                "model": OPENROUTER_FALLBACK_MODEL_2,
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": os.getenv("OPENROUTER_API_KEY")
-            }
-        ]
+        """
+        Cascade : Groq -> modeles OpenRouter gratuits (decouverts dynamiquement)
+        -> routeur openrouter/free. Chaque type d'erreur a sa propre strategie :
+          json_failed  -> recupere/repare le failed_generation, sinon retente
+          not_found    -> blackliste le modele, passe au suivant
+          no_credit    -> passe au suivant (ne devrait pas arriver en :free)
+          rate_limit   -> attente courte puis suivant
+          refusal      -> suivant immediatement
+          length       -> augmente le budget de sortie
+        """
+        providers = _build_providers()
+        if not providers:
+            raise RuntimeError("Brain Error: aucune clé API (GROQ_API_KEY / OPENROUTER_API_KEY) configurée.")
 
         last_error = None
         prompt_tokens_est = _estimate_prompt_tokens(messages)
-        
+
         for provider in providers:
-            if not provider["api_key"]:
-                print(f"⚠️ Clé API manquante pour {provider['name']}, passage au suivant.")
+            if provider["model"] in _DEAD_MODELS:
                 continue
-                
-            client = OpenAI(base_url=provider["base_url"], api_key=provider["api_key"])
+
+            is_groq = provider["is_groq"]
+            client = OpenAI(
+                base_url=provider["base_url"],
+                api_key=provider["api_key"],
+                max_retries=0,
+                timeout=90,
+                default_headers=None if is_groq else {
+                    "HTTP-Referer": "https://github.com/aura-content-pipeline",
+                    "X-Title": "AuraContentPipeline",
+                },
+            )
+
             current_max_tokens = max_completion_tokens
-            
-            available = hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS
-            if current_max_tokens > available:
-                adjusted = max(500, available)
-                if adjusted < current_max_tokens:
-                    print(f"ℹ️ Budget de sortie réduit préventivement : {current_max_tokens} -> {adjusted}")
-                    current_max_tokens = adjusted
+            if is_groq:
+                ceiling = max(500, hard_token_cap - prompt_tokens_est - SAFETY_MARGIN_TOKENS)
+                if current_max_tokens > ceiling:
+                    print(f"ℹ️ Budget de sortie réduit préventivement : {current_max_tokens} -> {ceiling}")
+                    current_max_tokens = ceiling
+            else:
+                ceiling = max(max_completion_tokens, 8000)
+
+            use_json_mode = json_mode
+            cur_temp = temperature
+            rate_limit_hits = 0
 
             for attempt in range(3):
                 try:
                     kwargs = {
                         "model": provider["model"],
                         "messages": messages,
-                        "temperature": temperature,
+                        "temperature": cur_temp,
                         "max_completion_tokens": current_max_tokens,
                     }
-                    if json_mode:
+                    if use_json_mode:
                         kwargs["response_format"] = {"type": "json_object"}
 
                     response = client.chat.completions.create(**kwargs)
                     content = self._extract_content(response)
                     print(f"✅ Réponse obtenue via {provider['name']} ({provider['model']})")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     return content
 
                 except Exception as e:
                     err_str = str(e)
-                    print(f"⚠️ Échec avec {provider['name']} (Tentative {attempt + 1}/3): {e}")
                     last_error = e
-                    
-                    if "invalid_request_error" in err_str and ("I'm sorry" in err_str or "I’m sorry" in err_str or "failed_generation" in err_str):
-                        print(f"🚫 Blocage de sécurité détecté sur {provider['name']}. Bascule immédiate vers le fallback...")
-                        break 
-                        
-                    if isinstance(e, ValueError) and "budget de tokens épuisé" in err_str:
-                        current_max_tokens = max(500, min(current_max_tokens + 1500, available))
-                        time.sleep(2)
+                    kind = _classify_error(e, err_str)
+                    short_err = err_str[:300] + ("…" if len(err_str) > 300 else "")
+                    print(f"⚠️ Échec {provider['name']} [{provider['model']}] "
+                          f"(tentative {attempt + 1}/3, type={kind}) : {short_err}")
+
+                    if kind == "json_failed":
+                        # Erreur de FORMAT (pas de moderation) : on tente de recuperer le JSON.
+                        raw = _extract_failed_generation(e, err_str)
+                        salvaged = _repair_json_text(raw) if raw else None
+                        if salvaged:
+                            print("🩹 JSON récupéré et réparé depuis failed_generation.")
+                            return salvaged
+                        cur_temp = max(0.2, cur_temp - 0.2)  # moins de derive structurelle
+                        time.sleep(1)
                         continue
 
-                    rate_limit_nums = _parse_rate_limit_numbers(err_str)
-                    if rate_limit_nums:
-                        limit, requested = rate_limit_nums
-                        overage = requested - limit
-                        current_max_tokens = max(500, current_max_tokens - overage - SAFETY_MARGIN_TOKENS)
-                        time.sleep(1)
-                    elif _is_rate_limit_error(err_str):
-                        wait_time = 10 if "OpenRouter" in provider["name"] else 60
-                        print(f"⏳ Limite de débit atteinte sur {provider['name']}, attente de {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        current_max_tokens = max(500, min(current_max_tokens + 1000, available))
-                        time.sleep(4)
-                        
-            print(f"❌ Échec définitif pour {provider['name']} après 3 tentatives.")
+                    if kind == "refusal":
+                        print(f"🚫 Refus de sécurité sur {provider['name']}, bascule vers le fallback.")
+                        break
 
-        raise RuntimeError(f"Brain Error (Script): Échec total après utilisation de tous les modèles (Groq + OpenRouter). Dernière erreur: {last_error}")
+                    if kind == "not_found":
+                        _DEAD_MODELS.add(provider["model"])
+                        print(f"🚫 Modèle indisponible ({provider['model']}), ignoré pour cette exécution.")
+                        break
+
+                    if kind == "no_credit":
+                        print(f"💳 Crédits insuffisants sur {provider['name']}, passage au suivant.")
+                        break
+
+                    if kind == "json_mode_unsupported":
+                        print("ℹ️ response_format non supporté par ce modèle, retry sans json_mode.")
+                        use_json_mode = False
+                        continue
+
+                    if kind == "length":
+                        current_max_tokens = min(current_max_tokens + 1500, ceiling)
+                        time.sleep(1)
+                        continue
+
+                    if kind == "rate_limit":
+                        rate_limit_hits += 1
+                        low = err_str.lower()
+                        if "per day" in low or "daily" in low:
+                            print(f"⛔ Quota journalier atteint sur {provider['name']}, passage au suivant.")
+                            break
+                        nums = _parse_rate_limit_numbers(err_str)
+                        if nums:
+                            limit, requested = nums
+                            current_max_tokens = max(500, current_max_tokens - (requested - limit) - SAFETY_MARGIN_TOKENS)
+                            time.sleep(1)
+                            continue
+                        if not is_groq and rate_limit_hits >= 2:
+                            break
+                        wait_time = 25 if is_groq else 6
+                        print(f"⏳ Limite de débit sur {provider['name']}, attente de {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+
+                    # empty / other
+                    time.sleep(2 if kind == "empty" else 3)
+
+            print(f"❌ Abandon de {provider['name']} ({provider['model']}).")
+
+        raise RuntimeError(
+            "Brain Error (Script): Échec total après utilisation de tous les modèles "
+            f"(Groq + OpenRouter gratuits). Dernière erreur: {last_error}"
+        )
 
     def _call_json_with_retry(self, messages, temperature=1.0, max_json_retries=2,
                               max_completion_tokens=6000, hard_token_cap=7500):
@@ -545,15 +821,20 @@ class ContentBrain:
                 hard_token_cap=hard_token_cap,
             )
             try:
-                data = json.loads(_clean_json_response(content))
-                
-                # BOUCLIER DE STRUCTURE RACINE
-                # Si le LLM renvoie un tableau brut, on l'encapsule ici pour que
-                # toutes les autres fonctions (validation, fact-check) reçoivent un dict.
+                try:
+                    data = json.loads(_clean_json_response(content))
+                except json.JSONDecodeError:
+                    repaired = _repair_json_text(content)
+                    if repaired is None:
+                        raise
+                    print("🩹 JSON malformé réparé localement.")
+                    data = json.loads(repaired)
+
+                # Bouclier de structure racine : liste brute -> dict
                 if isinstance(data, list):
                     print("⚠️ Le LLM a renvoyé une liste au lieu d'un dictionnaire. Correction automatique appliquée.")
                     data = {"scenes": data}
-                    
+
                 return data
             except json.JSONDecodeError as e:
                 last_error = e
@@ -599,12 +880,12 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
             "un phenomene architectural visible en surface (facade, statue, plaque, vitrail, gargouille) avec une histoire cachee",
             "une decouverte archeologique ou scientifique recente et peu connue",
         ]
-        
+
         last_categories = load_last_categories(n=2)
         available_categories = [c for c in THEME_CATEGORIES if c not in last_categories] or THEME_CATEGORIES
         forced_category = random.choice(available_categories)
 
-        # --- NOUVEAU : rotation forcee de REGION ---
+        # --- Rotation forcee de REGION ---
         last_regions = load_last_regions(n=REGION_LOOKBACK)
         available_regions = [r for r in FRENCH_REGIONS if r not in last_regions] or FRENCH_REGIONS
         forced_region = random.choice(available_regions)
@@ -613,7 +894,7 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
         BANNED_IF_RECENT = ["tunnel", "souterrain", "passage secret", "catacombe", "salle secrete", "chambre secrete"]
         recent_topics_text = " ".join(used_topics[-8:]).lower() if used_topics else ""
         recent_ban_count = sum(recent_topics_text.count(w) for w in BANNED_IF_RECENT)
-        
+
         ban_instruction = ""
         if recent_ban_count >= 2:
             ban_instruction = (
@@ -689,6 +970,13 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
     def get_viral_inspired_topic(self, previous_stats_list=None):
 
         viral = fetch_viral_videos()
+
+        # On ecarte les videos explicitement fictives / storytime : on veut du reel
+        before = len(viral)
+        viral = [v for v in viral if not _is_fiction_title(v.get("title", ""))]
+        if before != len(viral):
+            print(f"🧹 {before - len(viral)} vidéo(s) virale(s) fictive(s) écartée(s).")
+
         niche = [v for v in viral
                  if any(k in v["title"].lower() for k in NICHE_KEYWORDS)]
         viral = niche if len(niche) >= 3 else viral
@@ -724,6 +1012,8 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
 
         # Etape 2 : choix parmi des articles reels
         for attempt in range(3):
+            if not candidates:
+                break
             pick = self._call_json_with_retry([
                 {"role": "system", "content": (
                     "Tu produis uniquement du JSON valide. "
@@ -735,15 +1025,16 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
                     "\n\nChoisis UN article de cette liste, le plus mysterieux et le moins "
                     "connu, qui colle au theme. Retourne {\"wiki_title\": \"titre exact de la "
                     "liste\", \"topic\": \"accroche TikTok en francais, 18 mots max, "
-                    "contenant le nom exact du lieu/sujet\"}"
+                    "contenant le nom exact du lieu/sujet, SANS commencer par 'Découvrez'\"}"
                 )},
             ], temperature=0.8, max_completion_tokens=800)
 
-            wiki_title = str(pick.get("wiki_title", "")).strip()
+            raw_title = str(pick.get("wiki_title", "")).strip()
+            wiki_title = _match_candidate(raw_title, candidates)
             topic = _clean_single_line_title(str(pick.get("topic", "")))
 
-            if wiki_title not in candidates:
-                print(f"⚠️ Titre hors liste, tentative {attempt + 1} : {wiki_title}")
+            if not wiki_title:
+                print(f"⚠️ Titre hors liste, tentative {attempt + 1} : {raw_title}")
                 continue
             if _contains_ai_mention(topic) or not (4 <= len(topic.split()) <= 18):
                 print(f"⚠️ Rejeté (IA/longueur, tentative {attempt + 1}) : {topic}")
@@ -763,8 +1054,10 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
     def refine_topic_angle(self, raw_topic):
         messages = [
             {"role": "system", "content": (
-                "Tu reformules le sujet en un titre accrocheur, sans changer le theme "
+                "Tu reformules le sujet en un titre accrocheur (max 14 mots), sans changer le theme "
                 "ni la localisation geographique reelle du fait evoque. "
+                "Ne commence JAMAIS par 'Découvrez' ni 'Plongez' : prefere une question "
+                "provocante, un paradoxe ou une affirmation brute contenant le nom exact du lieu. "
                 "Reponds uniquement avec le titre reformule, sans montrer ton raisonnement. "
                 f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
             )},
@@ -801,13 +1094,22 @@ Reponds uniquement en JSON : {{"is_duplicate_type": true/false, "matched_topic":
             return "photorealistic historical documentary dark atmosphere"
         return query
 
-    def generate_hook_variants(self, topic, n=5, previous_stats_list=None):
+    def generate_hook_variants(self, topic, n=5, previous_stats_list=None, grounding_extract=None):
+        """grounding_extract (optionnel) : extrait Wikipedia pour que les hooks
+        ne contredisent/n'inventent rien par rapport a la source."""
         stats_instruction = _format_stats_instruction(previous_stats_list, label="hooks")
+        grounding_instruction = ""
+        if grounding_extract:
+            grounding_instruction = (
+                "\nSOURCE DE REFERENCE (les hooks doivent rester fideles a ces faits, "
+                "sans rien inventer d'absent de l'extrait) :\n"
+                f'"""{str(grounding_extract)[:800]}"""\n'
+            )
         prompt = f"""
 SUJET:
 {topic}
-
-GENERE {n} hooks viraux en francais.
+{grounding_instruction}
+GENERE {n} hooks viraux en francais (courts, 12 mots max, qui donnent envie de regarder la suite).
 
 RETURNS JSON:
 {{
@@ -832,7 +1134,7 @@ RETURNS JSON:
         ]
 
         data = self._call_json_with_retry(
-            messages, temperature=1.1, max_completion_tokens=4000
+            messages, temperature=1.0, max_completion_tokens=4000
         )
 
         hooks = data.get("hooks")
@@ -854,13 +1156,14 @@ RETURNS JSON:
                         "raison": str(h.get("raison", "")).strip()
                     })
 
-        if len(normalized_hooks) < n:
-            raise ValueError(f"Nombre de hooks invalide: {len(normalized_hooks)} au lieu de {n}.")
-
-        normalized_hooks = normalized_hooks[:n]
         if not normalized_hooks:
-            normalized_hooks = [{"text": topic, "pattern": "default", "raison": ""}]
-        return normalized_hooks
+            return [{"text": topic, "pattern": "default", "raison": ""}]
+
+        # Tolerance : mieux vaut 3-4 bons hooks qu'un crash du pipeline
+        if len(normalized_hooks) < n:
+            print(f"⚠️ Seulement {len(normalized_hooks)}/{n} hooks valides, on continue avec ceux-là.")
+
+        return normalized_hooks[:n]
 
     def propose_real_case(self, topic):
         if not GROUNDING_AVAILABLE:
@@ -927,464 +1230,3 @@ RETURNS JSON:
             "wiki_query": case_name,
             "source": source,
         }
-
-    def generate_script(self, topic, chosen_hook=None):
-        return self.generate_script_with_target(topic, scene_count=11, chosen_hook=chosen_hook)
-
-    def generate_script_with_target(self, topic, scene_count=11, chosen_hook=None, max_fact_check_retries=2):
-        candidate_counts = []
-        sc = scene_count
-        while sc >= 6 and len(candidate_counts) < 3:
-            candidate_counts.append(sc)
-            sc -= 3
-        if not candidate_counts:
-            candidate_counts = [scene_count]
-
-        last_error = None
-        for idx, candidate_count in enumerate(candidate_counts):
-            if idx > 0:
-                print(f"⚠️ Nouvelle tentative avec un nombre de scenes reduit : "
-                      f"{candidate_count} (au lieu de {scene_count}) pour "
-                      f"respecter le budget de tokens Groq.")
-            try:
-                return self._generate_script_attempt(
-                    topic, candidate_count, chosen_hook, max_fact_check_retries
-                )
-            except (RuntimeError, ValueError) as e:
-                last_error = e
-                print(f"❌ Echec de generation avec {candidate_count} scenes : {e}")
-                continue
-
-        raise RuntimeError(
-            f"Impossible de generer un script meme en reduisant le nombre "
-            f"de scenes ({candidate_counts}). Derniere erreur : {last_error}"
-        )
-
-    def _generate_script_attempt(self, topic, scene_count, chosen_hook, max_fact_check_retries):
-        hook_instruction = f'La scene 1 doit reprendre ce hook : "{chosen_hook}"' if chosen_hook else "Scene 1: Accroche choc."
-
-        hint_country = _guess_country_hint(topic)
-
-        grounding = self.propose_real_case(topic)
-        source = grounding.get("source")
-
-        if source:
-            extract_text = source['extract'][:1200] if 'extract' in source else ""
-            grounding_block = f"""
-
-SOURCE VERIFIEE OBLIGATOIRE (Wikipedia, {source['lang']}) :
-Titre reel : {source['title']}
-Extrait de reference : \"\"\"{extract_text}\"\"\"
-
-REGLE ABSOLUE : tu dois baser TOUS les faits du script (dates, lieux, noms,
-deroule des evenements) UNIQUEMENT sur cet extrait. Interdiction d'ajouter
-un fait, un detail chiffre ou un nom qui n'apparait pas dans cet extrait.
-Tu peux reformuler et dramatiser le style, mais pas inventer de contenu
-factuel supplementaire.
-
-CORRECTIF (IMAGES CONCRETES) : Pour la clé 'event_context', si une scene
-decrit un evenement precis et date mentionne dans l'extrait ci-dessus
-(ex: un incendie, une destruction, une decouverte), resume ce contexte en
-quelques mots factuels visuellement exploitables pour generer une image
-(ex: "nocturnal fire, monastery ruins in flames, november 2025"). Si la scene ne decrit pas d'evenement precis et date, laisse ce champ vide ("").
-"""
-            print(f"🔗 Script ancre sur la source Wikipedia : '{source['title']}'")
-        else:
-            grounding_block = """
-ATTENTION - MODE LÉGENDE URBAINE :
-Aucune source historique stricte n'a été trouvée pour ce sujet.
-Pour éviter de générer des faits historiquement faux, tu DOIS obligatoirement 
-présenter cette histoire comme une "légende locale", une "rumeur persistante" 
-ou un "mythe urbain". N'affirme pas que c'est une vérité historique absolue.
-"""
-            print("⚠️ Aucune source Wikipedia trouvee. Le script sera oriente comme une légende urbaine pour passer le fact-checking.")
-
-        base_prompt = f"""
-SUJET:
-{topic}
-
-{hook_instruction}
-{grounding_block}
-
-REGLES STRICTES DE NARRATION ET VISUEL (POUR ÉVITER LES INTROS VIDES ET LA 3D) :
-1. Interdiction de faire de longs discours d'introduction ou des bandes-annonces vides ("Nous allons vous raconter...").
-2. Dès la scène 2, entre DIRECTEMENT dans le vif du sujet en racontant de vrais faits historiques, des détails précis ou une anecdote concrète et surprenante.
-3. Le milieu de la vidéo doit développer l'histoire en profondeur (les faits, les mystères, les rebondissements).
-4. Les dernières scènes doivent apporter une conclusion claire ou une révélation, pas s'arrêter en plein milieu.
-5. CORRECTION VISUELLE MAJEURE pour 'image_prompt' : TU DOIS OBLIGATOIREMENT L'ÉCRIRE EN ANGLAIS. Génère une description STRICTEMENT VISUELLE ET MATÉRIELLE de 15 mots maximum. Décris uniquement ce que l'on voit physiquement (objets concrets, architecture, textures, lumière). Interdiction absolue d'utiliser des concepts abstraits (legend, myth, secret, story, escape, history) ou des termes de synthèse (CGI, 3D). EXEMPLE PARFAIT : "narrow damp stone corridor, flickering wooden torch, muddy ground, cinematic lighting".
-6. Si la scène se déroule dans un vrai lieu (monument, ville, château, île, etc.), donne le nom précis et complet dans 'location_name' (ex: "Château de Chambord", "Église Saint-Pierre d'Oron" et non juste "Église Saint-Pierre") ET le pays reel dans 'location_country' (ex: "France"). Si c'est juste de l'ambiance ou abstrait, laisse les deux vides ("").
-7. Pour la clé 'voice_type', choisis "narrator" pour l'ambiance globale/les faits, ou "witness" pour dynamiser (citations, avis, phrases choc). Alterne intelligemment pour garder l'audience captivée.
-8. Interdiction absolue de mentionner l'intelligence artificielle, l'IA, un algorithme, ou tout aspect meta lié a la creation de la video. Chaque scene doit parler uniquement du mystere/de l'histoire reelle, jamais de la maniere dont la video a ete produite.
-9. Respecte scrupuleusement les exigences de veracite historique donnees dans les instructions systeme (lieux/faits reels, pays exact, pas d'invention).
-10. Pour la clé 'scene_type', choisis "specific" if la scène décrit un événement, un lieu ou un objet historique précis (ex: une épave, une momie, un manuscrit). Choisis "generic" si la scène décrit une ambiance, un paysage naturel ou une émotion (ex: vagues sombres, forêt brumeuse).
-11. LECTURE AUDIO : Le texte sera lu par une synthèse vocale. N'utilise JAMAIS de chiffres romains. Écris-les obligatoirement EN TOUTES LETTRES (ex: écris "vingtième siècle" au lieu de "XXe siècle", "Louis quatorze" au lieu de "Louis XIV").
-12. IMPORTANT POUR 'stock_search' (Recherche de vidéos) : Ne demande JAMAIS de lieux géographiques précis, de noms propres ou de graphiques. Fournis TOUJOURS un mot-clé très générique, descriptif, d'ambiance et OBLIGATOIREMENT EN ANGLAIS. (Exemple : au lieu de 'Mairie de Sarlat', écris 'old medieval village building').
-13. RYTHME MODÉRÉ : Le 'text' de chaque scène doit contenir 2 phrases (environ 20 à 30 mots). La vidéo changera ainsi d'image toutes les 5 à 7 secondes pour laisser la narration respirer.
-14. Pour la clé 'event_context' (optionnelle) : voir instruction detaillee ci-dessus si une source verifiee est fournie. Sinon, laisse ce champ vide ("") sauf si le sujet lui-meme mentionne clairement un eventement precis et date (incendie, destruction, decouverte) a illustrer concretement.
-15. Ne montre jamais ton raisonnement interne : reponds directement avec le JSON final, sans aucun texte avant ou apres.
-16. RE-HOOK OBLIGATOIRE : la scene situee approximativement au tiers du
-script (ex: scene 4 sur 11) doit contenir une phrase de rupture qui relance
-la curiosite (ex: 'Mais ce n'est pas la le plus troublant...', 'Voici ou
-l'histoire prend un tournant...') pour retenir les spectateurs qui commencent
-a decrocher.
-17. CTA FINAL : genere un champ 'closing_cta' independant dans le JSON
-(au meme niveau que 'title', 'visual_identity', 'audio_profile'), une
-phrase courte (8-10 mots) qui invite a s'abonner en creant une attente
-specifique pour la prochaine video (ex: 'Abonne-toi, demain je devoile un
-secret encore plus trouble'), jamais un CTA generique type 'like et
-abonne-toi'.
-18. Pour la clé 'mood', choisis OBLIGATOIREMENT parmi cette liste : "ominous", "intriguing", "tense", "awe", "scientific", "investigation".
-19. Pour la clé 'role', choisis OBLIGATOIREMENT parmi cette liste : "hook", "tension", "context", "value", "escalation", "reveal", "cta".
-
-CONTRAINTE CRITIQUE ET NON NEGOCIABLE SUR LE FORMAT :
-Tu DOIS retourner EXACTEMENT {scene_count} scenes dans le tableau 'scenes' -- ni plus, ni moins.
-Compte precisement le nombre d'elements avant de repondre. Si tu ne peux pas
-developper {scene_count} scenes avec suffisamment de matiere, repartis le
-contenu disponible sur EXACTEMENT {scene_count} scenes plus courtes plutot
-qu'en generer moins. Ne tronque JAMAIS ta reponse JSON avant d'avoir
-ecrit les {scene_count} scenes completes et la fermeture correcte du JSON.
-Reste CONCIS sur chaque champ texte pour ne pas depasser le budget de
-tokens disponible tout en couvrant les {scene_count} scenes en entier.
-
-Retourne un JSON avec les clés :
-title, visual_identity, audio_profile, scenes.
-Chaque scene dans le tableau 'scenes' doit contenir :
-id, text, voice_direction, pause_after_ms, stock_search, image_prompt, location_name, location_country, voice_type, mood, role, scene_type, event_context.
-"""
-        estimated_tokens_needed = min(scene_count * 350 + 1200, 6500)
-        correction_feedback = ""
-
-        for fact_check_attempt in range(max_fact_check_retries + 1):
-            prompt = base_prompt + correction_feedback
-
-            messages = [
-                {"role": "system", "content": (
-                    f"Tu produis uniquement du JSON valide. La cle scenes contient EXACTEMENT {scene_count} scenes, "
-                    f"ni plus ni moins -- c'est une contrainte absolue et non negociable. "
-                    f"Ne montre jamais ton raisonnement, reponds directement avec le JSON final. "
-                    f"{ACCENT_INSTRUCTION} {NO_META_AI_INSTRUCTION} {VERACITY_INSTRUCTION}"
-                )},
-                {"role": "user", "content": prompt},
-            ]
-
-            data = self._call_json_with_retry(
-                messages,
-                temperature=0.7,
-                max_completion_tokens=estimated_tokens_needed,
-            )
-
-            scenes = data.get("scenes", [])
-            if not isinstance(scenes, list):
-                scenes = []
-
-            scene_count_issue = None
-            if len(scenes) != scene_count:
-                scene_count_issue = (
-                    f"Le JSON genere contient {len(scenes)} scenes au lieu des "
-                    f"{scene_count} scenes exactement demandees. Il faut "
-                    f"generer EXACTEMENT {scene_count} scenes, ni plus ni moins."
-                )
-
-            if scene_count_issue:
-                print(f"⚠️ Comptage de scenes incorrect (tentative {fact_check_attempt + 1}) : {scene_count_issue}")
-
-                if fact_check_attempt < max_fact_check_retries:
-                    correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-{scene_count_issue}
-Regenere le script complet avec EXACTEMENT {scene_count} scenes cette fois-ci.
-Reste concis sur chaque champ texte pour respecter le budget de tokens. NE T'ARRETE PAS AVANT LA FIN.
-"""
-                    continue
-                else:
-                    raise ValueError(
-                        f"Impossible d'obtenir {scene_count} scenes apres "
-                        f"{max_fact_check_retries + 1} tentatives (dernier essai : {len(scenes)} scenes)."
-                    )
-
-            for idx, scene in enumerate(scenes, start=1):
-                if isinstance(scene, dict):
-                    scene.setdefault("id", idx)
-                    scene.setdefault("voice_direction", "French premium narrator, calm, elegant, intriguing, controlled pacing")
-                    scene.setdefault("pause_after_ms", 800)
-                    scene.setdefault("stock_search", "cinematic vertical background")
-                    scene.setdefault("image_prompt", "Vertical 9:16 cinematic scene")
-                    scene.setdefault("location_name", "")
-                    scene.setdefault("location_country", "")
-                    scene.setdefault("voice_type", "narrator")
-                    scene.setdefault("mood", "intriguing")
-                    scene.setdefault("role", "value")
-                    scene.setdefault("scene_type", "generic")
-                    scene.setdefault("event_context", "")
-
-            try:
-                self._validate_script(data, scene_count, topic)
-            except ValueError as e:
-                print(f"⚠️ Erreur de validation (tentative {fact_check_attempt + 1}) : {e}")
-                if fact_check_attempt < max_fact_check_retries:
-                    correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-Le script precedent a echoue a la validation : {e}
-Corrige ce probleme specifique et regenere un script complet et valide avec
-EXACTEMENT {scene_count} scenes.
-"""
-                    continue
-                else:
-                    raise
-
-            geo_issue = self._check_geography_consistency(topic, data["scenes"])
-            wikidata_issues = self._check_wikidata_locations(data["scenes"], hint_country=hint_country)
-            fact_check_result = self._fact_check_script(topic, data, grounding_source=source)
-
-            issues = []
-            if geo_issue:
-                issues.append(geo_issue)
-            issues.extend(wikidata_issues)
-            issues.extend(fact_check_result.get("issues", []))
-
-            all_consistent = (
-                not geo_issue
-                and not wikidata_issues
-                and fact_check_result.get("is_consistent", True)
-            )
-
-            if all_consistent:
-                if fact_check_attempt > 0:
-                    print(f"✅ Script valide apres correction (tentative {fact_check_attempt + 1}).")
-                return data
-
-            if fact_check_attempt < max_fact_check_retries:
-                print(f"⚠️ Incoherences factuelles/geographiques detectees (tentative {fact_check_attempt + 1}) :")
-                for issue in issues:
-                    print(f"    - {issue}")
-
-                correction_feedback = f"""
-
-CORRECTION OBLIGATOIRE :
-Le script precedent contenait les incoherences suivantes, a corriger imperativement :
-{chr(10).join(f"- {i}" for i in issues)}
-Regenere un script totalement coherent avec des faits REELS et bien localises,
-en respectant strictement les memes regles{" et la source verifiee fournie" if source else ""}.
-IMPORTANT : garde EXACTEMENT {scene_count} scenes.
-"""
-            else:
-                print(f"❌ Incoherences factuelles persistantes apres {max_fact_check_retries + 1} tentatives, "
-                      f"video generee malgre tout (verification manuelle recommandee) :")
-                for issue in issues:
-                    print(f"    - {issue}")
-                return data
-
-        return data
-
-    def _check_geography_consistency(self, topic, scenes):
-        if not _topic_claims_french_location(topic):
-            return None
-
-        for scene in scenes:
-            country = str(scene.get("location_country", "")).strip().lower()
-            location = str(scene.get("location_name", "")).strip()
-            if country and "france" not in country and "français" not in country:
-                return (
-                    f"Le sujet annonce une localisation francaise, mais la scene "
-                    f"mentionnant '{location}' indique le pays '{country}', ce qui "
-                    f"est incoherent avec le sujet annonce."
-                )
-        return None
-
-    def _check_wikidata_locations(self, scenes, hint_country=None):
-        issues = []
-        not_found_locations = []
-
-        for scene in scenes:
-            location_name = str(scene.get("location_name", "")).strip()
-            declared_country = str(scene.get("location_country", "")).strip()
-
-            if not location_name or not declared_country:
-                continue
-
-            real_country = WikidataChecker.get_real_country(location_name, hint_country=hint_country)
-
-            if real_country is None:
-                not_found_locations.append(location_name)
-                continue
-
-            if not _countries_match(declared_country, real_country):
-                issues.append(
-                    f"Wikidata indique que '{location_name}' se trouve reellement "
-                    f"en '{real_country}', mais le script declare '{declared_country}'. "
-                    f"Utilise un nom de lieu plus specifique/complet ou corrige la "
-                    f"localisation."
-                )
-                print(f"❌ Wikidata mismatch : '{location_name}' est en '{real_country}' "
-                      f"(declare : '{declared_country}')")
-            else:
-                print(f"✅ Wikidata confirme : '{location_name}' est bien en '{real_country}'")
-
-        if not_found_locations:
-            print(f"ℹ️ Wikidata : {len(not_found_locations)} lieu(x) introuvable(s), "
-                  f"verification ignoree ({', '.join(not_found_locations)}).")
-
-        return issues
-
-    def _fact_check_script(self, topic, script_data, grounding_source=None):
-        scenes_summary = "\n".join(
-            f"- Scene {s.get('id')} [{s.get('location_name', 'aucun lieu')} / "
-            f"{s.get('location_country', 'pays non precise')}] : {s.get('text', '')[:200]}"
-            for s in script_data.get("scenes", [])
-        )
-
-        if grounding_source:
-            extract_text = grounding_source['extract'][:1200]
-            prompt = f"""
-Tu es un fact-checker rigoureux. Compare le SCRIPT ci-dessous a la SOURCE DE
-REFERENCE (extrait Wikipedia reel) et detecte UNIQUEMENT les affirmations du
-script qui CONTREDISENT ou AJOUTENT un fait absent de la source (date, nom,
-lieu, evenement invente).
-
-SOURCE DE REFERENCE ({grounding_source['title']}) :
-\"\"\"{extract_text}\"\"\"
-
-RESUME DU SCRIPT GENERE :
-{scenes_summary}
-
-Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
-{{
-  "is_consistent": true/false,
-  "issues": ["fait du script absent ou contradictoire avec la source : ..."]
-}}
-
-Ne signale PAS de simples reformulations/dramatisations fideles a la source.
-"""
-        else:
-            prompt = f"""
-Tu es un fact-checker STRICT. Tu ne signales QUE des erreurs factuelles
-objectives et verifiables, jamais des critiques de style ou de manque de
-details.
-
-SUJET DE LA VIDEO :
-{topic}
-
-RESUME DES SCENES :
-{scenes_summary}
-
-Signale UNIQUEMENT :
-- Un nom de lieu, personnage ou organisation manifestement invente (n'existe
-  pas du tout, pas juste "peu documente")
-- Une date historique explicitement fausse et verifiable comme telle
-- Une contradiction factuelle directe entre deux scenes (ex: un evenement
-  date differemment a deux endroits)
-
-NE SIGNALE JAMAIS :
-- Le manque de details ou de precision ("les informations sont trop
-  generales", "pas assez de details sur X")
-- Le style narratif, le rythme, ou la construction du recit
-- L'absence de preuves pour des legendes/rumeurs (une legende reste une
-  legende, ce n'est pas une erreur factuelle si elle est presentee comme
-  telle)
-- Les problemes de geographie/pays (verifies separement par une autre methode)
-
-Retourne UNIQUEMENT du JSON valide, sans raisonnement visible :
-{{
-  "is_consistent": true/false,
-  "issues": ["description precise et actionnable du probleme 1", "..."]
-}}
-
-Si tu as le moindre doute, ne signale RIEN (is_consistent: true, issues: []).
-"""
-
-        messages = [
-            {"role": "system", "content": (
-                "Tu produis uniquement du JSON valide, factuel, rigoureux et "
-                "minimaliste (peu de faux positifs), sans raisonnement visible."
-            )},
-            {"role": "user", "content": prompt},
-        ]
-
-        try:
-            data = self._call_json_with_retry(
-                messages, temperature=0.1, max_json_retries=1,
-                max_completion_tokens=2500
-            )
-            if not isinstance(data, dict):
-                return {"is_consistent": True, "issues": []}
-            return {
-                "is_consistent": bool(data.get("is_consistent", True)),
-                "issues": data.get("issues", []) if isinstance(data.get("issues"), list) else [],
-            }
-        except Exception as e:
-            print(f"⚠️ Fact-check LLM impossible (erreur technique), on continue sans blocage : {e}")
-            return {"is_consistent": True, "issues": []}
-
-    def _validate_script(self, data, scene_count, topic):
-        scenes = data.get("scenes")
-        if not isinstance(scenes, list):
-            raise ValueError("La reponse ne contient pas de tableau scenes.")
-        if len(scenes) != scene_count:
-            raise ValueError(f"Nombre de scenes invalide : {len(scenes)} au lieu de {scene_count}.")
-
-        allowed_roles = {"hook", "tension", "context", "value", "escalation", "reveal", "cta"}
-
-        mood_aliases = {
-            "ominous": "ominous", "sombre": "ominous", "menaçant": "ominous", "menacant": "ominous",
-            "intriguing": "intriguing", "mystérieux": "intriguing", "mysterieux": "intriguing",
-            "tense": "tense", "tendu": "tense", "tension": "tense",
-            "awe": "awe", "impressionnant": "awe", "fascinant": "awe",
-            "scientific": "scientific", "scientifique": "scientific",
-            "investigation": "investigation", "enquête": "investigation", "enquete": "investigation",
-        }
-
-        for scene in scenes:
-            if not isinstance(scene, dict):
-                raise ValueError("Une scène n'est pas un dictionnaire valide.")
-            if not scene.get("text"):
-                raise ValueError(f"Scene {scene.get('id')} : text manquant.")
-
-            if _contains_ai_mention(scene.get("text", "")):
-                raise ValueError(
-                    f"Scene {scene.get('id')} : mention d'IA/technologie detectee dans le texte "
-                    f"('{scene['text'][:80]}...'), regeneration necessaire."
-                )
-
-            if not scene.get("voice_direction"):
-                scene["voice_direction"] = "French premium narrator, calm, elegant, intriguing, controlled pacing"
-            
-            pause_after_ms = scene.get("pause_after_ms")
-            if not isinstance(pause_after_ms, int):
-                scene["pause_after_ms"] = 800
-                
-            if scene.get("role") not in allowed_roles:
-                scene["role"] = "value"
-
-            raw_mood = str(scene.get("mood", "")).strip().lower()
-            normalized_mood = mood_aliases.get(raw_mood)
-            if normalized_mood:
-                if normalized_mood != raw_mood:
-                    print(f"      ℹ️ Scene {scene.get('id')} : mood '{raw_mood}' normalisé en '{normalized_mood}'")
-                scene["mood"] = normalized_mood
-            else:
-                print(f"      ⚠️ Scene {scene.get('id')} : mood invalide reçu ('{scene.get('mood')}'), fallback -> 'intriguing'")
-                scene["mood"] = "intriguing"
-
-            if not scene.get("stock_search"):
-                scene["stock_search"] = "cinematic vertical background"
-            if not scene.get("image_prompt"):
-                scene["image_prompt"] = "Vertical 9:16 cinematic scene"
-            if "location_name" not in scene:
-                scene["location_name"] = ""
-            if "location_country" not in scene:
-                scene["location_country"] = ""
-            if scene.get("voice_type") not in {"narrator", "witness"}:
-                scene["voice_type"] = "narrator"
-            if "scene_type" not in scene or scene.get("scene_type") not in {"generic", "specific"}:
-                scene["scene_type"] = "generic"
-            if "event_context" not in scene or not isinstance(scene.get("event_context"), str):
-                scene["event_context"] = ""
-
-        if not str(data.get("title", "")).strip():
-            data["title"] = topic
-        if not str(data.get("visual_identity", "")).strip():
-            data["visual_identity"] = "Consistent cinematic vertical documentary world."
-        if not str(data.get("audio_profile", "")).strip():
-            data["audio_profile"] = "French premium narrator, calm, elegant, slightly deep, natural, controlled pacing"
