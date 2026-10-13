@@ -1,3 +1,8 @@
+## <small>1.1.7 (2026-10-13)</small>
+
+* Merge pull request #47 from SORADATA/fix/auracontent ([26bcf58](https://github.com/SORADATA/AuraContent/commit/26bcf58)), closes [#47](https://github.com/SORADATA/AuraContent/issues/47)
+* fix: resolve tokens capabilities ([ba556e0](https://github.com/SORADATA/AuraContent/commit/ba556e0))
+
 ## <small>1.1.6 (2026-10-05)</small>
 
 * Merge pull request #45 from SORADATA/fix/auracontent ([d32a788](https://github.com/SORADATA/AuraContent/commit/d32a788)), closes [#45](https://github.com/SORADATA/AuraContent/issues/45)
